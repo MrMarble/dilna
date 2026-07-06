@@ -1,6 +1,6 @@
-import type { Repo } from "@dilna/shared";
+import type { Repo, SessionView } from "@dilna/shared";
 
-export type { Repo };
+export type { Repo, SessionView };
 
 export type CloneRepoInput = {
 	url: string;
@@ -55,6 +55,23 @@ export const api = {
 			}),
 		delete: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/repos/${id}`, {
+				method: "DELETE",
+			}),
+	},
+	sessions: {
+		listByRepo: (repoId: string) =>
+			request<{ sessions: SessionView[] }>(
+				`/api/sessions?repoId=${encodeURIComponent(repoId)}`,
+			),
+		get: (id: string) =>
+			request<{ session: SessionView }>(`/api/sessions/${id}`),
+		create: (repoId: string) =>
+			request<{ session: SessionView }>("/api/sessions", {
+				method: "POST",
+				body: JSON.stringify({ repoId }),
+			}),
+		delete: (id: string) =>
+			request<{ ok: boolean; id: string }>(`/api/sessions/${id}`, {
 				method: "DELETE",
 			}),
 	},

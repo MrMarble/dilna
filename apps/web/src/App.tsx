@@ -1,58 +1,120 @@
-import { ServerIcon } from "lucide-react";
+import { FolderGit2, MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Repo } from "@/api/client";
+import { api, type Repo, type SessionView } from "@/api/client";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { Sidebar } from "@/components/Sidebar";
 
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
-	const [loading, setLoading] = useState(true);
-	const [error, setError] = useState<string | null>(null);
+	const [sessions, setSessions] = useState<SessionView[]>([]);
+	const [loadingRepos, setLoadingRepos] = useState(true);
+	const [loadingSessions, setLoadingSessions] = useState(false);
+	const [repoError, setRepoError] = useState<string | null>(null);
 	const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
+	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+		null,
+	);
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 
-	const refresh = useCallback(async () => {
-		setLoading(true);
-		setError(null);
+	const refreshRepos = useCallback(async () => {
+		setLoadingRepos(true);
+		setRepoError(null);
 		try {
 			const { repos } = await api.repos.list();
 			setRepos(repos);
 		} catch (e) {
-			setError(e instanceof Error ? e.message : "failed to load repos");
+			setRepoError(e instanceof Error ? e.message : "failed to load repos");
 		} finally {
-			setLoading(false);
+			setLoadingRepos(false);
+		}
+	}, []);
+
+	const refreshSessions = useCallback(async (repoId: string) => {
+		setLoadingSessions(true);
+		try {
+			const { sessions } = await api.sessions.listByRepo(repoId);
+			setSessions(sessions);
+		} catch {
+			setSessions([]);
+		} finally {
+			setLoadingSessions(false);
 		}
 	}, []);
 
 	useEffect(() => {
-		refresh();
-	}, [refresh]);
+		refreshRepos();
+	}, [refreshRepos]);
+
+	useEffect(() => {
+		setSelectedSessionId(null);
+		setSessions([]);
+		if (selectedRepoId) refreshSessions(selectedRepoId);
+	}, [selectedRepoId, refreshSessions]);
 
 	const selectedRepo = repos.find((r) => r.id === selectedRepoId) ?? null;
+	const selectedSession =
+		sessions.find((s) => s.id === selectedSessionId) ?? null;
+
+	const handleNewSession = useCallback(async () => {
+		if (!selectedRepoId) return;
+		try {
+			const { session } = await api.sessions.create(selectedRepoId);
+			setSessions((prev) => [session, ...prev]);
+			setSelectedSessionId(session.id);
+		} catch (e) {
+			console.error(e);
+		}
+	}, [selectedRepoId]);
+
+	const handleDeleteSession = useCallback(async (id: string) => {
+		try {
+			await api.sessions.delete(id);
+			setSessions((prev) => prev.filter((s) => s.id !== id));
+			setSelectedSessionId((prev) => (prev === id ? null : prev));
+		} catch (e) {
+			console.error(e);
+		}
+	}, []);
 
 	return (
 		<>
 			<div className="flex h-screen w-screen">
 				<Sidebar
 					repos={repos}
-					loading={loading}
-					error={error}
+					sessions={sessions}
+					loadingRepos={loadingRepos}
+					loadingSessions={loadingSessions}
+					error={repoError}
 					selectedRepoId={selectedRepoId}
+					selectedSessionId={selectedSessionId}
 					onSelectRepo={setSelectedRepoId}
-					onRefresh={refresh}
+					onSelectSession={setSelectedSessionId}
+					onRefreshRepos={refreshRepos}
 					onNewRepo={() => setNewRepoOpen(true)}
+					onNewSession={handleNewSession}
+					onDeleteSession={handleDeleteSession}
 				/>
 				<main className="flex flex-1 flex-col overflow-hidden">
 					<header className="flex h-14 items-center gap-2 border-b border-zinc-200 px-4 dark:border-zinc-800">
-						{selectedRepo ? (
-							<span className="font-medium">{selectedRepo.slug}</span>
+						{selectedSession ? (
+							<>
+								<MessageSquare className="size-4 text-muted-foreground" />
+								<span className="font-medium">{selectedSession.title}</span>
+							</>
+						) : selectedRepo ? (
+							<>
+								<FolderGit2 className="size-4 text-muted-foreground" />
+								<span className="font-medium">{selectedRepo.slug}</span>
+							</>
 						) : (
 							<span className="text-muted-foreground">dilna</span>
 						)}
 					</header>
 					<div className="flex flex-1 items-center justify-center p-6">
-						{selectedRepo ? (
-							<RepoPlaceholder repo={selectedRepo} />
+						{selectedSession ? (
+							<ChatPlaceholder />
+						) : selectedRepo ? (
+							<RepoEmpty repo={selectedRepo} />
 						) : (
 							<EmptyState />
 						)}
@@ -62,7 +124,7 @@ export function App() {
 			<NewRepoDialog
 				open={newRepoOpen}
 				onOpenChange={setNewRepoOpen}
-				onCloned={refresh}
+				onCloned={refreshRepos}
 			/>
 		</>
 	);
@@ -71,7 +133,7 @@ export function App() {
 function EmptyState() {
 	return (
 		<div className="text-center">
-			<ServerIcon className="mx-auto mb-3 size-10 text-muted-foreground" />
+			<FolderGit2 className="mx-auto mb-3 size-10 text-muted-foreground" />
 			<h1 className="text-2xl font-semibold tracking-tight">dilna</h1>
 			<p className="mt-2 text-sm text-muted-foreground">
 				self-hosted workspace for AI coding agents
@@ -83,14 +145,28 @@ function EmptyState() {
 	);
 }
 
-function RepoPlaceholder({ repo }: { repo: Repo }) {
+function RepoEmpty({ repo }: { repo: Repo }) {
 	return (
-		<div className="text-center text-sm">
-			<p className="font-medium">{repo.remoteUrl}</p>
-			<p className="mt-1 text-muted-foreground">
+		<div className="text-center">
+			<p className="text-sm font-medium">{repo.remoteUrl}</p>
+			<p className="mt-1 text-xs text-muted-foreground">
 				default branch: {repo.defaultBranch}
 			</p>
-			<p className="mt-1 text-muted-foreground">sessions list goes here</p>
+			<p className="mt-4 text-sm text-muted-foreground">
+				Click + on Sessions to start a new session for this repo.
+			</p>
+		</div>
+	);
+}
+
+function ChatPlaceholder() {
+	return (
+		<div className="text-center">
+			<MessageSquare className="mx-auto mb-3 size-10 text-muted-foreground" />
+			<p className="text-sm font-medium">Chat coming soon</p>
+			<p className="mt-1 text-xs text-muted-foreground">
+				Agent SSE streaming + opencode serve wiring is the next milestone.
+			</p>
 		</div>
 	);
 }

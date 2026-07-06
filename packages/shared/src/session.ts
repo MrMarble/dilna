@@ -14,3 +14,12 @@ export type Session = {
 	createdAt: number;
 	lastActiveAt: number;
 };
+
+export type SessionView = {
+	id: string;
+	repoId: string;
+	title: string;
+	status: SessionStatus;
+	createdAt: number;
+	lastActiveAt: number;
+};
