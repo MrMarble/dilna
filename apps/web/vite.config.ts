@@ -12,16 +12,16 @@ export default defineConfig({
 			"@": path.resolve(__dirname, "./src"),
 		},
 	},
-server: {
-    port: 5174,
-    proxy: {
-      "/api": {
-        target: apiTarget,
-        changeOrigin: true,
-        ws: true,
-      },
-    },
-  },
+	server: {
+		port: 5174,
+		proxy: {
+			"/api": {
+				target: apiTarget,
+				changeOrigin: true,
+				ws: true,
+			},
+		},
+	},
 	build: {
 		outDir: "dist",
 		emptyOutDir: true,

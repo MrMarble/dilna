@@ -6,7 +6,15 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"ignoreUnknown": false
+		"ignoreUnknown": false,
+		"includes": [
+			"**",
+			"!**/*.css",
+			"!!**/dist",
+			"!!**/build",
+			"!!**/node_modules",
+			"!apps/web/src/components/ui"
+		]
 	},
 	"formatter": {
 		"enabled": true,

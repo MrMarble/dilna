@@ -1,3 +1,7 @@
 [tools]
 node = "24.18.0"
 pnpm = "11.10.0"
+
+[env]
+DILNA_DATA_DIR = "./data"
+PORT = "3001"

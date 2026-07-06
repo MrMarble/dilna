@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import {
@@ -11,11 +11,26 @@ import * as schema from "./schema";
 let _db: BetterSQLite3Database<typeof schema> | null = null;
 let _sqlite: Database.Database | null = null;
 
+function findWorkspaceRoot(start: string): string {
+	let dir = start;
+	while (true) {
+		if (existsSync(path.join(dir, "pnpm-workspace.yaml"))) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) return start;
+		dir = parent;
+	}
+}
+
+function resolveDataDir(): string {
+	const raw = process.env.DILNA_DATA_DIR;
+	if (!raw) return path.resolve(process.env.HOME ?? ".", ".dilna/server-data");
+	if (path.isAbsolute(raw)) return raw;
+	const root = findWorkspaceRoot(process.cwd());
+	return path.resolve(root, raw);
+}
+
 export function getDataDir(): string {
-	return (
-		process.env.DILNA_DATA_DIR ??
-		path.resolve(process.env.HOME ?? ".", ".dilna/server-data")
-	);
+	return resolveDataDir();
 }
 
 export function getDbPath(): string {

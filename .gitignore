@@ -10,4 +10,4 @@ build/
 coverage/
 .vite/
 .turbo/
-DILNA_DATA_DIR/
+/data/
