@@ -1,0 +1,31 @@
+{
+	"name": "@dilna/server",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "tsx watch src/index.ts",
+		"build": "tsup src/index.ts --format esm --dts --out-dir dist",
+		"start": "node dist/index.js",
+		"typecheck": "tsc -p tsconfig.json --noEmit",
+		"db:generate": "drizzle-kit generate",
+		"db:migrate": "tsx src/db/migrate.ts"
+	},
+	"dependencies": {
+		"@dilna/shared": "workspace:*",
+		"@opencode-ai/sdk": "latest",
+		"better-sqlite3": "latest",
+		"drizzle-orm": "latest",
+		"hono": "latest",
+		"@hono/node-server": "latest",
+		"nanoid": "latest"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "latest",
+		"@types/node": "latest",
+		"drizzle-kit": "latest",
+		"tsup": "latest",
+		"tsx": "latest",
+		"typescript": "latest"
+	}
+}

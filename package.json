@@ -1,0 +1,17 @@
+{
+	"name": "dilna",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "pnpm -r --parallel run dev",
+		"build": "pnpm -r --filter @dilna/shared build && pnpm -r --filter ./apps/* run build",
+		"typecheck": "pnpm -r run typecheck",
+		"lint": "biome check .",
+		"format": "biome format --write ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "latest",
+		"typescript": "latest"
+	},
+	"packageManager": "pnpm@11.10.0"
+}

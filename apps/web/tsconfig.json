@@ -1,0 +1,16 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"noEmit": true,
+		"composite": false,
+		"types": ["vite/client"],
+		"paths": {
+			"@/*": ["./src/*"],
+			"@dilna/shared": ["../../packages/shared/src/index.ts"],
+			"@dilna/shared/*": ["../../packages/shared/src/*"]
+		}
+	},
+	"include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"]
+}

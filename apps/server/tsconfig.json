@@ -1,0 +1,14 @@
+{
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"composite": false,
+		"lib": ["ES2023"],
+		"types": ["node"],
+		"paths": {
+			"@dilna/shared": ["../../packages/shared/src/index.ts"],
+			"@dilna/shared/*": ["../../packages/shared/src/*"]
+		}
+	},
+	"include": ["src/**/*.ts"]
+}
