@@ -7,6 +7,8 @@
 		"dev": "vite",
 		"build": "tsc -b && vite build",
 		"preview": "vite preview",
+		"test": "vitest run",
+		"test:watch": "vitest",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
@@ -25,9 +27,13 @@
 	},
 	"devDependencies": {
 		"@tailwindcss/vite": "latest",
+		"@testing-library/jest-dom": "^6.9.1",
+		"@testing-library/react": "^16.3.2",
+		"@testing-library/user-event": "^14.6.1",
 		"@types/react": "latest",
 		"@types/react-dom": "latest",
 		"@vitejs/plugin-react": "latest",
+		"happy-dom": "^20.10.6",
 		"tailwindcss": "latest",
 		"typescript": "latest",
 		"vite": "latest"

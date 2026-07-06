@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import {
 	type BetterSQLite3Database,
@@ -7,6 +8,9 @@ import {
 } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import * as schema from "./schema";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 let _db: BetterSQLite3Database<typeof schema> | null = null;
 let _sqlite: Database.Database | null = null;
@@ -44,7 +48,13 @@ export function getDb() {
 	_sqlite = new Database(dbPath);
 	_sqlite.pragma("journal_mode = WAL");
 	_db = drizzle(_sqlite, { schema });
-	migrate(_db, { migrationsFolder: "./drizzle" });
+	// Drizzle migrations live next to the compiled source: <server>/drizzle.
+	// Resolve relative to this file so it works regardless of process.cwd()
+	// (dev via tsx from apps/server, prod from dist/, tests via vitest root).
+	const migrationsFolder = existsSync(path.join(__dirname, "..", "drizzle"))
+		? path.join(__dirname, "..", "drizzle")
+		: path.join(__dirname, "..", "..", "drizzle");
+	migrate(_db, { migrationsFolder });
 	return _db;
 }
 

@@ -10,4 +10,5 @@ build/
 coverage/
 .vite/
 .turbo/
+.vitest/
 /data/

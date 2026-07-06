@@ -52,16 +52,12 @@ function uniqueSlug(used: Set<string>, base: string): string {
 }
 
 export class RepoManager {
-	private dataDir: string;
-	private reposDir: string;
-	private worktreesDir: string;
+	get reposDir(): string {
+		return path.join(getDataDir(), "repos");
+	}
 
-	constructor() {
-		this.dataDir = getDataDir();
-		this.reposDir = path.join(this.dataDir, "repos");
-		this.worktreesDir = path.join(this.dataDir, "worktrees");
-		mkdirSync(this.reposDir, { recursive: true });
-		mkdirSync(this.worktreesDir, { recursive: true });
+	get worktreesDir(): string {
+		return path.join(getDataDir(), "worktrees");
 	}
 
 	repoPath(slug: string): string {
@@ -105,6 +101,7 @@ export class RepoManager {
 		const repoPath = this.repoPath(slug);
 
 		mkdirSync(this.reposDir, { recursive: true });
+		mkdirSync(this.worktreesDir, { recursive: true });
 		try {
 			await git(["clone", "--bare", "--", url, repoPath]);
 		} catch (err) {
