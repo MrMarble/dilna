@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
+import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { Sidebar } from "@/components/Sidebar";
 
 export function App() {
@@ -16,6 +17,7 @@ export function App() {
 		null,
 	);
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
+	const [newSessionOpen, setNewSessionOpen] = useState(false);
 
 	const refreshRepos = useCallback(async () => {
 		setLoadingRepos(true);
@@ -56,16 +58,10 @@ export function App() {
 	const selectedSession =
 		sessions.find((s) => s.id === selectedSessionId) ?? null;
 
-	const handleNewSession = useCallback(async () => {
-		if (!selectedRepoId) return;
-		try {
-			const { session } = await api.sessions.create(selectedRepoId);
-			setSessions((prev) => [session, ...prev]);
-			setSelectedSessionId(session.id);
-		} catch (e) {
-			console.error(e);
-		}
-	}, [selectedRepoId]);
+	const handleSessionCreated = useCallback((session: SessionView) => {
+		setSessions((prev) => [session, ...prev]);
+		setSelectedSessionId(session.id);
+	}, []);
 
 	const handleDeleteSession = useCallback(async (id: string) => {
 		try {
@@ -92,7 +88,7 @@ export function App() {
 					onSelectSession={setSelectedSessionId}
 					onRefreshRepos={refreshRepos}
 					onNewRepo={() => setNewRepoOpen(true)}
-					onNewSession={handleNewSession}
+					onNewSession={() => setNewSessionOpen(true)}
 					onDeleteSession={handleDeleteSession}
 				/>
 				<main className="flex flex-1 flex-col overflow-hidden">
@@ -132,6 +128,14 @@ export function App() {
 				onOpenChange={setNewRepoOpen}
 				onCloned={refreshRepos}
 			/>
+			{selectedRepoId && (
+				<NewSessionDialog
+					open={newSessionOpen}
+					onOpenChange={setNewSessionOpen}
+					repoId={selectedRepoId}
+					onCreated={handleSessionCreated}
+				/>
+			)}
 		</>
 	);
 }
