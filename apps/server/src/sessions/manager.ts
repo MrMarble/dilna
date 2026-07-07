@@ -17,7 +17,7 @@ import type {
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { type ClaudeHandle, chatClaude, startClaude } from "../agents/claude";
 import {
@@ -444,6 +444,16 @@ class SessionManager {
 	async resetAllToIdle(): Promise<void> {
 		const db = getDb();
 		for (const s of ["working", "starting", "stopping"] as const) {
+			const rows = db
+				.select({ id: sessionsTable.id })
+				.from(sessionsTable)
+				.where(eq(sessionsTable.status, s))
+				.all();
+			for (const { id } of rows) {
+				// Drop any pending-user placeholder left behind by a turn that
+				// was interrupted by the server restart (see sendMessage).
+				this.deleteMessage(id, this.pendingUserMessageId(id));
+			}
 			db.update(sessionsTable)
 				.set({ status: "idle" })
 				.where(eq(sessionsTable.status, s))
@@ -514,11 +524,12 @@ class SessionManager {
 	 * Send a user message to the session's agent. Spawns the agent process
 	 * if it isn't running. Returns when the agent goes idle (chat complete).
 	 *
-	 * Live events are broadcast to subscribers as they arrive. The persisted
-	 * message rows are written on completion (the user message immediately,
-	 * the assistant message by fetching from opencode's session at the end).
-	 * This avoids placeholder-spam and keeps the resume-render coherent with
-	 * the live-stream view since both reference opencode's message IDs.
+	 * Live events are broadcast to subscribers as they arrive. The user's
+	 * message is persisted immediately under a placeholder id (its content
+	 * is already fully known — no reason to wait), so a page reload mid-turn
+	 * still shows it instead of an empty history. The assistant's message is
+	 * still only persisted at turn end (fetched from the agent backend,
+	 * which assigns its own id), at which point the placeholder is dropped.
 	 */
 	async sendMessage(id: string, text: string): Promise<void> {
 		const session = await this.get(id);
@@ -531,6 +542,13 @@ class SessionManager {
 		active.chatInProgress = true;
 		this.clearIdleTimer(active);
 		await this.setStatus(id, "working");
+		this.persistMessage(id, {
+			id: this.pendingUserMessageId(id),
+			sessionId: id,
+			role: "user",
+			parts: [{ type: "text", text }],
+			createdAt: Math.floor(Date.now() / 1000),
+		});
 
 		const handle = active.handle;
 		const onEvent = (ev: AgentStreamEvent) => this.broadcast(id, ev);
@@ -568,8 +586,10 @@ class SessionManager {
 					.run();
 			}
 
-			// Persist everything we don't already have from the agent backend.
+			// Persist everything we don't already have from the agent backend,
+			// then drop the placeholder now that the authoritative row exists.
 			await this.persistMessagesFromAgent(id, handle, expectedClaudeMessageId);
+			this.deleteMessage(id, this.pendingUserMessageId(id));
 
 			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
@@ -819,6 +839,26 @@ class SessionManager {
 				partsJson: JSON.stringify(message.parts),
 				createdAt: message.createdAt,
 			})
+			.run();
+	}
+
+	/** Stable id for the one-per-session placeholder row that stands in for
+	 * the user's message while its turn is still in progress (see
+	 * sendMessage). A session has at most one in-flight turn at a time, so
+	 * this id never needs to be unique per-turn. */
+	private pendingUserMessageId(sessionId: string): string {
+		return `pending-user-${sessionId}`;
+	}
+
+	private deleteMessage(sessionId: string, messageId: string): void {
+		const db = getDb();
+		db.delete(messagesTable)
+			.where(
+				and(
+					eq(messagesTable.sessionId, sessionId),
+					eq(messagesTable.id, messageId),
+				),
+			)
 			.run();
 	}
 
