@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { setTimeout as setTimeoutAsync } from "node:timers/promises";
 import {
 	type Query,
@@ -6,8 +8,10 @@ import {
 	type SDKMessage,
 	type SDKResultMessage,
 	type SDKUserMessage,
+	type SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStreamEvent } from "@dilna/shared";
+import { spawnSandboxed } from "./sandbox";
 import type { AgentChatOptions, AgentStartOptions } from "./types";
 
 // The Claude Agent SDK's types are large and unstable in shape; we import
@@ -91,6 +95,28 @@ export async function startClaude(
 				stderrTail.push(trimmed);
 				if (stderrTail.length > 50) stderrTail.shift();
 			},
+			// Per ADR-0003, bypassPermissions is only safe because the process's
+			// filesystem writes are confined to the worktree — spawnSandboxed
+			// (bubblewrap) is what actually enforces that boundary.
+			spawnClaudeCodeProcess: (spawnOpts) =>
+				spawnSandboxed({
+					command: spawnOpts.command,
+					args: spawnOpts.args,
+					cwd: spawnOpts.cwd ?? opts.worktreePath,
+					env: spawnOpts.env,
+					signal: spawnOpts.signal,
+					// streaming-input mode writes to stdin; opencode's
+					// ignore-stdin default doesn't apply here.
+					stdio: ["pipe", "pipe", "pipe"],
+					// Claude's own cache/transcript data — not project files, and
+					// deliberately narrower than all of ~/.claude (which holds
+					// global settings, skills, and credentials the sandboxed
+					// agent has no business writing to).
+					writablePaths: [
+						path.join(os.homedir(), ".cache", "claude"),
+						path.join(os.homedir(), ".cache", "claude-cli-nodejs"),
+					],
+				}) as unknown as SpawnedProcess,
 		},
 	});
 

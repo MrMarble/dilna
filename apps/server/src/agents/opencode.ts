@@ -1,8 +1,11 @@
-import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import net from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { setTimeout as setTimeoutAsync } from "node:timers/promises";
 import type { AgentStreamEvent } from "@dilna/shared";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
+import { spawnSandboxed } from "./sandbox";
 import type { AgentChatOptions, AgentStartOptions } from "./types";
 
 // Opencode's SDK types are large and unstable in shape; we import only the
@@ -46,21 +49,25 @@ export async function startOpencode(
 	opts: AgentStartOptions,
 ): Promise<OpencodeHandle> {
 	const port = await pickFreePort();
-	const child = spawn(
-		"opencode",
-		["serve", "--port", String(port), "--hostname", "127.0.0.1"],
-		{
-			stdio: ["ignore", "pipe", "pipe"],
-			cwd: opts.worktreePath,
-			env: {
-				...process.env,
-				// Auto-approve all tool calls (replacement for `opencode --auto`,
-				// which isn't valid on the `serve` subcommand). Per ADR-0003 the
-				// agent runs in isolation inside dilna so this is safe.
-				OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: "allow" }),
-			},
+	const child = spawnSandboxed({
+		command: "opencode",
+		args: ["serve", "--port", String(port), "--hostname", "127.0.0.1"],
+		cwd: opts.worktreePath,
+		env: {
+			...process.env,
+			// Auto-approve all tool calls (replacement for `opencode --auto`,
+			// which isn't valid on the `serve` subcommand). Per ADR-0003 this
+			// is only safe because spawnSandboxed confines the process's
+			// filesystem writes to the worktree.
+			OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: "allow" }),
 		},
-	);
+		// opencode's own data (logs, session cache, its own sqlite db) —
+		// not project files — lives under the operator's XDG dirs.
+		writablePaths: [
+			path.join(os.homedir(), ".local", "share", "opencode"),
+			path.join(os.homedir(), ".config", "opencode"),
+		],
+	});
 
 	const stderrTail: string[] = [];
 	child.stderr?.on("data", (b: Buffer) => {
@@ -408,7 +415,7 @@ function pickFreePort(): Promise<number> {
 }
 
 async function waitForReady(
-	child: ReturnType<typeof spawn>,
+	child: ChildProcess,
 	timeoutMs: number,
 ): Promise<string> {
 	return await new Promise<string>((resolve, reject) => {
