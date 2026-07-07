@@ -1,11 +1,12 @@
 import type {
 	AgentStreamEvent,
+	AgentType,
 	Message,
 	Repo,
 	SessionView,
 } from "@dilna/shared";
 
-export type { AgentStreamEvent, Message, Repo, SessionView };
+export type { AgentStreamEvent, AgentType, Message, Repo, SessionView };
 
 export type CloneRepoInput = {
 	url: string;
@@ -70,10 +71,10 @@ export const api = {
 			),
 		get: (id: string) =>
 			request<{ session: SessionView }>(`/api/sessions/${id}`),
-		create: (repoId: string) =>
+		create: (repoId: string, agentType?: AgentType) =>
 			request<{ session: SessionView }>("/api/sessions", {
 				method: "POST",
-				body: JSON.stringify({ repoId }),
+				body: JSON.stringify({ repoId, agentType }),
 			}),
 		delete: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}`, {
@@ -94,17 +95,8 @@ export const api = {
 		stream: (
 			id: string,
 			onEvent: (event: AgentStreamEvent) => void,
-			onReplayMessage?: (message: Message) => void,
 		): (() => void) => {
 			const es = new EventSource(`/api/sessions/${id}/stream`);
-			es.addEventListener("message_replay", (e: MessageEvent) => {
-				try {
-					const msg = JSON.parse(e.data as string) as Message;
-					onReplayMessage?.(msg);
-				} catch {
-					// ignore malformed payloads
-				}
-			});
 			const eventTypes = [
 				"session_status",
 				"message_start",

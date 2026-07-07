@@ -25,6 +25,7 @@ type OMessage = { id: string; sessionID: string; role: "user" | "assistant" };
 export type Listener = (event: AgentStreamEvent) => void;
 
 export type OpencodeHandle = {
+	kind: "opencode";
 	agentSessionId: string;
 	client: OpencodeClient;
 	listeners: Set<Listener>;
@@ -138,6 +139,7 @@ export async function startOpencode(
 	});
 
 	return {
+		kind: "opencode",
 		agentSessionId: sessionId,
 		client,
 		listeners,
@@ -224,14 +226,14 @@ async function runEventLoop(
 	};
 	const stream = result.stream;
 	const seenMessageStarts = new Set<string>();
-	const seenTextMessages = new Set<string>();
+	const lastTextEmitted = new Map<string, string>();
 	for await (const ev of stream) {
 		if (!ev || typeof ev !== "object") continue;
 		const normalized = normalizeEvent(
 			ev,
 			sessionId,
 			seenMessageStarts,
-			seenTextMessages,
+			lastTextEmitted,
 		);
 		if (!normalized) continue;
 		for (const listener of listeners) {
@@ -249,7 +251,7 @@ function normalizeEvent(
 	ev: OEvent,
 	targetSessionId: string,
 	seenMessageStarts: Set<string>,
-	seenTextMessages: Set<string>,
+	lastTextEmitted: Map<string, string>,
 ): AgentStreamEvent | null {
 	switch (ev.type) {
 		case "message.updated": {
@@ -271,7 +273,7 @@ function normalizeEvent(
 			return normalizePartUpdate(
 				part,
 				ev.properties.delta as string | undefined,
-				seenTextMessages,
+				lastTextEmitted,
 			);
 		}
 		case "session.status": {
@@ -304,25 +306,26 @@ function normalizeEvent(
 function normalizePartUpdate(
 	part: OPart,
 	delta: string | undefined,
-	seenTextMessages: Set<string>,
+	lastTextEmitted: Map<string, string>,
 ): AgentStreamEvent | null {
 	if (part.type === "text") {
-		// Streaming text deltas take priority — they let the UI render the
-		// model's text token-by-token as it arrives.
+		// Prefer explicit deltas (opencode streaming path).
 		if (typeof delta === "string" && delta.length > 0) {
+			const prev = lastTextEmitted.get(part.messageID) ?? "";
+			lastTextEmitted.set(part.messageID, prev + delta);
 			return { type: "token", messageId: part.messageID, chunk: delta };
 		}
-		// Opencode sometimes sends a part update with the FULL text and no
-		// delta (e.g. for short non-streamed responses, or the user's echoed
-		// prompt). Emit it once per messageId so the UI receives the text.
+		// Opencode sometimes sends cumulative full text without deltas.
+		// Diff against the last emitted text to emit only the new suffix,
+		// handling both cumulative and static fallback cases.
 		const text = (part as { text?: string }).text ?? "";
-		if (
-			typeof text === "string" &&
-			text.length > 0 &&
-			!seenTextMessages.has(part.messageID)
-		) {
-			seenTextMessages.add(part.messageID);
-			return { type: "token", messageId: part.messageID, chunk: text };
+		if (text.length > 0) {
+			const prev = lastTextEmitted.get(part.messageID) ?? "";
+			const chunk = text.slice(prev.length);
+			if (chunk) {
+				lastTextEmitted.set(part.messageID, text);
+				return { type: "token", messageId: part.messageID, chunk };
+			}
 		}
 		return null;
 	}

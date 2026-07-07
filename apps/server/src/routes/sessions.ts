@@ -1,12 +1,14 @@
-import type { Message, SessionView } from "@dilna/shared";
+import type { AgentType, Message, SessionView } from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { sessionManager } from "../sessions/manager";
 
+const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["opencode", "claude"];
+
 type ListResponse = { sessions: SessionView[] };
 type OneResponse = { session: SessionView };
-type CreateBody = { repoId: string };
+type CreateBody = { repoId: string; agentType?: AgentType };
 type SendBody = { text: string };
 
 export const sessionsRoute = new Hono();
@@ -34,8 +36,13 @@ sessionsRoute.post("/", async (c) => {
 	if (!body?.repoId) {
 		throw new HTTPException(400, { message: "repoId is required" });
 	}
+	if (body.agentType && !CREATABLE_AGENT_TYPES.includes(body.agentType)) {
+		throw new HTTPException(400, {
+			message: `unsupported agentType: ${body.agentType}`,
+		});
+	}
 	try {
-		const session = await sessionManager.create(body.repoId);
+		const session = await sessionManager.create(body.repoId, body.agentType);
 		const res: OneResponse = { session };
 		return c.json(res, 201);
 	} catch (err) {

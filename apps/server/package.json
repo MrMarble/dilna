@@ -14,6 +14,7 @@
 		"db:migrate": "tsx src/db/migrate.ts"
 	},
 	"dependencies": {
+		"@anthropic-ai/claude-agent-sdk": "latest",
 		"@dilna/shared": "workspace:*",
 		"@opencode-ai/sdk": "latest",
 		"better-sqlite3": "latest",

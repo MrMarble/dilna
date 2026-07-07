@@ -2,6 +2,11 @@ import { execFile } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+	getSessionInfo,
+	getSessionMessages,
+	type SessionMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import type {
 	AgentStreamEvent,
 	AgentType,
@@ -12,6 +17,7 @@ import type {
 } from "@dilna/shared";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { type ClaudeHandle, chatClaude, startClaude } from "../agents/claude";
 import {
 	chatOpencode,
 	type OpencodeHandle,
@@ -109,10 +115,115 @@ function opencodePartToDilna(
 	return null;
 }
 
+type ClaudeContentBlock = Record<string, unknown> & { type?: string };
+
+/**
+ * Extract the plain-text portion of a Claude message-param `content` field,
+ * which may be a bare string or an array of content blocks.
+ */
+function claudeContentToText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return (content as ClaudeContentBlock[])
+			.filter((b) => b.type === "text")
+			.map((b) => (b.text as string) ?? "")
+			.join("");
+	}
+	return "";
+}
+
+/**
+ * Convert Claude Agent SDK transcript entries (from `getSessionMessages`)
+ * into dilna normalized {@link Message} rows. Tool results arrive as
+ * separate synthetic user-role transcript entries; they're merged back into
+ * the assistant message's tool_call part (matching opencode's merged
+ * pending/completed tool state) rather than persisted as their own row.
+ * Real (non-tool-result) user entries are still persisted as text messages.
+ *
+ * Claude's transcript entries carry no timestamp, so createdAt is
+ * synthesized as `now + index` to preserve transcript order across a batch.
+ */
+function claudeMessagesToDilna(
+	sessionId: string,
+	raw: SessionMessage[],
+): Message[] {
+	const toolResults = new Map<string, { output: string; error?: string }>();
+	for (const entry of raw) {
+		if (entry.type !== "user") continue;
+		const content = (entry.message as { content?: unknown })?.content;
+		const blocks = Array.isArray(content)
+			? (content as ClaudeContentBlock[])
+			: [];
+		for (const block of blocks) {
+			if (block.type !== "tool_result") continue;
+			const callId = block.tool_use_id as string;
+			const isError = block.is_error === true;
+			const output = claudeContentToText(block.content);
+			toolResults.set(callId, { output, error: isError ? output : undefined });
+		}
+	}
+
+	const baseCreatedAt = Math.floor(Date.now() / 1000);
+	const messages: Message[] = [];
+	raw.forEach((entry, index) => {
+		const createdAt = baseCreatedAt + index;
+		const content = (entry.message as { content?: unknown })?.content;
+		const blocks = Array.isArray(content)
+			? (content as ClaudeContentBlock[])
+			: [];
+
+		if (entry.type === "assistant") {
+			const parts: MessagePart[] = [];
+			for (const block of blocks) {
+				if (block.type === "text") {
+					const text = (block.text as string) ?? "";
+					if (text) parts.push({ type: "text", text });
+				} else if (block.type === "tool_use") {
+					const callId = block.id as string;
+					const result = toolResults.get(callId);
+					parts.push({
+						type: "tool_call",
+						callId,
+						tool: (block.name as string) ?? "unknown",
+						input: block.input ?? {},
+						output: result?.output ?? "",
+						error: result?.error,
+					});
+				}
+			}
+			if (parts.length > 0) {
+				messages.push({
+					id: entry.uuid,
+					sessionId,
+					role: "assistant",
+					parts,
+					createdAt,
+				});
+			}
+		} else if (entry.type === "user") {
+			// Synthetic tool-result echoes are merged above; only persist
+			// genuine user-authored turns.
+			const isSynthetic = blocks.some((b) => b.type === "tool_result");
+			if (isSynthetic) return;
+			const text = claudeContentToText(content);
+			if (text) {
+				messages.push({
+					id: entry.uuid,
+					sessionId,
+					role: "user",
+					parts: [{ type: "text", text }],
+					createdAt,
+				});
+			}
+		}
+	});
+	return messages;
+}
+
 type Listener = (event: AgentStreamEvent) => void;
 
 type ActiveAgent = {
-	handle: OpencodeHandle;
+	handle: OpencodeHandle | ClaudeHandle;
 	chatInProgress: boolean;
 	idleTimer: NodeJS.Timeout | null;
 };
@@ -151,7 +262,13 @@ class SessionManager {
 		return s ? toView(s) : null;
 	}
 
-	async create(repoId: string): Promise<SessionView> {
+	async create(
+		repoId: string,
+		agentType: AgentType = "opencode",
+	): Promise<SessionView> {
+		if (agentType === "openai") {
+			throw new Error("openai agent backend is not implemented yet");
+		}
 		const repo = await repoManager.get(repoId);
 		if (!repo) throw new Error("repo not found");
 
@@ -191,7 +308,7 @@ class SessionManager {
 			worktreePath,
 			worktreeDirName,
 			branchName,
-			agentType: "opencode",
+			agentType,
 			agentSessionId: null,
 			title: "New session",
 			status: "idle",
@@ -360,15 +477,19 @@ class SessionManager {
 		active.handle.listeners.add(crashHandler);
 
 		try {
-			await chatOpencode(handle, { message: text, onEvent });
+			if (handle.kind === "claude") {
+				await chatClaude(handle, { message: text, onEvent });
+			} else {
+				await chatOpencode(handle, { message: text, onEvent });
+			}
 		} finally {
 			active.handle.listeners.delete(crashHandler);
 			active.chatInProgress = false;
 
-			// Persist everything we don't already have from opencode.
-			await this.persistMessagesFromOpencode(id, handle);
+			// Persist everything we don't already have from the agent backend.
+			await this.persistMessagesFromAgent(id, handle);
 
-			// Best-effort: if opencode auto-generated a title, sync it.
+			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
 
 			await this.setStatus(id, "idle");
@@ -377,14 +498,39 @@ class SessionManager {
 	}
 
 	/**
-	 * Fetch the current message list from the opencode session and persist
-	 * any messages dilna doesn't already have. Maps each part into dilna's
-	 * normalized MessagePart shape.
+	 * Fetch the current message list from the agent backend and persist any
+	 * messages dilna doesn't already have. Maps each backend's native
+	 * transcript shape into dilna's normalized MessagePart shape.
 	 */
-	private async persistMessagesFromOpencode(
+	private async persistMessagesFromAgent(
 		sessionId: string,
-		handle: OpencodeHandle,
+		handle: OpencodeHandle | ClaudeHandle,
 	): Promise<void> {
+		const existing = new Set(
+			(await this.getMessages(sessionId)).map((m) => m.id),
+		);
+
+		if (handle.kind === "claude") {
+			if (!handle.agentSessionId) return;
+			let raw: SessionMessage[];
+			try {
+				raw = await getSessionMessages(handle.agentSessionId, {
+					dir: handle.worktreePath,
+				});
+			} catch (err) {
+				console.error(
+					"[sessions] failed to fetch messages from claude agent:",
+					err,
+				);
+				return;
+			}
+			for (const msg of claudeMessagesToDilna(sessionId, raw)) {
+				if (existing.has(msg.id)) continue;
+				this.persistMessage(sessionId, msg);
+			}
+			return;
+		}
+
 		let msgs: unknown[];
 		try {
 			const res = await handle.client.session.messages({
@@ -397,9 +543,6 @@ class SessionManager {
 			return;
 		}
 
-		const existing = new Set(
-			(await this.getMessages(sessionId)).map((m) => m.id),
-		);
 		for (const entry of msgs) {
 			const e = entry as {
 				info: {
@@ -459,13 +602,20 @@ class SessionManager {
 		await this.setStatus(id, "starting");
 		this.broadcast(id, { type: "session_status", status: "starting" });
 
-		const handle = await startOpencode({
+		if (session.agentType === "openai") {
+			throw new Error("openai agent backend is not implemented yet");
+		}
+		const startOpts = {
 			worktreePath: session.worktreePath,
 			existingAgentSessionId: session.agentSessionId ?? undefined,
-		});
+		};
+		const handle: OpencodeHandle | ClaudeHandle =
+			session.agentType === "claude"
+				? await startClaude(startOpts)
+				: await startOpencode(startOpts);
 
-		// Persist the opencode session id so a later resume reconnects to the
-		// same opencode session (cold-resume path per ADR-0003).
+		// Persist the agent's own session id so a later resume reconnects to
+		// the same backend session (cold-resume path per ADR-0003).
 		const db = getDb();
 		db.update(sessionsTable)
 			.set({ agentSessionId: handle.agentSessionId })
@@ -541,9 +691,19 @@ class SessionManager {
 
 	private async maybeSyncTitle(
 		id: string,
-		handle: OpencodeHandle,
+		handle: OpencodeHandle | ClaudeHandle,
 	): Promise<void> {
 		try {
+			if (handle.kind === "claude") {
+				if (!handle.agentSessionId) return;
+				const info = await getSessionInfo(handle.agentSessionId, {
+					dir: handle.worktreePath,
+				});
+				if (info?.summary) {
+					await this.setTitle(id, info.summary);
+				}
+				return;
+			}
 			const res = await handle.client.session.get({
 				path: { id: handle.agentSessionId },
 				throwOnError: true,
