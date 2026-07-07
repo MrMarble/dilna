@@ -2,8 +2,10 @@ import type { AgentStreamEvent } from "@dilna/shared";
 
 export type AgentHandle = {
 	agentSessionId: string;
+	/** Hard kill of the underlying process. Resolves when the process has exited. */
 	stop: () => Promise<void>;
-	isIdle: () => boolean;
+	/** True if the underlying process is still alive. */
+	isAlive: () => boolean;
 };
 
 export type AgentStartOptions = {
@@ -21,7 +23,7 @@ export interface Agent {
 	start(opts: AgentStartOptions): Promise<AgentHandle>;
 	chat(handle: AgentHandle, opts: AgentChatOptions): Promise<void>;
 	stop(handle: AgentHandle): Promise<void>;
-	isIdle(handle: AgentHandle): boolean;
+	isAlive(handle: AgentHandle): boolean;
 }
 
 export type AgentFactory = (worktreePath: string) => Agent;

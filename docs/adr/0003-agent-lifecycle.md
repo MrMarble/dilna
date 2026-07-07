@@ -10,7 +10,7 @@ The user wants agents to run only while actively in use: spawn on first interact
 
 ## Decision
 
-**Process model:** one `opencode serve` child process per active session, started with the worktree's path as `project` positional and a dynamically-allocated port. dilna's SessionManager owns spawn/supervise/kill for these processes.
+**Process model:** one `opencode serve` child process per active session, started with the worktree's path as the spawn's `cwd` (opencode's global `[project]` positional isn't valid on the `serve` subcommand) and a dynamically-allocated port. dilna's SessionManager owns spawn/supervise/kill for these processes.
 
 **Lifecycle:**
 - Sessions start **idle** — no agent process resident.
@@ -19,7 +19,7 @@ The user wants agents to run only while actively in use: spawn on first interact
 - If the agent is mid-work (streaming tokens, running tool calls, executing subagents) it is **not idle** and is never killed, regardless of browser connection state. The browser tab closing does not stop a working agent.
 - A **stop button** in the UI is the hard kill-switch — instant terminate the spawn, even mid-work.
 
-**Permissions:** spawn with `--auto` (auto-approve non-denied permissions) so the agent never blocks waiting for tool-call approval. Solo-tenant + the agent runs in an isolated docker container with no host access, so the blast radius is the worktree only. The stop button is the manual override.
+**Permissions:** pass `auto-approve` via the `OPENCODE_CONFIG_CONTENT='{"permission":"allow"}'` env var (the `--auto` flag is only valid on the default TUI command, not the `serve` subcommand — and the env var persists across opencode versions more reliably than per-subcommand flag handling). The agent never blocks waiting for tool-call approval. Solo-tenant + the agent runs in an isolated docker container with no host access, so the blast radius is the worktree only. The stop button is the manual override.
 
 ## Why one server per worktree (and not a shared server)
 

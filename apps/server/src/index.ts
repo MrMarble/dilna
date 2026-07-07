@@ -6,6 +6,7 @@ import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
 import { streamRoute } from "./routes/stream";
+import { sessionManager } from "./sessions/manager";
 
 const app = new Hono();
 app.use(logger());
@@ -26,16 +27,21 @@ app.get("/api/health", (c) =>
 );
 
 const port = Number(process.env.PORT ?? 3001);
-serve({ fetch: app.fetch, port }, (info) => {
+serve({ fetch: app.fetch, port }, async (info) => {
 	console.log(`dilna server listening on http://localhost:${info.port}`);
 	getDb();
+	// On boot, flip any non-idle sessions back to idle — their agent
+	// processes died when the previous server exited (ADR-0003).
+	await sessionManager.resetAllToIdle();
 });
 
-process.on("SIGINT", () => {
+async function shutdown() {
+	// Best-effort cleanup: stop all running agents, then close the DB.
+	// SessionManager doesn't expose a list-active method yet, so the
+	// per-session stop happens lazily; for MVP we just close the DB.
 	closeDb();
 	process.exit(0);
-});
-process.on("SIGTERM", () => {
-	closeDb();
-	process.exit(0);
-});
+}
+
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());

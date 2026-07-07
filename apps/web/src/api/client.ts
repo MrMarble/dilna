@@ -1,6 +1,11 @@
-import type { Repo, SessionView } from "@dilna/shared";
+import type {
+	AgentStreamEvent,
+	Message,
+	Repo,
+	SessionView,
+} from "@dilna/shared";
 
-export type { Repo, SessionView };
+export type { AgentStreamEvent, Message, Repo, SessionView };
 
 export type CloneRepoInput = {
 	url: string;
@@ -74,5 +79,53 @@ export const api = {
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}`, {
 				method: "DELETE",
 			}),
+		messages: (id: string) =>
+			request<{ messages: Message[] }>(`/api/sessions/${id}/messages`),
+		send: (id: string, text: string) =>
+			request<{ ok: boolean }>(`/api/sessions/${id}/messages`, {
+				method: "POST",
+				body: JSON.stringify({ text }),
+			}),
+		stop: (id: string) =>
+			request<{ ok: boolean; id: string }>(`/api/sessions/${id}/stop`, {
+				method: "POST",
+			}),
+		/** Subscribe to a session's live SSE stream. Returns an unsubscribe. */
+		stream: (
+			id: string,
+			onEvent: (event: AgentStreamEvent) => void,
+			onReplayMessage?: (message: Message) => void,
+		): (() => void) => {
+			const es = new EventSource(`/api/sessions/${id}/stream`);
+			es.addEventListener("message_replay", (e: MessageEvent) => {
+				try {
+					const msg = JSON.parse(e.data as string) as Message;
+					onReplayMessage?.(msg);
+				} catch {
+					// ignore malformed payloads
+				}
+			});
+			const eventTypes = [
+				"session_status",
+				"message_start",
+				"token",
+				"tool_call_start",
+				"tool_call_end",
+				"message_end",
+				"error",
+				"agent_crashed",
+			];
+			for (const t of eventTypes) {
+				es.addEventListener(t, (e: MessageEvent) => {
+					try {
+						const ev = JSON.parse(e.data as string) as AgentStreamEvent;
+						onEvent(ev);
+					} catch {
+						// ignore malformed payloads
+					}
+				});
+			}
+			return () => es.close();
+		},
 	},
 };

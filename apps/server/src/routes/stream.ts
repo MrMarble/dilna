@@ -1,32 +1,6 @@
 import { Hono } from "hono";
-import { stream } from "hono/streaming";
 
+// The per-session SSE stream now lives on /api/sessions/:id/stream (in
+// sessions.ts). This module is reserved for a future cross-session
+// "sidebar" SSE broadcast (per Q17) — empty for now.
 export const streamRoute = new Hono();
-
-streamRoute.get("/sessions/:id", (c) =>
-	stream(c, async (s) => {
-		s.write("event: session_status\ndata: idle\n\n");
-		await new Promise<void>((resolve) => {
-			const t = setInterval(() => resolve(), 60_000);
-			c.req.raw.signal.addEventListener("abort", () => {
-				clearInterval(t);
-				resolve();
-			});
-		});
-		await s.close();
-	}),
-);
-
-streamRoute.get("/sidebar", (c) =>
-	stream(c, async (s) => {
-		s.write("event: hello\ndata: ok\n\n");
-		await new Promise<void>((resolve) => {
-			const t = setInterval(() => resolve(), 60_000);
-			c.req.raw.signal.addEventListener("abort", () => {
-				clearInterval(t);
-				resolve();
-			});
-		});
-		await s.close();
-	}),
-);

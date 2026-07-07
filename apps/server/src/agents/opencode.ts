@@ -1,76 +1,366 @@
 import { spawn } from "node:child_process";
 import net from "node:net";
 import { setTimeout as setTimeoutAsync } from "node:timers/promises";
-import { createOpencodeClient } from "@opencode-ai/sdk";
-import type {
-	Agent,
-	AgentChatOptions,
-	AgentHandle,
-	AgentStartOptions,
-} from "./types";
+import type { AgentStreamEvent } from "@dilna/shared";
+import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk";
+import type { AgentChatOptions, AgentStartOptions } from "./types";
 
-export class OpencodeAgent implements Agent {
-	async start(opts: AgentStartOptions): Promise<AgentHandle> {
-		const port = await pickFreePort();
-		const child = spawn(
-			"opencode",
-			[
-				"serve",
-				"--port",
-				String(port),
-				"--hostname",
-				"127.0.0.1",
-				"--auto",
-				opts.worktreePath,
-			],
-			{
-				stdio: ["ignore", "pipe", "pipe"],
-				cwd: opts.worktreePath,
-				env: process.env,
+// Opencode's SDK types are large and unstable in shape; we import only the
+// ones we use here and treat the rest as opaque `Record<string, unknown>`.
+type OEvent = { type: string; properties: Record<string, unknown> };
+type OPart = {
+	id: string;
+	sessionID: string;
+	messageID: string;
+	type: string;
+	[key: string]: unknown;
+};
+type OToolPart = OPart & { callID: string; tool: string; state: ToolState };
+type ToolState =
+	| { status: "pending" | "running"; input: Record<string, unknown> }
+	| { status: "completed"; output: string }
+	| { status: "error"; error: string };
+type OMessage = { id: string; sessionID: string; role: "user" | "assistant" };
+
+export type Listener = (event: AgentStreamEvent) => void;
+
+export type OpencodeHandle = {
+	agentSessionId: string;
+	client: OpencodeClient;
+	listeners: Set<Listener>;
+	stop: () => Promise<void>;
+	isAlive: () => boolean;
+	stderrTail: string[];
+};
+
+/**
+ * Spawn an `opencode serve` process for the given worktree, create or
+ * resume an opencode session, and start a persistent event subscription
+ * that fans events out to registered listeners.
+ *
+ * Per ADR-0003: one `opencode serve` process per active session, with
+ * --auto to allow the agent to run autonomously without per-tool approvals.
+ */
+export async function startOpencode(
+	opts: AgentStartOptions,
+): Promise<OpencodeHandle> {
+	const port = await pickFreePort();
+	const child = spawn(
+		"opencode",
+		["serve", "--port", String(port), "--hostname", "127.0.0.1"],
+		{
+			stdio: ["ignore", "pipe", "pipe"],
+			cwd: opts.worktreePath,
+			env: {
+				...process.env,
+				// Auto-approve all tool calls (replacement for `opencode --auto`,
+				// which isn't valid on the `serve` subcommand). Per ADR-0003 the
+				// agent runs in isolation inside dilna so this is safe.
+				OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: "allow" }),
 			},
-		);
-		const stderrTail: string[] = [];
-		child.stderr?.on("data", (b: Buffer) => {
-			const line = b.toString().trim();
-			if (line) stderrTail.push(line);
-			if (stderrTail.length > 50) stderrTail.shift();
-		});
-		const url = await waitForReady(child, 10_000);
-		const client = createOpencodeClient({ baseUrl: url, throwOnError: true });
-		let agentSessionId = opts.existingAgentSessionId;
-		if (!agentSessionId) {
-			const result = await client.session.create({ throwOnError: true });
-			agentSessionId = result.data.id;
-		}
-		const sessionId = agentSessionId;
-		let killed = false;
-		const kill = () =>
-			new Promise<void>((resolve) => {
-				if (killed) return resolve();
-				killed = true;
-				child.once("exit", () => resolve());
-				child.kill("SIGTERM");
+		},
+	);
+
+	const stderrTail: string[] = [];
+	child.stderr?.on("data", (b: Buffer) => {
+		const line = b.toString().trim();
+		if (!line) return;
+		stderrTail.push(line);
+		if (stderrTail.length > 50) stderrTail.shift();
+	});
+
+	const url = await waitForReady(child, 15_000);
+	const client = createOpencodeClient({ baseUrl: url, throwOnError: true });
+
+	let agentSessionId = opts.existingAgentSessionId ?? null;
+	if (!agentSessionId) {
+		const res = await client.session.create({ throwOnError: true });
+		agentSessionId = res.data.id;
+	}
+	const sessionId = agentSessionId;
+
+	const listeners = new Set<Listener>();
+	const subscriptionPromise = runEventLoop(client, listeners, sessionId).catch(
+		(err) => {
+			if (
+				err instanceof Error &&
+				!err.message.includes("aborted") &&
+				!err.message.includes("ECONNREFUSED")
+			) {
+				console.error(`[opencode-agent] event loop error: ${err.message}`);
+			}
+		},
+	);
+
+	let killed = false;
+	const stop = async () => {
+		if (killed) return;
+		killed = true;
+		listeners.clear();
+		if (!child.killed) {
+			child.kill("SIGTERM");
+			await Promise.race([
+				once(child, "exit"),
 				setTimeoutAsync(3_000).then(() => {
-					if (!child.killed) child.kill("SIGKILL");
-				});
-			});
-		return {
-			agentSessionId: sessionId,
-			stop: kill,
-			isIdle: () => !child.killed,
+					try {
+						if (!child.killed) child.kill("SIGKILL");
+					} catch {
+						// already dead
+					}
+					return once(child, "exit");
+				}),
+			]);
+		}
+		await subscriptionPromise.catch(() => {});
+	};
+
+	const isAlive = () =>
+		!killed && child.exitCode === null && child.signalCode === null;
+
+	// Crash detection: if the child exits unexpectedly, notify listeners
+	// with an agent_crashed event so SessionManager can mark the session
+	// accordingly.
+	child.once("exit", (code) => {
+		if (killed) return;
+		const crashed: AgentStreamEvent = {
+			type: "agent_crashed",
+			exitCode: code ?? -1,
+			stderrTail,
 		};
+		for (const listener of listeners) {
+			try {
+				listener(crashed);
+			} catch {
+				// listener errors during crash fan-out are non-fatal
+			}
+		}
+		listeners.clear();
+	});
+
+	return {
+		agentSessionId: sessionId,
+		client,
+		listeners,
+		stop,
+		isAlive,
+		stderrTail,
+	};
+}
+
+/**
+ * Send a single user message to the agent and resolve when the session
+ * goes idle (i.e. the agent has finished responding). Events that arrive
+ * via the persistent subscription are normalized to dilna's
+ * {@link AgentStreamEvent} union and forwarded to {@link opts.onEvent}.
+ */
+export async function chatOpencode(
+	handle: OpencodeHandle,
+	opts: AgentChatOptions,
+): Promise<void> {
+	const { client, listeners, agentSessionId } = handle;
+	const { message, onEvent, abortSignal } = opts;
+
+	const chatListener: Listener = (ev) => onEvent(ev);
+	listeners.add(chatListener);
+
+	let resolveChat!: () => void;
+	let rejectChat!: (err: Error) => void;
+	const chatDone = new Promise<void>((res, rej) => {
+		resolveChat = res;
+		rejectChat = rej;
+	});
+
+	const completionListener: Listener = (ev) => {
+		if (ev.type === "session_status" && ev.status === "idle") {
+			resolveChat();
+		} else if (ev.type === "agent_crashed") {
+			rejectChat(
+				new Error(
+					`opencode process exited (code ${ev.exitCode})\n${ev.stderrTail.slice(-5).join("\n")}`,
+				),
+			);
+		}
+	};
+	listeners.add(completionListener);
+
+	const abortHandler = async () => {
+		try {
+			await client.session.abort({ path: { id: agentSessionId } });
+		} catch {
+			// ignore abort errors
+		}
+		resolveChat();
+	};
+	if (abortSignal) {
+		if (abortSignal.aborted) {
+			await abortHandler();
+			return;
+		}
+		abortSignal.addEventListener("abort", abortHandler, { once: true });
 	}
 
-	async chat(_handle: AgentHandle, _opts: AgentChatOptions): Promise<void> {
-		throw new Error("TODO: implement opencode chat streaming");
+	try {
+		await client.session.promptAsync({
+			path: { id: agentSessionId },
+			body: { parts: [{ type: "text", text: message }] },
+			throwOnError: true,
+		});
+		await chatDone;
+	} finally {
+		listeners.delete(chatListener);
+		listeners.delete(completionListener);
+		if (abortSignal) {
+			abortSignal.removeEventListener("abort", abortHandler);
+		}
 	}
-
-	async stop(handle: AgentHandle): Promise<void> {
-		await handle.stop();
+}
+async function runEventLoop(
+	client: OpencodeClient,
+	listeners: Set<Listener>,
+	sessionId: string,
+): Promise<void> {
+	const result = (await client.event.subscribe()) as {
+		stream: AsyncIterable<OEvent>;
+	};
+	const stream = result.stream;
+	const seenMessageStarts = new Set<string>();
+	const seenTextMessages = new Set<string>();
+	for await (const ev of stream) {
+		if (!ev || typeof ev !== "object") continue;
+		const normalized = normalizeEvent(
+			ev,
+			sessionId,
+			seenMessageStarts,
+			seenTextMessages,
+		);
+		if (!normalized) continue;
+		for (const listener of listeners) {
+			try {
+				listener(normalized);
+			} catch {
+				// listener errors are non-fatal
+			}
+		}
+		if (normalized.type === "agent_crashed") return;
 	}
+}
 
-	isIdle(handle: AgentHandle): boolean {
-		return handle.isIdle();
+function normalizeEvent(
+	ev: OEvent,
+	targetSessionId: string,
+	seenMessageStarts: Set<string>,
+	seenTextMessages: Set<string>,
+): AgentStreamEvent | null {
+	switch (ev.type) {
+		case "message.updated": {
+			const info = ev.properties.info as OMessage;
+			if (info?.sessionID !== targetSessionId) return null;
+			// Only emit message_start once per messageId — opencode fires
+			// message.updated many times for the same message as it streams.
+			if (seenMessageStarts.has(info.id)) return null;
+			seenMessageStarts.add(info.id);
+			return {
+				type: "message_start",
+				messageId: info.id,
+				role: info.role,
+			};
+		}
+		case "message.part.updated": {
+			const part = ev.properties.part as OPart;
+			if (!part || part.sessionID !== targetSessionId) return null;
+			return normalizePartUpdate(
+				part,
+				ev.properties.delta as string | undefined,
+				seenTextMessages,
+			);
+		}
+		case "session.status": {
+			const sessionID = ev.properties.sessionID as string;
+			if (sessionID !== targetSessionId) return null;
+			const status = ev.properties.status as { type: string };
+			return {
+				type: "session_status",
+				status: status?.type === "idle" ? "idle" : "working",
+			};
+		}
+		case "session.idle": {
+			const sessionID = ev.properties.sessionID as string;
+			if (sessionID !== targetSessionId) return null;
+			return { type: "session_status", status: "idle" };
+		}
+		case "session.error": {
+			const sessionID = ev.properties.sessionID as string | undefined;
+			if (sessionID && sessionID !== targetSessionId) return null;
+			return {
+				type: "error",
+				message: (ev.properties.error as string) ?? "opencode session error",
+			};
+		}
+		default:
+			return null;
+	}
+}
+
+function normalizePartUpdate(
+	part: OPart,
+	delta: string | undefined,
+	seenTextMessages: Set<string>,
+): AgentStreamEvent | null {
+	if (part.type === "text") {
+		// Streaming text deltas take priority — they let the UI render the
+		// model's text token-by-token as it arrives.
+		if (typeof delta === "string" && delta.length > 0) {
+			return { type: "token", messageId: part.messageID, chunk: delta };
+		}
+		// Opencode sometimes sends a part update with the FULL text and no
+		// delta (e.g. for short non-streamed responses, or the user's echoed
+		// prompt). Emit it once per messageId so the UI receives the text.
+		const text = (part as { text?: string }).text ?? "";
+		if (
+			typeof text === "string" &&
+			text.length > 0 &&
+			!seenTextMessages.has(part.messageID)
+		) {
+			seenTextMessages.add(part.messageID);
+			return { type: "token", messageId: part.messageID, chunk: text };
+		}
+		return null;
+	}
+	if (part.type === "tool") {
+		return normalizeToolPart(part as OToolPart);
+	}
+	return null;
+}
+
+function normalizeToolPart(part: OToolPart): AgentStreamEvent | null {
+	const state = part.state;
+	switch (state.status) {
+		case "pending":
+		case "running":
+			return {
+				type: "tool_call_start",
+				messageId: part.messageID,
+				callId: part.callID,
+				tool: part.tool,
+				input: state.input,
+			};
+		case "completed":
+			return {
+				type: "tool_call_end",
+				messageId: part.messageID,
+				callId: part.callID,
+				output: state.output,
+			};
+		case "error":
+			return {
+				type: "tool_call_end",
+				messageId: part.messageID,
+				callId: part.callID,
+				output: state.error,
+				error: state.error,
+			};
+		default:
+			return null;
 	}
 }
 
@@ -94,17 +384,15 @@ async function waitForReady(
 ): Promise<string> {
 	return await new Promise<string>((resolve, reject) => {
 		let output = "";
-		const start = Date.now();
-		const onTimeout = () => {
+		const timer = setTimeout(() => {
 			cleanup();
 			reject(
-				new Error(`opencode serve did not become ready within ${timeoutMs}ms`),
+				new Error(
+					`opencode serve did not become ready within ${timeoutMs}ms.\n${output}`,
+				),
 			);
-		};
-		const timer = setTimeout(onTimeout, timeoutMs - (Date.now() - start));
-		const cleanup = () => {
-			clearTimeout(timer);
-		};
+		}, timeoutMs);
+		const cleanup = () => clearTimeout(timer);
 		child.stdout?.on("data", (chunk: Buffer) => {
 			output += chunk.toString();
 			for (const line of output.split("\n")) {
@@ -118,9 +406,16 @@ async function waitForReady(
 				}
 			}
 		});
-		child.on("exit", (code: number | null) => {
+		child.on("exit", (code) => {
 			cleanup();
-			reject(new Error(`opencode serve exited with code ${code}`));
+			reject(new Error(`opencode serve exited with code ${code}.\n${output}`));
 		});
 	});
+}
+
+function once(
+	emitter: { once: (ev: string, cb: () => void) => void },
+	event: string,
+) {
+	return new Promise<void>((resolve) => emitter.once(event, () => resolve()));
 }

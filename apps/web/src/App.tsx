@@ -1,6 +1,7 @@
 import { FolderGit2, MessageSquare } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
+import { ChatShell } from "@/components/ChatShell";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { Sidebar } from "@/components/Sidebar";
 
@@ -110,15 +111,20 @@ export function App() {
 							<span className="text-muted-foreground">dilna</span>
 						)}
 					</header>
-					<div className="flex flex-1 items-center justify-center p-6">
-						{selectedSession ? (
-							<ChatPlaceholder />
-						) : selectedRepo ? (
-							<RepoEmpty repo={selectedRepo} />
-						) : (
-							<EmptyState />
-						)}
-					</div>
+					{selectedSession ? (
+						<ChatShell
+							sessionId={selectedSession.id}
+							session={selectedSession}
+						/>
+					) : (
+						<div className="flex flex-1 items-center justify-center p-6">
+							{selectedRepo ? (
+								<RepoEmpty repo={selectedRepo} />
+							) : (
+								<EmptyState />
+							)}
+						</div>
+					)}
 				</main>
 			</div>
 			<NewRepoDialog
@@ -154,18 +160,6 @@ function RepoEmpty({ repo }: { repo: Repo }) {
 			</p>
 			<p className="mt-4 text-sm text-muted-foreground">
 				Click + on Sessions to start a new session for this repo.
-			</p>
-		</div>
-	);
-}
-
-function ChatPlaceholder() {
-	return (
-		<div className="text-center">
-			<MessageSquare className="mx-auto mb-3 size-10 text-muted-foreground" />
-			<p className="text-sm font-medium">Chat coming soon</p>
-			<p className="mt-1 text-xs text-muted-foreground">
-				Agent SSE streaming + opencode serve wiring is the next milestone.
 			</p>
 		</div>
 	);

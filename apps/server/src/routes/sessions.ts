@@ -1,11 +1,13 @@
-import type { SessionView } from "@dilna/shared";
+import type { Message, SessionView } from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { streamSSE } from "hono/streaming";
 import { sessionManager } from "../sessions/manager";
 
 type ListResponse = { sessions: SessionView[] };
 type OneResponse = { session: SessionView };
 type CreateBody = { repoId: string };
+type SendBody = { text: string };
 
 export const sessionsRoute = new Hono();
 
@@ -46,4 +48,81 @@ sessionsRoute.delete("/:id", async (c) => {
 	const id = c.req.param("id");
 	await sessionManager.delete(id);
 	return c.json({ ok: true, id });
+});
+
+sessionsRoute.get("/:id/messages", async (c) => {
+	const id = c.req.param("id");
+	const messages = await sessionManager.getMessages(id);
+	const body: { messages: Message[] } = { messages };
+	return c.json(body);
+});
+
+sessionsRoute.post("/:id/messages", async (c) => {
+	const id = c.req.param("id");
+	const body = await c.req.json<SendBody>();
+	if (!body?.text) {
+		throw new HTTPException(400, { message: "text is required" });
+	}
+	// Fire the chat asynchronously. The HTTP response is sent immediately
+	// (202 Accepted) and the actual stream of events arrives on the SSE
+	// endpoint. This decouples the prompt from the long-lived stream so
+	// the chat can keep streaming even if this request times out.
+	sessionManager.sendMessage(id, body.text).catch((err) => {
+		console.error(`[sessions] sendMessage failed for ${id}:`, err);
+	});
+	return c.json({ ok: true }, 202);
+});
+
+sessionsRoute.post("/:id/stop", async (c) => {
+	const id = c.req.param("id");
+	await sessionManager.stopSession(id);
+	return c.json({ ok: true, id });
+});
+
+sessionsRoute.get("/:id/stream", (c) => {
+	const id = c.req.param("id");
+	return streamSSE(c, async (stream) => {
+		// 1. Replay cached messages so the UI can render history even if the
+		//    agent process is dead.
+		const messages = await sessionManager.getMessages(id);
+		for (const m of messages) {
+			await stream.writeSSE({
+				event: "message_replay",
+				data: JSON.stringify(m),
+			});
+		}
+
+		// 2. Subscribe to live events.
+		const queue: { event: string; data: string }[] = [];
+		let resolveFlush: (() => void) | null = null;
+		const unsubscribe = sessionManager.subscribe(id, (ev) => {
+			queue.push({ event: ev.type, data: JSON.stringify(ev) });
+			if (resolveFlush) {
+				resolveFlush();
+				resolveFlush = null;
+			}
+		});
+
+		// 3. Pump queue to the SSE stream until the client disconnects.
+		const abort = c.req.raw.signal;
+		try {
+			while (!abort.aborted) {
+				if (queue.length === 0) {
+					await new Promise<void>((resolve) => {
+						resolveFlush = resolve;
+						abort.addEventListener("abort", () => resolve(), { once: true });
+					});
+				}
+				while (queue.length > 0) {
+					const item = queue.shift();
+					if (item) {
+						await stream.writeSSE({ event: item.event, data: item.data });
+					}
+				}
+				await stream.sleep(0);
+			}
+		} finally {
+			unsubscribe();
+		}
+	});
 });
