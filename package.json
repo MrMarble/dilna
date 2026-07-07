@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "pnpm -r --parallel run dev",
-		"build": "pnpm -r --filter @dilna/shared build && pnpm -r --filter ./apps/* run build",
+		"build": "pnpm -r --filter \"./apps/*\" run build",
 		"typecheck": "pnpm -r run typecheck",
 		"test": "vitest run",
 		"test:watch": "vitest",

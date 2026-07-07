@@ -1,0 +1,25 @@
+services:
+  dilna:
+    build: .
+    ports:
+      - "${PORT:-3001}:3001"
+    environment:
+      # Claude backend auth (ADR-0005 host-passthrough, extended to the
+      # Claude Agent SDK): generate with `claude setup-token` on a machine
+      # with a Pro/Max subscription, then set it here (or in a .env file).
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Alternative to CLAUDE_CODE_OAUTH_TOKEN: a metered API key.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      # dilna's own state: cloned repos, worktrees, sqlite db.
+      - dilna-data:/data
+      # Git auth (ADR-0005): read-only, host-provided SSH config + keys.
+      - ${HOME}/.ssh:/root/.ssh:ro
+      # opencode config + auth/session data (ADR-0005). Config is read-only;
+      # the data dir is read-write because opencode writes its own sqlite
+      # db and session storage there.
+      - ${HOME}/.config/opencode:/root/.config/opencode:ro
+      - ${HOME}/.local/share/opencode:/root/.local/share/opencode
+
+volumes:
+  dilna-data:

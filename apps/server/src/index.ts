@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
@@ -25,6 +28,23 @@ app.route("/api/stream", streamRoute);
 app.get("/api/health", (c) =>
 	c.json({ ok: true, dataDir: getDataDir(), db: getDbPath() }),
 );
+
+// Serve the built web app in production single-container deployments (the
+// dev workflow serves it separately via Vite, so apps/web/dist won't exist
+// there and this block no-ops). SPA fallback: any non-API, non-file GET
+// falls through to index.html for client-side routing.
+const webDistDir =
+	process.env.DILNA_WEB_DIST ??
+	path.join(import.meta.dirname, "../../web/dist");
+if (existsSync(webDistDir)) {
+	app.use("*", serveStatic({ root: webDistDir }));
+	app.get("*", (c, next) => {
+		// Don't let unmatched /api/* paths fall back to index.html — they
+		// should 404, not silently return a 200 HTML page.
+		if (c.req.path.startsWith("/api/")) return next();
+		return serveStatic({ path: path.join(webDistDir, "index.html") })(c, next);
+	});
+}
 
 const port = Number(process.env.PORT ?? 3001);
 serve({ fetch: app.fetch, port }, async (info) => {
