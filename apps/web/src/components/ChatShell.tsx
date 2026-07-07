@@ -1,11 +1,18 @@
 import type {
-	AgentStreamEvent,
 	Message as ChatMessage,
 	MessagePart,
 	SessionView,
 } from "@dilna/shared";
-import { AlertCircle, LoaderCircle, Send, Square, Wrench } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+	AlertCircle,
+	ChevronDown,
+	ChevronRight,
+	LoaderCircle,
+	Send,
+	Square,
+	Wrench,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api/client";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
@@ -43,6 +50,9 @@ export function ChatShell({ sessionId, session }: Props) {
 	 * 'Thinking...' marker once content starts streaming. */
 	const [thinking, setThinking] = useState(false);
 
+	// Optimistic user message IDs whose first token should set (not append) text.
+	const optimisticIdsRef = useRef(new Set<string>());
+
 	const loadHistory = useCallback(async () => {
 		try {
 			const { messages } = await api.sessions.messages(sessionId);
@@ -71,118 +81,155 @@ export function ChatShell({ sessionId, session }: Props) {
 		setError(null);
 		setThinking(false);
 		setStatus(session.status);
+		// Fetch history once on mount; live events keep us up-to-date after that.
 		loadHistory();
-		const unsubscribe = api.sessions.stream(
-			sessionId,
-			(ev: AgentStreamEvent) => {
-				switch (ev.type) {
-					case "session_status":
-						setStatus(ev.status);
-						if (ev.status === "idle" || ev.status === "crashed") {
-							void loadHistory();
-							if (ev.status === "crashed") setThinking(false);
-						}
-						break;
-					case "message_start":
-						setLive((prev) => {
-							if (prev[ev.messageId]) return prev;
-							return {
-								...prev,
-								[ev.messageId]: {
+		const unsubscribe = api.sessions.stream(sessionId, (ev) => {
+			switch (ev.type) {
+				case "session_status":
+					setStatus(ev.status);
+					if (ev.status === "crashed") {
+						setThinking(false);
+					}
+					if (ev.status === "idle" || ev.status === "crashed") {
+						setLive((currentLive) => {
+							const entries = Object.entries(currentLive);
+							if (entries.length === 0) return currentLive;
+							const liveIds = new Set(entries.map(([k]) => k));
+							setMessages((prev) => {
+								const kept = prev.filter((m) => !liveIds.has(m.id));
+								const newMsgs = entries.map(([, m]) => {
+									const parts = [...m.parts];
+									if (m.text) parts.unshift({ type: "text", text: m.text });
+									return {
+										id: m.id,
+										sessionId,
+										role: m.role,
+										parts,
+										createdAt: Math.floor(Date.now() / 1000),
+									};
+								});
+								return [...kept, ...newMsgs];
+							});
+							return {};
+						});
+					}
+					break;
+				case "message_start":
+					setLive((prev) => {
+						if (prev[ev.messageId]) return prev;
+						const next = { ...prev };
+						for (const [key, entry] of Object.entries(next)) {
+							if (key.startsWith("temp-") && entry.role === "user") {
+								optimisticIdsRef.current.delete(key);
+								const text = entry.text;
+								delete next[key];
+								next[ev.messageId] = {
 									id: ev.messageId,
 									role: ev.role,
 									parts: [],
-									text: "",
-								},
-							};
-						});
-						break;
-					case "token":
-						// Deactivate the thinking throbber the moment the
-						// assistant produces any token (text or otherwise).
-						setThinking(false);
-						setLive((prev) => {
-							const m = prev[ev.messageId];
-							if (m) {
+									text,
+								};
+								optimisticIdsRef.current.add(ev.messageId);
+								return next;
+							}
+						}
+						next[ev.messageId] = {
+							id: ev.messageId,
+							role: ev.role,
+							parts: [],
+							text: "",
+						};
+						return next;
+					});
+					break;
+				case "token":
+					setThinking(false);
+					setLive((prev) => {
+						const m = prev[ev.messageId];
+						if (m) {
+							if (optimisticIdsRef.current.has(ev.messageId)) {
+								optimisticIdsRef.current.delete(ev.messageId);
 								return {
 									...prev,
-									[ev.messageId]: { ...m, text: m.text + ev.chunk },
+									[ev.messageId]: { ...m, text: ev.chunk },
 								};
 							}
 							return {
 								...prev,
-								[ev.messageId]: {
-									id: ev.messageId,
-									role: "assistant",
-									parts: [],
-									text: ev.chunk,
-								},
+								[ev.messageId]: { ...m, text: m.text + ev.chunk },
 							};
-						});
-						break;
-					case "tool_call_start":
-						setThinking(false);
-						setLive((prev) => {
-							const m = prev[ev.messageId];
-							if (!m) return prev;
-							return {
-								...prev,
-								[ev.messageId]: {
-									...m,
-									parts: [
-										...m.parts,
-										{
-											type: "tool_call",
-											callId: ev.callId,
-											tool: ev.tool,
-											input: ev.input,
-											output: null,
-											error: undefined,
-										} as MessagePart,
-									],
-								},
-							};
-						});
-						break;
-					case "tool_call_end":
-						setLive((prev) => {
-							const m = prev[ev.messageId];
-							if (!m) return prev;
-							return {
-								...prev,
-								[ev.messageId]: {
-									...m,
-									parts: m.parts.map((p) =>
-										p.type === "tool_call" && p.callId === ev.callId
-											? { ...p, output: ev.output, error: ev.error }
-											: p,
-									),
-								},
-							};
-						});
-						break;
-					case "message_end":
-						void loadHistory();
-						break;
-					case "error":
-						setThinking(false);
-						setError(
-							typeof ev.message === "string"
-								? ev.message
-								: JSON.stringify(ev.message),
-						);
-						break;
-					case "agent_crashed":
-						setThinking(false);
-						setError(
-							`agent crashed (code ${ev.exitCode}). ${ev.stderrTail.slice(-3).join("; ")}`,
-						);
-						setStatus("crashed");
-						break;
-				}
-			},
-			() => void loadHistory(),
-		);
+						}
+						return {
+							...prev,
+							[ev.messageId]: {
+								id: ev.messageId,
+								role: "assistant",
+								parts: [],
+								text: ev.chunk,
+							},
+						};
+					});
+					break;
+				case "tool_call_start":
+					setThinking(false);
+					setLive((prev) => {
+						const m = prev[ev.messageId];
+						if (!m) return prev;
+						return {
+							...prev,
+							[ev.messageId]: {
+								...m,
+								parts: [
+									...m.parts,
+									{
+										type: "tool_call",
+										callId: ev.callId,
+										tool: ev.tool,
+										input: ev.input,
+										output: null,
+										error: undefined,
+									} as MessagePart,
+								],
+							},
+						};
+					});
+					break;
+				case "tool_call_end":
+					setLive((prev) => {
+						const m = prev[ev.messageId];
+						if (!m) return prev;
+						return {
+							...prev,
+							[ev.messageId]: {
+								...m,
+								parts: m.parts.map((p) =>
+									p.type === "tool_call" && p.callId === ev.callId
+										? { ...p, output: ev.output, error: ev.error }
+										: p,
+								),
+							},
+						};
+					});
+					break;
+				case "message_end":
+					break;
+				case "error":
+					setThinking(false);
+					setError(
+						typeof ev.message === "string"
+							? ev.message
+							: JSON.stringify(ev.message),
+					);
+					break;
+				case "agent_crashed":
+					setThinking(false);
+					setError(
+						`agent crashed (code ${ev.exitCode}). ${ev.stderrTail.slice(-3).join("; ")}`,
+					);
+					setStatus("crashed");
+					break;
+			}
+		});
 		return unsubscribe;
 	}, [sessionId, loadHistory, session.status]);
 
@@ -199,6 +246,16 @@ export function ChatShell({ sessionId, session }: Props) {
 		setError(null);
 		setSending(true);
 		setThinking(true);
+
+		// Optimistic user message placeholder — visible immediately so autoscroll
+		// follows it. The real message_start event will replace the temp ID.
+		const tempId = `temp-${Date.now()}`;
+		optimisticIdsRef.current.add(tempId);
+		setLive((prev) => ({
+			...prev,
+			[tempId]: { id: tempId, role: "user", parts: [], text },
+		}));
+
 		try {
 			await api.sessions.send(sessionId, text);
 		} catch (e) {
@@ -218,14 +275,18 @@ export function ChatShell({ sessionId, session }: Props) {
 	}, [sessionId]);
 
 	const rendered = useMemo(() => {
+		const liveIds = new Set(Object.keys(live));
 		const out: {
 			id: string;
 			role: "user" | "assistant";
 			parts: MessagePart[];
 		}[] = [];
+		// Persisted messages — skip any that have a live counterpart.
 		for (const m of messages) {
+			if (liveIds.has(m.id)) continue;
 			out.push({ id: m.id, role: m.role, parts: m.parts });
 		}
+		// Live messages — their text field may contain streamed content.
 		for (const m of Object.values(live)) {
 			const parts = [...m.parts];
 			if (m.text) parts.unshift({ type: "text", text: m.text });
@@ -367,11 +428,18 @@ function ChatMessageRow({
 	const align = role === "user" ? "end" : "start";
 	const bubbleVariant = role === "user" ? "default" : "muted";
 
-	// Separate text parts (rendered as Bubble rows) from tool parts (rendered
-	// as Marker rows). Order is preserved.
+	// Group consecutive tool call parts into collapsible sections.
 	const rows: React.ReactNode[] = [];
+	let toolBuffer: Extract<MessagePart, { type: "tool_call" }>[] = [];
+	function flushTools() {
+		if (toolBuffer.length > 0) {
+			rows.push(<ToolCallGroup key={`g-${rows.length}`} parts={toolBuffer} />);
+			toolBuffer = [];
+		}
+	}
 	parts.forEach((p, i) => {
 		if (p.type === "text") {
+			flushTools();
 			rows.push(
 				<Bubble key={`t-${i}`} variant={bubbleVariant}>
 					<BubbleContent>
@@ -382,9 +450,10 @@ function ChatMessageRow({
 				</Bubble>,
 			);
 		} else if (p.type === "tool_call") {
-			rows.push(<ToolCallMarker key={`c-${i}`} part={p} />);
+			toolBuffer.push(p);
 		}
 	});
+	flushTools();
 
 	return (
 		<Message align={align}>
@@ -399,13 +468,54 @@ function ChatMessageRow({
 	);
 }
 
+function ToolCallGroup({
+	parts,
+}: {
+	parts: Extract<MessagePart, { type: "tool_call" }>[];
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const running = parts.some((p) => p.output == null && p.error == null);
+	const count = parts.length;
+
+	return (
+		<Marker variant="border">
+			<MarkerIcon>
+				{running ? <Spinner /> : <Wrench className="size-4" />}
+			</MarkerIcon>
+			<MarkerContent>
+				<button
+					type="button"
+					onClick={() => setExpanded((v) => !v)}
+					className="flex cursor-pointer items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+				>
+					{expanded ? (
+						<ChevronDown className="size-3" />
+					) : (
+						<ChevronRight className="size-3" />
+					)}
+					{running
+						? "Running tools…"
+						: `${count} tool call${count > 1 ? "s" : ""}`}
+				</button>
+				{expanded && (
+					<div className="mt-2 flex flex-col gap-2">
+						{parts.map((p) => (
+							<ToolCallMarker key={p.callId} part={p} compact />
+						))}
+					</div>
+				)}
+			</MarkerContent>
+		</Marker>
+	);
+}
+
 function ToolCallMarker({
 	part,
+	compact,
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
+	compact?: boolean;
 }) {
-	// Indented inline marker inside the assistant message. Pending/running
-	// tools get a spinner; completed tools show their output below the call.
 	const running = part.output == null && part.error == null;
 	const output =
 		part.error != null
@@ -414,7 +524,7 @@ function ToolCallMarker({
 				? String(part.output)
 				: "";
 	return (
-		<Marker variant="border">
+		<Marker variant={compact ? "default" : "border"}>
 			<MarkerIcon>
 				{running ? <Spinner /> : <Wrench className="size-4" />}
 			</MarkerIcon>
@@ -428,12 +538,14 @@ function ToolCallMarker({
 							{running ? "running…" : "done"}
 						</span>
 					</div>
-					{typeof part.input === "object" && part.input !== null && (
-						<pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
-							{JSON.stringify(part.input)}
-						</pre>
-					)}
-					{output && (
+					{!compact &&
+						typeof part.input === "object" &&
+						part.input !== null && (
+							<pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+								{JSON.stringify(part.input)}
+							</pre>
+						)}
+					{!compact && output && (
 						<pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
 							{output}
 						</pre>
