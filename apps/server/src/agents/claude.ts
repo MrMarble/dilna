@@ -1,3 +1,4 @@
+import { setTimeout as setTimeoutAsync } from "node:timers/promises";
 import {
 	type Query,
 	query,
@@ -18,7 +19,12 @@ export type Listener = (event: AgentStreamEvent) => void;
 
 export type ClaudeHandle = {
 	kind: "claude";
-	agentSessionId: string;
+	/**
+	 * The Claude-side session id. Empty until the first turn's `system init`
+	 * message arrives (see {@link startClaude}), so this is a getter over
+	 * live state rather than a value snapshotted at handle-creation time.
+	 */
+	readonly agentSessionId: string;
 	worktreePath: string;
 	listeners: Set<Listener>;
 	stop: () => Promise<void>;
@@ -43,6 +49,17 @@ type NormalizeState = {
  * multiple user turns (mirroring one `opencode serve` process per worktree,
  * per ADR-0003). Tool execution runs autonomously via `bypassPermissions`,
  * matching opencode's `permission: allow` auto-approve behavior.
+ *
+ * Unlike opencode (an HTTP server that answers a readiness probe before any
+ * session exists), the Claude Agent SDK's streaming-input `query()` does not
+ * emit anything — not even its `system`/`init` handshake — until it has
+ * received the *first* item from the prompt async-iterable. Since dilna only
+ * ever pushes that first item from {@link chatClaude} (called after this
+ * function returns), waiting here for `init` would deadlock. So this
+ * function does not wait on the query at all: it starts the background
+ * event loop and returns immediately. `agentSessionId` starts empty (or
+ * carries over `existingAgentSessionId` on a cold resume) and becomes
+ * accurate once the first turn's `init` message arrives.
  */
 export async function startClaude(
 	opts: AgentStartOptions,
@@ -76,25 +93,11 @@ export async function startClaude(
 	let alive = true;
 	let agentSessionId = opts.existingAgentSessionId ?? "";
 
-	let resolveReady!: () => void;
-	let rejectReady!: (err: Error) => void;
-	let readySettled = false;
-	const ready = new Promise<void>((res, rej) => {
-		resolveReady = res;
-		rejectReady = rej;
-	});
-	const settleReady = (fn: () => void) => {
-		if (readySettled) return;
-		readySettled = true;
-		fn();
-	};
-
 	const loopPromise = (async () => {
 		try {
 			for await (const msg of q) {
 				if (msg.type === "system" && msg.subtype === "init") {
 					agentSessionId = msg.session_id;
-					settleReady(resolveReady);
 					continue;
 				}
 				const events = normalizeMessage(msg, state);
@@ -130,29 +133,21 @@ export async function startClaude(
 					}
 				}
 				listeners.clear();
-				settleReady(() =>
-					rejectReady(
-						new Error(
-							`claude agent exited before becoming ready\n${stderrTail.slice(-5).join("\n")}`,
-						),
-					),
-				);
 			}
 		}
 	})();
 
-	try {
-		await waitForReady(ready, 20_000);
-	} catch (err) {
-		killed = true;
-		inputQueue.close();
-		try {
-			q.close();
-		} catch {
-			// already closed
-		}
-		await loopPromise.catch(() => {});
-		throw err;
+	// Give an immediate spawn failure (missing binary, bad cwd) a brief
+	// window to surface here rather than only on the first chat call. This
+	// is best-effort, not a readiness gate: the query is otherwise fully
+	// inert (no init, no subprocess I/O beyond stdin-open) until the first
+	// message is pushed, so there's nothing meaningful to wait for beyond
+	// "did it die immediately."
+	await Promise.race([loopPromise, setTimeoutAsync(300)]);
+	if (!alive) {
+		throw new Error(
+			`claude agent exited immediately on start\n${stderrTail.slice(-5).join("\n")}`,
+		);
 	}
 
 	const stop = async () => {
@@ -180,7 +175,9 @@ export async function startClaude(
 
 	return {
 		kind: "claude",
-		agentSessionId,
+		get agentSessionId() {
+			return agentSessionId;
+		},
 		worktreePath: opts.worktreePath,
 		listeners,
 		stop,
@@ -196,15 +193,34 @@ export async function startClaude(
  * idle. Events that arrive via the persistent query loop are normalized to
  * dilna's {@link AgentStreamEvent} union and forwarded to
  * {@link opts.onEvent}, mirroring {@link chatOpencode}.
+ *
+ * Returns the messageId of the last assistant message_start seen during
+ * this turn (or undefined if none arrived, e.g. an aborted/errored turn).
+ * Claude's own transcript file can lag behind this turn's `result` event by
+ * a beat, so callers that re-sync persisted history from
+ * `getSessionMessages` need this id to know specifically what to wait for
+ * — see `SessionManager.fetchClaudeMessagesWithRetry`.
  */
 export async function chatClaude(
 	handle: ClaudeHandle,
 	opts: AgentChatOptions,
-): Promise<void> {
+): Promise<string | undefined> {
 	const { listeners } = handle;
 	const { message, onEvent, abortSignal } = opts;
 
-	const chatListener: Listener = (ev) => onEvent(ev);
+	if (!handle.isAlive()) {
+		throw new Error(
+			`claude agent process exited\n${handle.stderrTail.slice(-5).join("\n")}`,
+		);
+	}
+
+	let lastAssistantMessageId: string | undefined;
+	const chatListener: Listener = (ev) => {
+		if (ev.type === "message_start" && ev.role === "assistant") {
+			lastAssistantMessageId = ev.messageId;
+		}
+		onEvent(ev);
+	};
 	listeners.add(chatListener);
 
 	let resolveChat!: () => void;
@@ -246,6 +262,7 @@ export async function chatClaude(
 	try {
 		handle.sendUserMessage(message);
 		await chatDone;
+		return lastAssistantMessageId;
 	} finally {
 		listeners.delete(chatListener);
 		listeners.delete(completionListener);
@@ -403,23 +420,4 @@ function blockContentToText(content: unknown): string {
 			.join("");
 	}
 	return "";
-}
-
-async function waitForReady(
-	ready: Promise<void>,
-	timeoutMs: number,
-): Promise<void> {
-	let timer: NodeJS.Timeout | undefined;
-	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => {
-			reject(
-				new Error(`claude agent did not become ready within ${timeoutMs}ms`),
-			);
-		}, timeoutMs);
-	});
-	try {
-		await Promise.race([ready, timeout]);
-	} finally {
-		clearTimeout(timer);
-	}
 }

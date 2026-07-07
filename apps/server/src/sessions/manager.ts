@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
+import { setTimeout as setTimeoutAsync } from "node:timers/promises";
 import { promisify } from "node:util";
 import {
 	getSessionInfo,
@@ -476,9 +477,13 @@ class SessionManager {
 		};
 		active.handle.listeners.add(crashHandler);
 
+		let expectedClaudeMessageId: string | undefined;
 		try {
 			if (handle.kind === "claude") {
-				await chatClaude(handle, { message: text, onEvent });
+				expectedClaudeMessageId = await chatClaude(handle, {
+					message: text,
+					onEvent,
+				});
 			} else {
 				await chatOpencode(handle, { message: text, onEvent });
 			}
@@ -486,8 +491,19 @@ class SessionManager {
 			active.handle.listeners.delete(crashHandler);
 			active.chatInProgress = false;
 
+			// Claude's agentSessionId is unknown until the first turn's init
+			// message arrives (see claude.ts), so re-sync it post-chat — a
+			// no-op for opencode, whose id is already known at start time.
+			if (handle.agentSessionId) {
+				const db = getDb();
+				db.update(sessionsTable)
+					.set({ agentSessionId: handle.agentSessionId })
+					.where(eq(sessionsTable.id, id))
+					.run();
+			}
+
 			// Persist everything we don't already have from the agent backend.
-			await this.persistMessagesFromAgent(id, handle);
+			await this.persistMessagesFromAgent(id, handle, expectedClaudeMessageId);
 
 			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
@@ -505,6 +521,7 @@ class SessionManager {
 	private async persistMessagesFromAgent(
 		sessionId: string,
 		handle: OpencodeHandle | ClaudeHandle,
+		expectedClaudeMessageId?: string,
 	): Promise<void> {
 		const existing = new Set(
 			(await this.getMessages(sessionId)).map((m) => m.id),
@@ -512,19 +529,12 @@ class SessionManager {
 
 		if (handle.kind === "claude") {
 			if (!handle.agentSessionId) return;
-			let raw: SessionMessage[];
-			try {
-				raw = await getSessionMessages(handle.agentSessionId, {
-					dir: handle.worktreePath,
-				});
-			} catch (err) {
-				console.error(
-					"[sessions] failed to fetch messages from claude agent:",
-					err,
-				);
-				return;
-			}
-			for (const msg of claudeMessagesToDilna(sessionId, raw)) {
+			const converted = await this.fetchClaudeMessagesWithRetry(
+				sessionId,
+				handle,
+				expectedClaudeMessageId,
+			);
+			for (const msg of converted) {
 				if (existing.has(msg.id)) continue;
 				this.persistMessage(sessionId, msg);
 			}
@@ -571,6 +581,51 @@ class SessionManager {
 			};
 			this.persistMessage(sessionId, msg);
 		}
+	}
+
+	/**
+	 * `getSessionMessages` reads Claude's own JSONL transcript file, which
+	 * can lag slightly behind the live event stream: the `result` event that
+	 * resolves {@link chatClaude} doesn't guarantee the transcript write for
+	 * that same turn has landed on disk yet. Retry until the specific
+	 * message this turn produced (its id, threaded through from
+	 * `chatClaude`'s return value) shows up. Checking for "any new message"
+	 * instead would return prematurely on a leftover unpersisted message
+	 * from an earlier race, without waiting for the current turn's reply.
+	 *
+	 * `expectedMessageId` is undefined for turns that produced no assistant
+	 * message (aborted/errored) — in that case there's nothing turn-specific
+	 * to wait for, so this fetches once and returns immediately.
+	 */
+	private async fetchClaudeMessagesWithRetry(
+		sessionId: string,
+		handle: ClaudeHandle,
+		expectedMessageId: string | undefined,
+	): Promise<Message[]> {
+		const delaysMs = [0, 150, 300, 600, 1000];
+		let last: Message[] = [];
+		for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+			if (attempt > 0) await setTimeoutAsync(delaysMs[attempt]);
+			let raw: SessionMessage[];
+			try {
+				raw = await getSessionMessages(handle.agentSessionId, {
+					dir: handle.worktreePath,
+				});
+			} catch (err) {
+				console.error(
+					"[sessions] failed to fetch messages from claude agent:",
+					err,
+				);
+				return last;
+			}
+			last = claudeMessagesToDilna(sessionId, raw);
+			if (!expectedMessageId) return last;
+			if (last.some((m) => m.id === expectedMessageId)) return last;
+		}
+		console.error(
+			`[sessions] claude transcript for ${sessionId} never surfaced message ${expectedMessageId} after retrying`,
+		);
+		return last;
 	}
 
 	/**
