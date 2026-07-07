@@ -537,14 +537,12 @@ function ToolCallMarker({
 							{running ? "running…" : "done"}
 						</span>
 					</div>
-					{!compact &&
-						typeof part.input === "object" &&
-						part.input !== null && (
-							<pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
-								{JSON.stringify(part.input)}
-							</pre>
-						)}
-					{!compact && output && (
+					{typeof part.input === "object" && part.input !== null && (
+						<pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+							{JSON.stringify(part.input)}
+						</pre>
+					)}
+					{output && (
 						<pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
 							{output}
 						</pre>
