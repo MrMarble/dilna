@@ -1,6 +1,7 @@
 import type { Repo, SessionView } from "@dilna/shared";
 import { FolderGit2, Plus, RefreshCw } from "lucide-react";
 import { StatusDot } from "@/components/StatusDot";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 const IS_MAC =
 	typeof navigator !== "undefined" &&
@@ -39,6 +40,7 @@ export function Sidebar({
 			<div className="flex h-14 items-center gap-2 border-b border-zinc-200 px-4 dark:border-zinc-800">
 				<FolderGit2 className="size-5 text-zinc-500" />
 				<span className="font-semibold tracking-tight">dilna</span>
+				<ThemeToggle className="ml-auto" />
 			</div>
 
 			<div className="border-b border-zinc-200 p-2 dark:border-zinc-800">
