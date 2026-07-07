@@ -33,6 +33,23 @@ export function ChatShell({ sessionId, session }: Props) {
 		try {
 			const { messages } = await api.sessions.messages(sessionId);
 			setMessages(messages);
+			// Now that the persisted copies are in state, drop any live
+			// messages that have already been persisted. Doing this AFTER
+			// setMessages (not before) avoids the flicker where a message
+			// is in neither state during the network round-trip.
+			const persistedIds = new Set(messages.map((m) => m.id));
+			setLive((prev) => {
+				const next: Record<string, LiveMessage> = {};
+				let changed = false;
+				for (const [id, m] of Object.entries(prev)) {
+					if (persistedIds.has(id)) {
+						changed = true;
+						continue;
+					}
+					next[id] = m;
+				}
+				return changed ? next : prev;
+			});
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "failed to load messages");
 		}
@@ -50,12 +67,11 @@ export function ChatShell({ sessionId, session }: Props) {
 				switch (ev.type) {
 					case "session_status":
 						setStatus(ev.status);
-						// When the session settles back to idle (chat complete or
-						// errored out), any live in-flight messages should be flushed
-						// — the history refresh will pick up what actually persisted.
+						// Chat completed: refresh history. The loadHistory call
+						// itself will drop live messages whose IDs are now persisted,
+						// so there's no flicker gap between "live" and "persisted".
 						if (ev.status === "idle" || ev.status === "crashed") {
 							void loadHistory();
-							setLive({});
 						}
 						break;
 					case "message_start":
@@ -133,12 +149,10 @@ export function ChatShell({ sessionId, session }: Props) {
 						});
 						break;
 					case "message_end":
+						// Backend doesn't currently emit message_end (opencode has
+						// no such event), but if it ever does, just trigger a history
+						// refresh — loadHistory itself drops persisted IDs from live.
 						void loadHistory();
-						setLive((prev) => {
-							const next = { ...prev };
-							delete next[ev.messageId];
-							return next;
-						});
 						break;
 					case "error":
 						setError(
