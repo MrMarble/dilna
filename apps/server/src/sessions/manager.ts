@@ -135,11 +135,23 @@ function claudeContentToText(content: unknown): string {
 
 /**
  * Convert Claude Agent SDK transcript entries (from `getSessionMessages`)
- * into dilna normalized {@link Message} rows. Tool results arrive as
- * separate synthetic user-role transcript entries; they're merged back into
- * the assistant message's tool_call part (matching opencode's merged
- * pending/completed tool state) rather than persisted as their own row.
- * Real (non-tool-result) user entries are still persisted as text messages.
+ * into dilna normalized {@link Message} rows.
+ *
+ * Claude starts a brand-new SDKAssistantMessage (a new uuid) after every
+ * tool round-trip within a single turn, unlike opencode which keeps one
+ * message id for the whole turn. All assistant entries between one real
+ * user message and the next are merged into a single Message row here —
+ * id'd by the *first* assistant entry's uuid — so persisted history has the
+ * same one-row-per-turn granularity as the live view (see the matching
+ * `currentTurnMessageId` merge in `agents/claude.ts`'s event normalizer;
+ * `fetchClaudeMessagesWithRetry`'s `expectedMessageId` gate depends on both
+ * sides picking the same id for a turn).
+ *
+ * Tool results arrive as separate synthetic user-role transcript entries;
+ * they're merged back into the owning tool_call part (matching opencode's
+ * merged pending/completed tool state) rather than persisted as their own
+ * row. Real (non-tool-result) user entries are persisted as their own text
+ * messages and also flush any in-progress assistant turn.
  *
  * Claude's transcript entries carry no timestamp, so createdAt is
  * synthesized as `now + index` to preserve transcript order across a batch.
@@ -166,6 +178,21 @@ function claudeMessagesToDilna(
 
 	const baseCreatedAt = Math.floor(Date.now() / 1000);
 	const messages: Message[] = [];
+	let turn: { id: string; createdAt: number; parts: MessagePart[] } | null =
+		null;
+	const flushTurn = () => {
+		if (turn && turn.parts.length > 0) {
+			messages.push({
+				id: turn.id,
+				sessionId,
+				role: "assistant",
+				parts: turn.parts,
+				createdAt: turn.createdAt,
+			});
+		}
+		turn = null;
+	};
+
 	raw.forEach((entry, index) => {
 		const createdAt = baseCreatedAt + index;
 		const content = (entry.message as { content?: unknown })?.content;
@@ -174,15 +201,15 @@ function claudeMessagesToDilna(
 			: [];
 
 		if (entry.type === "assistant") {
-			const parts: MessagePart[] = [];
+			if (!turn) turn = { id: entry.uuid, createdAt, parts: [] };
 			for (const block of blocks) {
 				if (block.type === "text") {
 					const text = (block.text as string) ?? "";
-					if (text) parts.push({ type: "text", text });
+					if (text) turn.parts.push({ type: "text", text });
 				} else if (block.type === "tool_use") {
 					const callId = block.id as string;
 					const result = toolResults.get(callId);
-					parts.push({
+					turn.parts.push({
 						type: "tool_call",
 						callId,
 						tool: (block.name as string) ?? "unknown",
@@ -192,20 +219,11 @@ function claudeMessagesToDilna(
 					});
 				}
 			}
-			if (parts.length > 0) {
-				messages.push({
-					id: entry.uuid,
-					sessionId,
-					role: "assistant",
-					parts,
-					createdAt,
-				});
-			}
 		} else if (entry.type === "user") {
-			// Synthetic tool-result echoes are merged above; only persist
-			// genuine user-authored turns.
 			const isSynthetic = blocks.some((b) => b.type === "tool_result");
 			if (isSynthetic) return;
+			// A real user message ends any in-progress assistant turn.
+			flushTurn();
 			const text = claudeContentToText(content);
 			if (text) {
 				messages.push({
@@ -218,6 +236,7 @@ function claudeMessagesToDilna(
 			}
 		}
 	});
+	flushTurn();
 	return messages;
 }
 
@@ -585,30 +604,37 @@ class SessionManager {
 
 	/**
 	 * `getSessionMessages` reads Claude's own JSONL transcript file, which
-	 * can lag slightly behind the live event stream: the `result` event that
-	 * resolves {@link chatClaude} doesn't guarantee the transcript write for
-	 * that same turn has landed on disk yet. Retry until the specific
-	 * message this turn produced (its id, threaded through from
-	 * `chatClaude`'s return value) shows up. Checking for "any new message"
-	 * instead would return prematurely on a leftover unpersisted message
-	 * from an earlier race, without waiting for the current turn's reply.
+	 * can lag behind the live event stream: the `result` event that resolves
+	 * {@link chatClaude} doesn't guarantee the transcript write for that same
+	 * turn has landed on disk yet.
+	 *
+	 * Gating the retry on "does the expected message id merely appear" is
+	 * not enough on its own: because `claudeMessagesToDilna` merges every
+	 * assistant round of a turn into one row keyed by the *first* round's
+	 * uuid (see that function's doc comment), that id can show up in the
+	 * very first fetch — right after the first tool call round is written —
+	 * long before later rounds (including the turn's final text reply) have
+	 * been flushed. So this also requires the *raw* transcript to be stable
+	 * (same length and same last entry) across two consecutive polls before
+	 * accepting it, on top of the expected id being present at all.
 	 *
 	 * `expectedMessageId` is undefined for turns that produced no assistant
 	 * message (aborted/errored) — in that case there's nothing turn-specific
-	 * to wait for, so this fetches once and returns immediately.
+	 * to wait for beyond stability.
 	 */
 	private async fetchClaudeMessagesWithRetry(
 		sessionId: string,
 		handle: ClaudeHandle,
 		expectedMessageId: string | undefined,
 	): Promise<Message[]> {
-		const delaysMs = [0, 150, 300, 600, 1000];
-		let last: Message[] = [];
+		const delaysMs = [0, 150, 300, 500, 800, 1200, 1500];
+		let lastRaw: SessionMessage[] = [];
+		let prevLength = -1;
+		let prevLastUuid: string | undefined;
 		for (let attempt = 0; attempt < delaysMs.length; attempt++) {
 			if (attempt > 0) await setTimeoutAsync(delaysMs[attempt]);
-			let raw: SessionMessage[];
 			try {
-				raw = await getSessionMessages(handle.agentSessionId, {
+				lastRaw = await getSessionMessages(handle.agentSessionId, {
 					dir: handle.worktreePath,
 				});
 			} catch (err) {
@@ -616,16 +642,21 @@ class SessionManager {
 					"[sessions] failed to fetch messages from claude agent:",
 					err,
 				);
-				return last;
+				return claudeMessagesToDilna(sessionId, lastRaw);
 			}
-			last = claudeMessagesToDilna(sessionId, raw);
-			if (!expectedMessageId) return last;
-			if (last.some((m) => m.id === expectedMessageId)) return last;
+			const lastUuid = lastRaw.at(-1)?.uuid;
+			const hasExpected =
+				!expectedMessageId || lastRaw.some((e) => e.uuid === expectedMessageId);
+			const stable = lastRaw.length === prevLength && lastUuid === prevLastUuid;
+			if (hasExpected && stable)
+				return claudeMessagesToDilna(sessionId, lastRaw);
+			prevLength = lastRaw.length;
+			prevLastUuid = lastUuid;
 		}
 		console.error(
-			`[sessions] claude transcript for ${sessionId} never surfaced message ${expectedMessageId} after retrying`,
+			`[sessions] claude transcript for ${sessionId} did not stabilize after retrying (expected message ${expectedMessageId})`,
 		);
-		return last;
+		return claudeMessagesToDilna(sessionId, lastRaw);
 	}
 
 	/**

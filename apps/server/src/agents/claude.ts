@@ -41,6 +41,17 @@ type NormalizeState = {
 	 * paired tool_result (delivered in a later synthetic user message) can
 	 * be attributed back to the same message for tool_call_end. */
 	toolMessageIds: Map<string, string>;
+	/**
+	 * dilna's message model expects one assistant messageId per user turn
+	 * (matching opencode, which keeps a single message id across an entire
+	 * tool-calling loop). Claude's transcript instead starts a brand new
+	 * SDKAssistantMessage — a new uuid — after every tool round-trip. This
+	 * pins every assistant message within one turn to the *first* uuid seen,
+	 * so the live UI renders one growing message with one tool-call group
+	 * instead of a separate single-tool-call message per round. Reset to
+	 * null on `result` (end of turn) so the next turn gets its own id.
+	 */
+	currentTurnMessageId: string | null;
 };
 
 /**
@@ -87,6 +98,7 @@ export async function startClaude(
 	const state: NormalizeState = {
 		seenMessageStarts: new Set(),
 		toolMessageIds: new Map(),
+		currentTurnMessageId: null,
 	};
 
 	let killed = false;
@@ -322,7 +334,7 @@ function normalizeMessage(
 		case "user":
 			return normalizeUserMessage(msg, state);
 		case "result":
-			return normalizeResultMessage(msg);
+			return normalizeResultMessage(msg, state);
 		default:
 			return [];
 	}
@@ -333,7 +345,10 @@ function normalizeAssistantMessage(
 	state: NormalizeState,
 ): AgentStreamEvent[] {
 	const events: AgentStreamEvent[] = [];
-	const messageId = msg.uuid;
+	if (!state.currentTurnMessageId) {
+		state.currentTurnMessageId = msg.uuid;
+	}
+	const messageId = state.currentTurnMessageId;
 	if (!state.seenMessageStarts.has(messageId)) {
 		state.seenMessageStarts.add(messageId);
 		events.push({ type: "message_start", messageId, role: "assistant" });
@@ -394,7 +409,12 @@ function normalizeUserMessage(
 	return events;
 }
 
-function normalizeResultMessage(msg: SDKResultMessage): AgentStreamEvent[] {
+function normalizeResultMessage(
+	msg: SDKResultMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	// End of turn — the next assistant message starts a fresh turn id.
+	state.currentTurnMessageId = null;
 	if (msg.subtype !== "success") {
 		const detail = msg.errors?.length ? ` — ${msg.errors.join("; ")}` : "";
 		return [

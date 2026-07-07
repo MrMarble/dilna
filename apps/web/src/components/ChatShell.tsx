@@ -493,9 +493,8 @@ function ToolCallGroup({
 					) : (
 						<ChevronRight className="size-3" />
 					)}
-					{running
-						? "Running tools…"
-						: `${count} tool call${count > 1 ? "s" : ""}`}
+					{count} tool call{count > 1 ? "s" : ""}
+					{running ? "…" : ""}
 				</button>
 				{expanded && (
 					<div className="mt-2 flex flex-col gap-2">
