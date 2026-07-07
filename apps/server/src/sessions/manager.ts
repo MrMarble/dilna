@@ -14,6 +14,7 @@ import type {
 	Message,
 	MessagePart,
 	Session,
+	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
 import { asc, eq } from "drizzle-orm";
@@ -59,6 +60,7 @@ function toView(s: Session): SessionView {
 		id: s.id,
 		repoId: s.repoId,
 		title: s.title,
+		agentType: s.agentType,
 		status: s.status,
 		createdAt: s.createdAt,
 		lastActiveAt: s.lastActiveAt,
@@ -255,6 +257,9 @@ class SessionManager {
 	 * independent of the agent lifecycle so a UI tab can subscribe before
 	 * any agent is running and still receive events once it starts. */
 	private subscribers = new Map<string, Set<Listener>>();
+	/** Cross-session status subscribers (per ADR-0008): one subscription per
+	 * app load, notified on every status change of every session. */
+	private globalSubscribers = new Set<(event: SessionListEvent) => void>();
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
 		const db = getDb();
@@ -262,6 +267,18 @@ class SessionManager {
 			.select()
 			.from(sessionsTable)
 			.where(eq(sessionsTable.repoId, repoId))
+			.orderBy(asc(sessionsTable.lastActiveAt))
+			.all();
+		return rows.map(rowToSession).map(toView);
+	}
+
+	/** All sessions across every repo, for the cross-session status stream
+	 * (per ADR-0008) to snapshot on subscribe. */
+	async listAll(): Promise<SessionView[]> {
+		const db = getDb();
+		const rows = db
+			.select()
+			.from(sessionsTable)
 			.orderBy(asc(sessionsTable.lastActiveAt))
 			.all();
 		return rows.map(rowToSession).map(toView);
@@ -353,7 +370,9 @@ class SessionManager {
 			})
 			.run();
 
-		return toView(session);
+		const view = toView(session);
+		this.broadcastGlobal({ type: "session_status", session: view });
+		return view;
 	}
 
 	async delete(id: string): Promise<void> {
@@ -389,6 +408,7 @@ class SessionManager {
 
 		db.delete(messagesTable).where(eq(messagesTable.sessionId, id)).run();
 		db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
+		this.broadcastGlobal({ type: "session_deleted", sessionId: id });
 	}
 
 	async touch(id: string): Promise<void> {
@@ -406,6 +426,8 @@ class SessionManager {
 			.set({ title })
 			.where(eq(sessionsTable.id, id))
 			.run();
+		const view = await this.getView(id);
+		if (view) this.broadcastGlobal({ type: "session_status", session: view });
 	}
 
 	async setStatus(id: string, status: Session["status"]): Promise<void> {
@@ -415,6 +437,8 @@ class SessionManager {
 			.set({ status, lastActiveAt: now })
 			.where(eq(sessionsTable.id, id))
 			.run();
+		const view = await this.getView(id);
+		if (view) this.broadcastGlobal({ type: "session_status", session: view });
 	}
 
 	async resetAllToIdle(): Promise<void> {
@@ -424,6 +448,29 @@ class SessionManager {
 				.set({ status: "idle" })
 				.where(eq(sessionsTable.status, s))
 				.run();
+		}
+	}
+
+	/**
+	 * Register a listener to receive a SessionListEvent whenever any
+	 * session's status changes, across every repo. Powers the sidebar's
+	 * Background Agents panel and the chat header's session dropdown (per
+	 * ADR-0008) without the caller subscribing to each session individually.
+	 */
+	subscribeAll(listener: (event: SessionListEvent) => void): () => void {
+		this.globalSubscribers.add(listener);
+		return () => {
+			this.globalSubscribers.delete(listener);
+		};
+	}
+
+	private broadcastGlobal(event: SessionListEvent) {
+		for (const l of this.globalSubscribers) {
+			try {
+				l(event);
+			} catch {
+				// listener errors during broadcast are non-fatal
+			}
 		}
 	}
 

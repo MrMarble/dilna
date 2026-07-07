@@ -1,4 +1,5 @@
 import type {
+	AgentType,
 	Message as ChatMessage,
 	MessagePart,
 	SessionView,
@@ -10,14 +11,18 @@ import {
 	LoaderCircle,
 	Send,
 	Square,
+	User,
 	Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api/client";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
-import { Message, MessageContent } from "@/components/ui/message";
+import {
+	Message,
+	MessageContent,
+	MessageHeader,
+} from "@/components/ui/message";
 import {
 	MessageScroller,
 	MessageScrollerButton,
@@ -27,6 +32,8 @@ import {
 	MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
+import { AgentIcon } from "@/lib/agent-icons";
+import { AGENT_LABELS } from "@/lib/agent-labels";
 
 type Props = {
 	sessionId: string;
@@ -38,7 +45,21 @@ type LiveMessage = {
 	role: "user" | "assistant";
 	parts: MessagePart[];
 	text: string;
+	/** Epoch seconds this message started streaming — used for the
+	 * attribution timestamp before it's persisted with a real createdAt. */
+	startedAt: number;
 };
+
+function nowSeconds() {
+	return Math.floor(Date.now() / 1000);
+}
+
+function formatClockTime(epochSeconds: number) {
+	return new Date(epochSeconds * 1000).toLocaleTimeString([], {
+		hour: "numeric",
+		minute: "2-digit",
+	});
+}
 
 export function ChatShell({ sessionId, session }: Props) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -129,6 +150,7 @@ export function ChatShell({ sessionId, session }: Props) {
 									role: ev.role,
 									parts: [],
 									text,
+									startedAt: entry.startedAt,
 								};
 								optimisticIdsRef.current.add(ev.messageId);
 								return next;
@@ -139,6 +161,7 @@ export function ChatShell({ sessionId, session }: Props) {
 							role: ev.role,
 							parts: [],
 							text: "",
+							startedAt: nowSeconds(),
 						};
 						return next;
 					});
@@ -167,6 +190,7 @@ export function ChatShell({ sessionId, session }: Props) {
 								role: "assistant",
 								parts: [],
 								text: ev.chunk,
+								startedAt: nowSeconds(),
 							},
 						};
 					});
@@ -254,7 +278,13 @@ export function ChatShell({ sessionId, session }: Props) {
 		optimisticIdsRef.current.add(tempId);
 		setLive((prev) => ({
 			...prev,
-			[tempId]: { id: tempId, role: "user", parts: [], text },
+			[tempId]: {
+				id: tempId,
+				role: "user",
+				parts: [],
+				text,
+				startedAt: nowSeconds(),
+			},
 		}));
 
 		try {
@@ -281,18 +311,24 @@ export function ChatShell({ sessionId, session }: Props) {
 			id: string;
 			role: "user" | "assistant";
 			parts: MessagePart[];
+			createdAt: number;
 		}[] = [];
 		// Persisted messages — skip any that have a live counterpart.
 		for (const m of messages) {
 			if (liveIds.has(m.id)) continue;
-			out.push({ id: m.id, role: m.role, parts: m.parts });
+			out.push({
+				id: m.id,
+				role: m.role,
+				parts: m.parts,
+				createdAt: m.createdAt,
+			});
 		}
 		// Live messages — their text field may contain streamed content.
 		for (const m of Object.values(live)) {
 			const parts = [...m.parts];
 			if (m.text) parts.unshift({ type: "text", text: m.text });
 			if (parts.length === 0) continue;
-			out.push({ id: m.id, role: m.role, parts });
+			out.push({ id: m.id, role: m.role, parts, createdAt: m.startedAt });
 		}
 		return out;
 	}, [messages, live]);
@@ -308,7 +344,7 @@ export function ChatShell({ sessionId, session }: Props) {
 									<EmptyHint />
 								) : (
 									<>
-										{rendered.map((m) => (
+										{rendered.map((m, i) => (
 											<MessageScrollerItem
 												key={m.id}
 												messageId={m.id}
@@ -318,6 +354,11 @@ export function ChatShell({ sessionId, session }: Props) {
 													id={m.id}
 													role={m.role}
 													parts={m.parts}
+													createdAt={m.createdAt}
+													showAttribution={
+														i === 0 || rendered[i - 1]?.role !== m.role
+													}
+													agentType={session.agentType}
 												/>
 											</MessageScrollerItem>
 										))}
@@ -346,8 +387,8 @@ export function ChatShell({ sessionId, session }: Props) {
 				</MessageScrollerProvider>
 			</div>
 
-			<div className="border-t border-zinc-200 px-6 py-3 dark:border-zinc-800">
-				<div className="mx-auto flex max-w-3xl items-end gap-2">
+			<div className="px-6 py-4">
+				<div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-zinc-200 bg-white px-3 py-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
 					<textarea
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
@@ -358,36 +399,40 @@ export function ChatShell({ sessionId, session }: Props) {
 							}
 						}}
 						disabled={working && !input}
-						placeholder={working ? "Agent is working…" : "Send a message…"}
+						placeholder={
+							working
+								? "Agent is working…"
+								: `Message ${AGENT_LABELS[session.agentType]}…`
+						}
 						rows={1}
-						className="flex-1 resize-none rounded-md border border-zinc-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-zinc-400 dark:border-zinc-700 dark:focus:border-zinc-500"
+						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-sm outline-none"
 					/>
 					{working ? (
 						<button
 							type="button"
 							onClick={handleStop}
-							className="flex items-center gap-1 rounded-md border border-zinc-300 bg-zinc-100 px-3 py-2 text-sm font-medium hover:bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:bg-zinc-800"
+							className="flex size-8 shrink-0 items-center justify-center rounded-full border border-zinc-300 hover:bg-zinc-200 dark:border-zinc-700 dark:hover:bg-zinc-800"
+							title="Stop"
 						>
 							<Square className="size-3.5" />
-							Stop
 						</button>
 					) : (
 						<button
 							type="button"
 							onClick={handleSend}
 							disabled={!input.trim() || sending}
-							className="flex items-center gap-1 rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700 disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+							className="flex size-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-zinc-50 hover:bg-zinc-700 disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+							title="Send"
 						>
 							{sending ? (
 								<LoaderCircle className="size-3.5 animate-spin" />
 							) : (
 								<Send className="size-3.5" />
 							)}
-							Send
 						</button>
 					)}
 				</div>
-				<p className="mx-auto mt-1 max-w-3xl text-xs text-muted-foreground">
+				<p className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-muted-foreground">
 					Enter to send, Shift+Enter for newline.
 				</p>
 			</div>
@@ -421,13 +466,18 @@ function ChatMessageRow({
 	id,
 	role,
 	parts,
+	createdAt,
+	showAttribution,
+	agentType,
 }: {
 	id: string;
 	role: "user" | "assistant";
 	parts: MessagePart[];
+	createdAt: number;
+	showAttribution: boolean;
+	agentType: AgentType;
 }) {
-	const align = role === "user" ? "end" : "start";
-	const bubbleVariant = role === "user" ? "default" : "muted";
+	const name = role === "user" ? "You" : AGENT_LABELS[agentType];
 
 	// Group consecutive tool call parts into collapsible sections.
 	const rows: React.ReactNode[] = [];
@@ -442,17 +492,15 @@ function ChatMessageRow({
 		if (p.type === "text") {
 			flushTools();
 			rows.push(
-				<Bubble key={`t-${i}`} variant={bubbleVariant}>
-					<BubbleContent>
-						{role === "assistant" ? (
-							<Markdown>{p.text}</Markdown>
-						) : (
-							<pre className="whitespace-pre-wrap break-words font-sans text-sm">
-								{p.text}
-							</pre>
-						)}
-					</BubbleContent>
-				</Bubble>,
+				<div key={`t-${i}`} className="text-sm">
+					{role === "assistant" ? (
+						<Markdown>{p.text}</Markdown>
+					) : (
+						<pre className="whitespace-pre-wrap break-words font-sans text-sm">
+							{p.text}
+						</pre>
+					)}
+				</div>,
 			);
 		} else if (p.type === "tool_call") {
 			toolBuffer.push(p);
@@ -461,8 +509,31 @@ function ChatMessageRow({
 	flushTools();
 
 	return (
-		<Message align={align}>
+		<Message className="group/message gap-3">
+			<div className="flex w-8 shrink-0 justify-center self-start">
+				{showAttribution && (
+					<span className="flex size-7 items-center justify-center rounded-full bg-muted">
+						{role === "user" ? (
+							<User className="size-4" />
+						) : (
+							<AgentIcon agentType={agentType} className="size-4" />
+						)}
+					</span>
+				)}
+			</div>
 			<MessageContent>
+				{showAttribution ? (
+					<MessageHeader className="gap-1.5 px-0">
+						<span className="text-sm font-semibold text-foreground">
+							{name}
+						</span>
+						<span className="text-xs">{formatClockTime(createdAt)}</span>
+					</MessageHeader>
+				) : (
+					<MessageHeader className="gap-1.5 px-0 invisible text-xs group-hover/message:visible">
+						<span>{formatClockTime(createdAt)}</span>
+					</MessageHeader>
+				)}
 				{rows.length > 0 ? (
 					rows
 				) : (
@@ -483,7 +554,7 @@ function ToolCallGroup({
 	const count = parts.length;
 
 	return (
-		<Marker variant="border">
+		<Marker className="rounded-lg border border-zinc-200 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/40">
 			<MarkerIcon>
 				{running ? <Spinner /> : <Wrench className="size-4" />}
 			</MarkerIcon>
@@ -504,7 +575,7 @@ function ToolCallGroup({
 				{expanded && (
 					<div className="mt-2 flex flex-col gap-2">
 						{parts.map((p) => (
-							<ToolCallMarker key={p.callId} part={p} compact />
+							<ToolCallMarker key={p.callId} part={p} />
 						))}
 					</div>
 				)}
@@ -515,10 +586,8 @@ function ToolCallGroup({
 
 function ToolCallMarker({
 	part,
-	compact,
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
-	compact?: boolean;
 }) {
 	const running = part.output == null && part.error == null;
 	const output =
@@ -528,7 +597,7 @@ function ToolCallMarker({
 				? String(part.output)
 				: "";
 	return (
-		<Marker variant={compact ? "default" : "border"}>
+		<Marker className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-950">
 			<MarkerIcon>
 				{running ? <Spinner /> : <Wrench className="size-4" />}
 			</MarkerIcon>

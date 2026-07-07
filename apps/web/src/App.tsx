@@ -1,6 +1,8 @@
-import { FolderGit2, MessageSquare } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import type { SessionListEvent } from "@dilna/shared";
+import { FolderGit2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
+import { ChatHeader } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { NewSessionDialog } from "@/components/NewSessionDialog";
@@ -8,9 +10,10 @@ import { Sidebar } from "@/components/Sidebar";
 
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
-	const [sessions, setSessions] = useState<SessionView[]>([]);
+	const [sessionsById, setSessionsById] = useState<Record<string, SessionView>>(
+		{},
+	);
 	const [loadingRepos, setLoadingRepos] = useState(true);
-	const [loadingSessions, setLoadingSessions] = useState(false);
 	const [repoError, setRepoError] = useState<string | null>(null);
 	const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
 	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
@@ -32,81 +35,135 @@ export function App() {
 		}
 	}, []);
 
-	const refreshSessions = useCallback(async (repoId: string) => {
-		setLoadingSessions(true);
-		try {
-			const { sessions } = await api.sessions.listByRepo(repoId);
-			setSessions(sessions);
-		} catch {
-			setSessions([]);
-		} finally {
-			setLoadingSessions(false);
-		}
-	}, []);
-
 	useEffect(() => {
 		refreshRepos();
 	}, [refreshRepos]);
 
+	// Cmd/Ctrl+K opens New Session for the currently selected repo, mirroring
+	// the sidebar button's shortcut hint. No-op with no repo selected, same
+	// as the button's disabled state.
 	useEffect(() => {
-		setSelectedSessionId(null);
-		setSessions([]);
-		if (selectedRepoId) refreshSessions(selectedRepoId);
-	}, [selectedRepoId, refreshSessions]);
+		function onKeyDown(e: KeyboardEvent) {
+			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+				e.preventDefault();
+				if (selectedRepoId) setNewSessionOpen(true);
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [selectedRepoId]);
+
+	// Single cross-session status subscription (per ADR-0008) — the source
+	// of truth for every session's live state, across every repo. Powers the
+	// header's session dropdown and the sidebar's Background Agents panel.
+	useEffect(() => {
+		const unsubscribe = api.sessionList.stream((ev: SessionListEvent) => {
+			if (ev.type === "session_status") {
+				setSessionsById((prev) => ({ ...prev, [ev.session.id]: ev.session }));
+			} else if (ev.type === "session_deleted") {
+				setSessionsById((prev) => {
+					if (!(ev.sessionId in prev)) return prev;
+					const next = { ...prev };
+					delete next[ev.sessionId];
+					return next;
+				});
+			}
+		});
+		return unsubscribe;
+	}, []);
 
 	const selectedRepo = repos.find((r) => r.id === selectedRepoId) ?? null;
-	const selectedSession =
-		sessions.find((s) => s.id === selectedSessionId) ?? null;
+	const selectedSession = selectedSessionId
+		? (sessionsById[selectedSessionId] ?? null)
+		: null;
 
-	const handleSessionCreated = useCallback((session: SessionView) => {
-		setSessions((prev) => [session, ...prev]);
+	const repoSessions = useMemo(
+		() =>
+			Object.values(sessionsById)
+				.filter((s) => s.repoId === selectedRepoId)
+				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+		[sessionsById, selectedRepoId],
+	);
+
+	const backgroundSessions = useMemo(
+		() =>
+			Object.values(sessionsById)
+				.filter((s) => s.id !== selectedSessionId && s.status !== "idle")
+				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+		[sessionsById, selectedSessionId],
+	);
+
+	const handleSelectRepo = useCallback(
+		(id: string) => {
+			setSelectedRepoId(id);
+			const latest = Object.values(sessionsById)
+				.filter((s) => s.repoId === id)
+				.sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
+			setSelectedSessionId(latest?.id ?? null);
+		},
+		[sessionsById],
+	);
+
+	const handleSelectSession = useCallback((session: SessionView) => {
+		setSelectedRepoId(session.repoId);
 		setSelectedSessionId(session.id);
 	}, []);
 
-	const handleDeleteSession = useCallback(async (id: string) => {
-		try {
-			await api.sessions.delete(id);
-			setSessions((prev) => prev.filter((s) => s.id !== id));
-			setSelectedSessionId((prev) => (prev === id ? null : prev));
-		} catch (e) {
-			console.error(e);
-		}
+	const handleSessionCreated = useCallback((session: SessionView) => {
+		setSessionsById((prev) => ({ ...prev, [session.id]: session }));
+		setSelectedSessionId(session.id);
 	}, []);
+
+	const handleDeleteSession = useCallback(
+		async (id: string) => {
+			try {
+				await api.sessions.delete(id);
+				setSessionsById((prev) => {
+					if (!(id in prev)) return prev;
+					const next = { ...prev };
+					delete next[id];
+					return next;
+				});
+				if (selectedSessionId === id) setSelectedSessionId(null);
+			} catch (e) {
+				console.error(e);
+			}
+		},
+		[selectedSessionId],
+	);
 
 	return (
 		<>
 			<div className="flex h-screen w-screen">
 				<Sidebar
 					repos={repos}
-					sessions={sessions}
 					loadingRepos={loadingRepos}
-					loadingSessions={loadingSessions}
 					error={repoError}
 					selectedRepoId={selectedRepoId}
-					selectedSessionId={selectedSessionId}
-					onSelectRepo={setSelectedRepoId}
-					onSelectSession={setSelectedSessionId}
+					onSelectRepo={handleSelectRepo}
 					onRefreshRepos={refreshRepos}
 					onNewRepo={() => setNewRepoOpen(true)}
 					onNewSession={() => setNewSessionOpen(true)}
-					onDeleteSession={handleDeleteSession}
+					backgroundSessions={backgroundSessions}
+					repoSlugById={Object.fromEntries(
+						repos.map((r) => [r.id, r.slug] as const),
+					)}
+					onSelectBackgroundSession={handleSelectSession}
 				/>
 				<main className="flex flex-1 flex-col overflow-hidden">
-					<header className="flex h-14 items-center gap-2 border-b border-zinc-200 px-4 dark:border-zinc-800">
-						{selectedSession ? (
-							<>
-								<MessageSquare className="size-4 text-muted-foreground" />
-								<span className="font-medium">{selectedSession.title}</span>
-							</>
-						) : selectedRepo ? (
-							<>
-								<FolderGit2 className="size-4 text-muted-foreground" />
-								<span className="font-medium">{selectedRepo.slug}</span>
-							</>
-						) : (
+					{selectedRepo ? (
+						<ChatHeader
+							repo={selectedRepo}
+							sessions={repoSessions}
+							selectedSession={selectedSession}
+							onSelectSession={handleSelectSession}
+							onDeleteSession={handleDeleteSession}
+						/>
+					) : (
+						<header className="flex h-14 items-center gap-2 border-b border-zinc-200 px-4 dark:border-zinc-800">
 							<span className="text-muted-foreground">dilna</span>
-						)}
-					</header>
+						</header>
+					)}
 					{selectedSession ? (
 						<ChatShell
 							sessionId={selectedSession.id}
@@ -163,7 +220,8 @@ function RepoEmpty({ repo }: { repo: Repo }) {
 				default branch: {repo.defaultBranch}
 			</p>
 			<p className="mt-4 text-sm text-muted-foreground">
-				Click + on Sessions to start a new session for this repo.
+				Click "New session" in the sidebar to start one, or pick an existing
+				session from the dropdown above.
 			</p>
 		</div>
 	);

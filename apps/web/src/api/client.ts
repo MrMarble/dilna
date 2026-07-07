@@ -3,10 +3,18 @@ import type {
 	AgentType,
 	Message,
 	Repo,
+	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
 
-export type { AgentStreamEvent, AgentType, Message, Repo, SessionView };
+export type {
+	AgentStreamEvent,
+	AgentType,
+	Message,
+	Repo,
+	SessionListEvent,
+	SessionView,
+};
 
 export type CloneRepoInput = {
 	url: string;
@@ -111,6 +119,26 @@ export const api = {
 				es.addEventListener(t, (e: MessageEvent) => {
 					try {
 						const ev = JSON.parse(e.data as string) as AgentStreamEvent;
+						onEvent(ev);
+					} catch {
+						// ignore malformed payloads
+					}
+				});
+			}
+			return () => es.close();
+		},
+	},
+	/** Cross-session status stream (per ADR-0008): one subscription per app
+	 * load, notified whenever any session's status changes. Powers the
+	 * sidebar's Background Agents panel and the chat header's session
+	 * dropdown. Returns an unsubscribe. */
+	sessionList: {
+		stream: (onEvent: (event: SessionListEvent) => void): (() => void) => {
+			const es = new EventSource("/api/stream");
+			for (const t of ["session_status", "session_deleted"]) {
+				es.addEventListener(t, (e: MessageEvent) => {
+					try {
+						const ev = JSON.parse(e.data as string) as SessionListEvent;
 						onEvent(ev);
 					} catch {
 						// ignore malformed payloads
