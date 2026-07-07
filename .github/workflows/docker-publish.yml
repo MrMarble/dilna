@@ -13,27 +13,13 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      # ubuntu-slim also lacks iptables, which dockerd's default bridge
-      # network driver needs to set up NAT — without it the daemon fails
-      # to start ("failed to create NAT chain DOCKER: iptables not found").
-      - name: Install iptables
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y iptables
-
-      # ubuntu-slim ships the Docker client/buildx/compose CLIs but no
-      # daemon ("Docker Server" is absent from its tool inventory, unlike
-      # ubuntu-latest) — this installs and starts one.
-      - name: Set up Docker
-        uses: docker/setup-docker-action@v5
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
