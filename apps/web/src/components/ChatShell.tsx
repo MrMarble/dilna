@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/api/client";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Message, MessageContent } from "@/components/ui/message";
 import {
@@ -443,9 +444,13 @@ function ChatMessageRow({
 			rows.push(
 				<Bubble key={`t-${i}`} variant={bubbleVariant}>
 					<BubbleContent>
-						<pre className="whitespace-pre-wrap break-words font-sans text-sm">
-							{p.text}
-						</pre>
+						{role === "assistant" ? (
+							<Markdown>{p.text}</Markdown>
+						) : (
+							<pre className="whitespace-pre-wrap break-words font-sans text-sm">
+								{p.text}
+							</pre>
+						)}
 					</BubbleContent>
 				</Bubble>,
 			);
