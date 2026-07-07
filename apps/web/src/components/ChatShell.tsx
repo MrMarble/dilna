@@ -1,12 +1,24 @@
 import type {
 	AgentStreamEvent,
-	Message,
+	Message as ChatMessage,
 	MessagePart,
 	SessionView,
 } from "@dilna/shared";
-import { LoaderCircle, Send, Square, Wrench } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, LoaderCircle, Send, Square, Wrench } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/api/client";
+import { Bubble, BubbleContent } from "@/components/ui/bubble";
+import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
+import { Message, MessageContent } from "@/components/ui/message";
+import {
+	MessageScroller,
+	MessageScrollerButton,
+	MessageScrollerContent,
+	MessageScrollerItem,
+	MessageScrollerProvider,
+	MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
+import { Spinner } from "@/components/ui/spinner";
 
 type Props = {
 	sessionId: string;
@@ -21,22 +33,20 @@ type LiveMessage = {
 };
 
 export function ChatShell({ sessionId, session }: Props) {
-	const [messages, setMessages] = useState<Message[]>([]);
+	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [live, setLive] = useState<Record<string, LiveMessage>>({});
 	const [status, setStatus] = useState<SessionView["status"]>(session.status);
 	const [input, setInput] = useState("");
 	const [sending, setSending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const scrollRef = useRef<HTMLDivElement>(null);
+	/** True from send → first assistant token/tool_call; suppresses the
+	 * 'Thinking...' marker once content starts streaming. */
+	const [thinking, setThinking] = useState(false);
 
 	const loadHistory = useCallback(async () => {
 		try {
 			const { messages } = await api.sessions.messages(sessionId);
 			setMessages(messages);
-			// Now that the persisted copies are in state, drop any live
-			// messages that have already been persisted. Doing this AFTER
-			// setMessages (not before) avoids the flicker where a message
-			// is in neither state during the network round-trip.
 			const persistedIds = new Set(messages.map((m) => m.id));
 			setLive((prev) => {
 				const next: Record<string, LiveMessage> = {};
@@ -59,6 +69,7 @@ export function ChatShell({ sessionId, session }: Props) {
 		setLive({});
 		setMessages([]);
 		setError(null);
+		setThinking(false);
 		setStatus(session.status);
 		loadHistory();
 		const unsubscribe = api.sessions.stream(
@@ -67,11 +78,9 @@ export function ChatShell({ sessionId, session }: Props) {
 				switch (ev.type) {
 					case "session_status":
 						setStatus(ev.status);
-						// Chat completed: refresh history. The loadHistory call
-						// itself will drop live messages whose IDs are now persisted,
-						// so there's no flicker gap between "live" and "persisted".
 						if (ev.status === "idle" || ev.status === "crashed") {
 							void loadHistory();
+							if (ev.status === "crashed") setThinking(false);
 						}
 						break;
 					case "message_start":
@@ -89,6 +98,9 @@ export function ChatShell({ sessionId, session }: Props) {
 						});
 						break;
 					case "token":
+						// Deactivate the thinking throbber the moment the
+						// assistant produces any token (text or otherwise).
+						setThinking(false);
 						setLive((prev) => {
 							const m = prev[ev.messageId];
 							if (m) {
@@ -109,6 +121,7 @@ export function ChatShell({ sessionId, session }: Props) {
 						});
 						break;
 					case "tool_call_start":
+						setThinking(false);
 						setLive((prev) => {
 							const m = prev[ev.messageId];
 							if (!m) return prev;
@@ -149,12 +162,10 @@ export function ChatShell({ sessionId, session }: Props) {
 						});
 						break;
 					case "message_end":
-						// Backend doesn't currently emit message_end (opencode has
-						// no such event), but if it ever does, just trigger a history
-						// refresh — loadHistory itself drops persisted IDs from live.
 						void loadHistory();
 						break;
 					case "error":
+						setThinking(false);
 						setError(
 							typeof ev.message === "string"
 								? ev.message
@@ -162,6 +173,7 @@ export function ChatShell({ sessionId, session }: Props) {
 						);
 						break;
 					case "agent_crashed":
+						setThinking(false);
 						setError(
 							`agent crashed (code ${ev.exitCode}). ${ev.stderrTail.slice(-3).join("; ")}`,
 						);
@@ -174,17 +186,9 @@ export function ChatShell({ sessionId, session }: Props) {
 		return unsubscribe;
 	}, [sessionId, loadHistory, session.status]);
 
-	// Reset status when session.status prop changes (sidebar refresh).
 	useEffect(() => {
 		setStatus(session.status);
 	}, [session.status]);
-
-	// Auto-scroll to bottom on new content.
-	useEffect(() => {
-		if (scrollRef.current) {
-			scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-		}
-	}, [messages, live]);
 
 	const working = status === "working" || status === "starting";
 
@@ -194,10 +198,12 @@ export function ChatShell({ sessionId, session }: Props) {
 		setInput("");
 		setError(null);
 		setSending(true);
+		setThinking(true);
 		try {
 			await api.sessions.send(sessionId, text);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "send failed");
+			setThinking(false);
 		} finally {
 			setSending(false);
 		}
@@ -231,36 +237,51 @@ export function ChatShell({ sessionId, session }: Props) {
 
 	return (
 		<div className="flex h-full flex-col">
-			<div ref={scrollRef} className="flex-1 overflow-y-auto px-6 py-4">
-				{rendered.length === 0 ? (
-					<div className="flex h-full flex-col items-center justify-center text-muted-foreground">
-						<p className="text-sm">No messages yet.</p>
-						<p className="mt-1 text-xs">Ask the agent something below.</p>
-					</div>
-				) : (
-					<ul className="mx-auto max-w-3xl space-y-3">
-						{rendered.map((m) => (
-							<li
-								key={m.id}
-								className={
-									m.role === "user"
-										? "rounded-md bg-zinc-100 px-3 py-2 dark:bg-zinc-900"
-										: "rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800"
-								}
-							>
-								<div className="mb-1 text-xs uppercase tracking-wider text-muted-foreground">
-									{m.role}
-								</div>
-								<MessageBody parts={m.parts} />
-							</li>
-						))}
-					</ul>
-				)}
-				{error && (
-					<p className="mx-auto mt-3 max-w-3xl rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-400">
-						{error}
-					</p>
-				)}
+			<div className="flex-1 overflow-hidden">
+				<MessageScrollerProvider autoScroll>
+					<MessageScroller className="h-full">
+						<MessageScrollerViewport>
+							<MessageScrollerContent className="p-4">
+								{rendered.length === 0 && !thinking ? (
+									<EmptyHint />
+								) : (
+									<>
+										{rendered.map((m) => (
+											<MessageScrollerItem
+												key={m.id}
+												messageId={m.id}
+												scrollAnchor={m.role === "user"}
+											>
+												<ChatMessageRow
+													id={m.id}
+													role={m.role}
+													parts={m.parts}
+												/>
+											</MessageScrollerItem>
+										))}
+										{thinking && <ThinkingMarker />}
+										{error && (
+											<MessageScrollerItem messageId="__error">
+												<Marker
+													variant="border"
+													className="text-red-500 dark:text-red-400"
+												>
+													<MarkerIcon>
+														<AlertCircle className="size-4" />
+													</MarkerIcon>
+													<MarkerContent className="text-red-500 dark:text-red-400">
+														{error}
+													</MarkerContent>
+												</Marker>
+											</MessageScrollerItem>
+										)}
+									</>
+								)}
+							</MessageScrollerContent>
+						</MessageScrollerViewport>
+						<MessageScrollerButton />
+					</MessageScroller>
+				</MessageScrollerProvider>
 			</div>
 
 			<div className="border-t border-zinc-200 px-6 py-3 dark:border-zinc-800">
@@ -312,31 +333,80 @@ export function ChatShell({ sessionId, session }: Props) {
 	);
 }
 
-function MessageBody({ parts }: { parts: MessagePart[] }) {
+function EmptyHint() {
 	return (
-		<div className="space-y-2 text-sm">
-			{parts.map((p, i) => {
-				if (p.type === "text") {
-					return (
-						<pre key={i} className="whitespace-pre-wrap break-words font-sans">
-							{p.text}
-						</pre>
-					);
-				}
-				if (p.type === "tool_call") {
-					return <ToolCall key={i} part={p} />;
-				}
-				return null;
-			})}
+		<div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+			<p className="text-sm">No messages yet.</p>
+			<p className="text-xs">Ask the agent something below.</p>
 		</div>
 	);
 }
 
-function ToolCall({
+function ThinkingMarker() {
+	return (
+		<MessageScrollerItem messageId="__thinking">
+			<Marker role="status">
+				<MarkerIcon>
+					<Spinner />
+				</MarkerIcon>
+				<MarkerContent className="shimmer">Thinking...</MarkerContent>
+			</Marker>
+		</MessageScrollerItem>
+	);
+}
+
+function ChatMessageRow({
+	id,
+	role,
+	parts,
+}: {
+	id: string;
+	role: "user" | "assistant";
+	parts: MessagePart[];
+}) {
+	const align = role === "user" ? "end" : "start";
+	const bubbleVariant = role === "user" ? "default" : "muted";
+
+	// Separate text parts (rendered as Bubble rows) from tool parts (rendered
+	// as Marker rows). Order is preserved.
+	const rows: React.ReactNode[] = [];
+	parts.forEach((p, i) => {
+		if (p.type === "text") {
+			rows.push(
+				<Bubble key={`t-${i}`} variant={bubbleVariant}>
+					<BubbleContent>
+						<pre className="whitespace-pre-wrap break-words font-sans text-sm">
+							{p.text}
+						</pre>
+					</BubbleContent>
+				</Bubble>,
+			);
+		} else if (p.type === "tool_call") {
+			rows.push(<ToolCallMarker key={`c-${i}`} part={p} />);
+		}
+	});
+
+	return (
+		<Message align={align}>
+			<MessageContent>
+				{rows.length > 0 ? (
+					rows
+				) : (
+					<span className="text-xs text-muted-foreground">{id}</span>
+				)}
+			</MessageContent>
+		</Message>
+	);
+}
+
+function ToolCallMarker({
 	part,
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
 }) {
+	// Indented inline marker inside the assistant message. Pending/running
+	// tools get a spinner; completed tools show their output below the call.
+	const running = part.output == null && part.error == null;
 	const output =
 		part.error != null
 			? String(part.error)
@@ -344,21 +414,32 @@ function ToolCall({
 				? String(part.output)
 				: "";
 	return (
-		<div className="rounded-md border border-zinc-200 bg-zinc-50 px-2 py-1.5 text-xs dark:border-zinc-800 dark:bg-zinc-950">
-			<div className="flex items-center gap-1.5 font-mono">
-				<Wrench className="size-3 text-muted-foreground" />
-				<span className="font-medium">{part.tool}</span>
-			</div>
-			{typeof part.input === "object" && part.input !== null && (
-				<pre className="mt-1 overflow-x-auto text-zinc-600 dark:text-zinc-400">
-					{JSON.stringify(part.input)}
-				</pre>
-			)}
-			{output && (
-				<pre className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap text-zinc-600 dark:text-zinc-400">
-					{output}
-				</pre>
-			)}
-		</div>
+		<Marker variant="border">
+			<MarkerIcon>
+				{running ? <Spinner /> : <Wrench className="size-4" />}
+			</MarkerIcon>
+			<MarkerContent>
+				<div className="flex flex-col gap-1">
+					<div className="flex items-center gap-1.5 font-mono text-xs">
+						<span className="font-medium text-muted-foreground">
+							{part.tool}
+						</span>
+						<span className="text-muted-foreground">
+							{running ? "running…" : "done"}
+						</span>
+					</div>
+					{typeof part.input === "object" && part.input !== null && (
+						<pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+							{JSON.stringify(part.input)}
+						</pre>
+					)}
+					{output && (
+						<pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+							{output}
+						</pre>
+					)}
+				</div>
+			</MarkerContent>
+		</Marker>
 	);
 }
