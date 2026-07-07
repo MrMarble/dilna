@@ -50,6 +50,13 @@ export function ChatShell({ sessionId, session }: Props) {
 				switch (ev.type) {
 					case "session_status":
 						setStatus(ev.status);
+						// When the session settles back to idle (chat complete or
+						// errored out), any live in-flight messages should be flushed
+						// — the history refresh will pick up what actually persisted.
+						if (ev.status === "idle" || ev.status === "crashed") {
+							void loadHistory();
+							setLive({});
+						}
 						break;
 					case "message_start":
 						setLive((prev) => {
@@ -134,7 +141,11 @@ export function ChatShell({ sessionId, session }: Props) {
 						});
 						break;
 					case "error":
-						setError(ev.message);
+						setError(
+							typeof ev.message === "string"
+								? ev.message
+								: JSON.stringify(ev.message),
+						);
 						break;
 					case "agent_crashed":
 						setError(

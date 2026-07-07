@@ -293,7 +293,7 @@ function normalizeEvent(
 			if (sessionID && sessionID !== targetSessionId) return null;
 			return {
 				type: "error",
-				message: (ev.properties.error as string) ?? "opencode session error",
+				message: errorToString(ev.properties.error, "opencode session error"),
 			};
 		}
 		default:
@@ -362,6 +362,32 @@ function normalizeToolPart(part: OToolPart): AgentStreamEvent | null {
 		default:
 			return null;
 	}
+}
+
+/**
+ * Coerce an opencode error payload (which may be a string, an Error-like
+ * object with .message, an APIError-shaped {name, data:{message}}, or
+ * anything else) into a single human-readable string. Never throws.
+ */
+function errorToString(value: unknown, fallback: string): string {
+	if (value == null) return fallback;
+	if (typeof value === "string") return value;
+	if (value instanceof Error) return value.message || fallback;
+	if (typeof value === "object") {
+		const v = value as Record<string, unknown>;
+		if (typeof v.message === "string") return v.message;
+		if (typeof v.error === "string") return v.error;
+		if (v.data && typeof v.data === "object") {
+			const d = v.data as Record<string, unknown>;
+			if (typeof d.message === "string") return d.message;
+		}
+		try {
+			return JSON.stringify(value);
+		} catch {
+			return fallback;
+		}
+	}
+	return fallback;
 }
 
 function pickFreePort(): Promise<number> {
