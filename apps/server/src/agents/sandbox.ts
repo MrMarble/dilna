@@ -49,15 +49,23 @@ export type SandboxSpawnOptions = {
 	/**
 	 * Additional paths the agent backend itself needs write access to (its
 	 * own cache/log/data directories — not project files). Created if
-	 * missing, since the parent is read-only inside the sandbox.
+	 * missing, since sandlock rejects write rules for paths that don't exist.
 	 */
 	writablePaths?: string[];
+	/**
+	 * TCP ports the sandboxed process needs to bind/listen on — sandlock
+	 * denies all inbound binding by default. Only opencode needs this (its
+	 * `serve` HTTP server); the Claude Agent SDK subprocess communicates
+	 * over stdio and needs none.
+	 */
+	allowBindPorts?: number[];
 };
 
 /**
- * Wrap a command with bubblewrap (bwrap) so its only writable filesystem
- * access is `cwd` — the session's worktree. Everything else on the host is
- * bind-mounted read-only inside the sandbox's own mount namespace.
+ * Wrap a command with sandlock (https://github.com/multikernel/sandlock) so
+ * its only writable filesystem access is `cwd` — the session's worktree.
+ * Everything else on the host is readable but not writable, enforced via
+ * Landlock + seccomp rather than a mount namespace.
  *
  * This is what ADR-0003's safety justification for auto-approving every
  * tool call ("the agent runs in an isolated container... so the blast
@@ -66,49 +74,55 @@ export type SandboxSpawnOptions = {
  * agent could (and did) write outside its assigned worktree via an absolute
  * path or a `bash` tool call.
  *
- * The network namespace is intentionally left shared — agents need
- * outbound access for LLM provider APIs and git remotes. This restricts
- * filesystem writes only, not network egress or process visibility.
+ * Chosen over bubblewrap (the first implementation — see ADR-0010) because
+ * it runs unprivileged inside a plain Docker/Kubernetes container with a
+ * single narrow capability (`SYS_PTRACE`) and no seccomp/AppArmor profile
+ * changes; bwrap needs `CAP_SYS_ADMIN` plus disabling both of those
+ * entirely, which is a much bigger ask for a Kubernetes deployment.
+ *
+ * Unlike bwrap (which just shares the host's network namespace), sandlock
+ * denies all networking by default — both outbound connect and inbound
+ * bind. Outbound is opened unconditionally here (`--net-allow '*'` +
+ * `udp://*`): agents need it for LLM provider APIs, git remotes, and
+ * whatever else they're asked to fetch, none of which is enumerable in
+ * advance. This sandboxes filesystem writes (and, incidentally, inbound
+ * listening) only — not outbound egress or process visibility.
  */
 export function spawnSandboxed(opts: SandboxSpawnOptions): ChildProcess {
 	const gitCommonDir = resolveGitCommonDir(opts.cwd);
-	const writablePaths = gitCommonDir
-		? [...(opts.writablePaths ?? []), gitCommonDir]
-		: (opts.writablePaths ?? []);
-
-	const bwrapArgs = [
-		"--die-with-parent",
-		"--ro-bind",
-		"/",
-		"/",
-		"--dev",
-		"/dev",
-		"--proc",
-		"/proc",
+	const writablePaths = [
+		opts.cwd,
+		// git needs to redirect stdio through /dev/null during add/commit;
+		// Landlock doesn't expose device nodes through the generic `-r /`
+		// read grant the way a mount-namespace tool like bwrap would.
+		"/dev/null",
+		...(gitCommonDir ? [gitCommonDir] : []),
+		...(opts.writablePaths ?? []),
 	];
-	// A private /tmp gives the agent its own scratch space instead of the
-	// host's real one — but if any writable path is itself under /tmp (e.g.
-	// dilna's own data dir configured there), replacing /tmp would also hide
-	// the *rest* of that path's real siblings (a bare repo's objects/refs
-	// alongside the one worktree subdirectory we bind), which breaks git's
-	// own worktree resolution ("not a git repository: (null)"). Skip the
-	// replacement in that case and fall back to /tmp being read-only like
-	// the rest of `/`, carved out by the same explicit binds as everywhere.
-	const anyPathUnderTmp = [opts.cwd, ...writablePaths].some((p) =>
-		p.startsWith("/tmp/"),
-	);
-	if (!anyPathUnderTmp) {
-		bwrapArgs.push("--tmpfs", "/tmp");
-	}
-	bwrapArgs.push("--bind", opts.cwd, opts.cwd);
+
+	const sandlockArgs = [
+		"run",
+		"-r",
+		"/",
+		"--cwd",
+		opts.cwd,
+		"--net-allow",
+		"*",
+		"--net-allow",
+		"udp://*",
+	];
 	for (const p of writablePaths) {
-		// Create it if missing — the parent is read-only inside the sandbox,
-		// so the backend can't create its own data dir on first run.
-		mkdirSync(p, { recursive: true });
-		bwrapArgs.push("--bind", p, p);
+		// Create it if missing — sandlock rejects a write rule for a path
+		// that doesn't exist yet (e.g. a backend's own data dir on first run).
+		if (p !== "/dev/null") mkdirSync(p, { recursive: true });
+		sandlockArgs.push("-w", p);
 	}
-	bwrapArgs.push("--chdir", opts.cwd, "--", opts.command, ...opts.args);
-	return spawn("bwrap", bwrapArgs, {
+	for (const port of opts.allowBindPorts ?? []) {
+		sandlockArgs.push("--net-allow-bind", String(port));
+	}
+	sandlockArgs.push("--", opts.command, ...opts.args);
+
+	return spawn("sandlock", sandlockArgs, {
 		cwd: opts.cwd,
 		env: opts.env,
 		stdio: opts.stdio ?? ["ignore", "pipe", "pipe"],

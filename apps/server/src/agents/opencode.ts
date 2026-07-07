@@ -67,6 +67,8 @@ export async function startOpencode(
 			path.join(os.homedir(), ".local", "share", "opencode"),
 			path.join(os.homedir(), ".config", "opencode"),
 		],
+		// sandlock denies inbound binding by default; `serve` needs its own port.
+		allowBindPorts: [port],
 	});
 
 	const stderrTail: string[] = [];
