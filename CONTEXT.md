@@ -17,5 +17,5 @@ A resumable chat conversation with an AI agent, bound 1:1 to a single **Worktree
 _Avoid_: conversation, thread, run
 
 **Agent**:
-The process that executes AI work for a **Session** against its **Worktree**. For the MVP, an Agent is `opencode serve`; future agents may use the Claude Agent SDK.
+The process that executes AI work for a **Session** against its **Worktree**. Today an Agent is the Claude Agent SDK (`apps/server/src/agents/claude.ts`); see ADR-0011 for why dilna standardized on a single backend.
 _Avoid_: model, assistant, bot

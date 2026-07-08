@@ -1,5 +1,10 @@
 # ClaudeAgent adapter: `@anthropic-ai/claude-agent-sdk` in streaming-input mode, one query per worktree
 
+> **Note (ADR-0011)**: the `handle.kind` dispatch this ADR describes was
+> removed once `ClaudeAgent` became the only backend — `SessionManager` now
+> calls it directly rather than branching. The adapter design itself
+> (streaming-input mode, transcript re-sync) is unchanged.
+
 ## Context
 
 ADR-0002 shipped `OpencodeAgent` as the only `Agent` implementation at MVP but reserved `agentType` on the Session record specifically so a second backend wouldn't need a migration. This ADR adds that second backend: `ClaudeAgent`, built on `@anthropic-ai/claude-agent-sdk` (the TypeScript SDK for driving Claude Code programmatically).

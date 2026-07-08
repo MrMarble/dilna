@@ -3,8 +3,12 @@ import {
 	type SpawnOptions,
 	spawn,
 } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { getDataDir } from "../db";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * A git worktree's `.git` is a *file* (not a directory) pointing at its own
@@ -39,6 +43,102 @@ function resolveGitCommonDir(worktreePath: string): string | null {
 	}
 }
 
+/**
+ * Walk up from `start` to find dilna's own monorepo root (marked by
+ * `pnpm-workspace.yaml`). Used to locate dilna's own source directories so
+ * they can be hidden from the sandboxed agent — separate from whether
+ * `DILNA_DATA_DIR` happens to live inside that tree.
+ */
+function findWorkspaceRoot(start: string): string {
+	let dir = start;
+	while (true) {
+		if (existsSync(path.join(dir, "pnpm-workspace.yaml"))) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) return start;
+		dir = parent;
+	}
+}
+
+/**
+ * List `dir`'s immediate children and return the ones NOT in `keep`, for use
+ * as `--fs-deny` targets. sandlock's `-r /` grants broad read for the tools
+ * themselves to function (shared libs, PATH-resolved binaries, etc.); this
+ * carves out everything under `dir` *except* the specific entries a given
+ * session actually needs, so sibling repos/worktrees/sessions and dilna's own
+ * source stay unreadable to the sandboxed agent despite the broad base grant.
+ *
+ * Denying a parent and re-allowing a path nested inside it does NOT work with
+ * sandlock (`--fs-deny` always wins over a more specific `-r`/`-w`, verified
+ * empirically) — so this denies only true siblings of what's kept, never an
+ * ancestor of it.
+ *
+ * Only reflects siblings that exist at spawn time: a new sibling created
+ * after this process starts (e.g. another session starting concurrently)
+ * won't be in this list and will remain readable for this process's lifetime
+ * — a known, low-severity gap (see ADR-0010).
+ */
+function denySiblings(dir: string, keep: Set<string>): string[] {
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return [];
+	}
+	return entries
+		.filter((name) => !keep.has(name))
+		.map((name) => path.join(dir, name));
+}
+
+/**
+ * Compute `--fs-deny` targets that hide everything dilna itself manages
+ * *except* the one worktree/repo this session is actually using: other
+ * repos' worktrees, other sessions' worktrees of the same repo, other repos'
+ * bare clones, and (when `DILNA_DATA_DIR` lives inside dilna's own checkout,
+ * as it does by default in local dev) dilna's own source directories —
+ * `node_modules` is deliberately left un-denied since the agent backends'
+ * own binaries and dependencies live there and aren't project data worth
+ * hiding.
+ */
+function denyPathsOutsideSession(
+	worktreePath: string,
+	gitCommonDir: string | null,
+): string[] {
+	const deny: string[] = [];
+
+	const repoWorktreesDir = path.dirname(worktreePath); // data/worktrees/<repo>
+	const allWorktreesDir = path.dirname(repoWorktreesDir); // data/worktrees
+	deny.push(
+		...denySiblings(
+			allWorktreesDir,
+			new Set([path.basename(repoWorktreesDir)]),
+		),
+		...denySiblings(repoWorktreesDir, new Set([path.basename(worktreePath)])),
+	);
+
+	if (gitCommonDir) {
+		const allReposDir = path.dirname(gitCommonDir); // data/repos
+		deny.push(
+			...denySiblings(allReposDir, new Set([path.basename(gitCommonDir)])),
+		);
+	}
+
+	const dataDir = getDataDir();
+	const workspaceRoot = findWorkspaceRoot(__dirname);
+	if (dataDir.startsWith(`${workspaceRoot}${path.sep}`)) {
+		const dataDirName = path
+			.relative(workspaceRoot, dataDir)
+			.split(path.sep)[0];
+		deny.push(
+			...denySiblings(
+				workspaceRoot,
+				new Set([dataDirName ?? "", "node_modules"]),
+			),
+		);
+	}
+
+	return deny;
+}
+
 export type SandboxSpawnOptions = {
 	command: string;
 	args: string[];
@@ -52,27 +152,25 @@ export type SandboxSpawnOptions = {
 	 * missing, since sandlock rejects write rules for paths that don't exist.
 	 */
 	writablePaths?: string[];
-	/**
-	 * TCP ports the sandboxed process needs to bind/listen on — sandlock
-	 * denies all inbound binding by default. Only opencode needs this (its
-	 * `serve` HTTP server); the Claude Agent SDK subprocess communicates
-	 * over stdio and needs none.
-	 */
-	allowBindPorts?: number[];
 };
 
 /**
  * Wrap a command with sandlock (https://github.com/multikernel/sandlock) so
- * its only writable filesystem access is `cwd` — the session's worktree.
- * Everything else on the host is readable but not writable, enforced via
- * Landlock + seccomp rather than a mount namespace.
+ * its only writable filesystem access is `cwd` — the session's worktree —
+ * and its readable access excludes sibling repos, sibling worktrees, and
+ * dilna's own source, even though the base grant (`-r /`) is broad. Read
+ * confinement is layered on with `--fs-deny` (see {@link
+ * denyPathsOutsideSession}) rather than narrowing `-r` directly, since the
+ * tools themselves (node, git, bash, the agent binary) need broad read
+ * access to system libraries and PATH-resolved binaries to function at all.
  *
  * This is what ADR-0003's safety justification for auto-approving every
  * tool call ("the agent runs in an isolated container... so the blast
  * radius is the worktree only") actually requires. Nothing previously
  * enforced that — `cwd` was only ever a convention, not a boundary, and an
  * agent could (and did) write outside its assigned worktree via an absolute
- * path or a `bash` tool call.
+ * path or a `bash` tool call, or read sibling projects and dilna's own
+ * source it had no reason to see.
  *
  * Chosen over bubblewrap (the first implementation — see ADR-0010) because
  * it runs unprivileged inside a plain Docker/Kubernetes container with a
@@ -85,8 +183,7 @@ export type SandboxSpawnOptions = {
  * bind. Outbound is opened unconditionally here (`--net-allow '*'` +
  * `udp://*`): agents need it for LLM provider APIs, git remotes, and
  * whatever else they're asked to fetch, none of which is enumerable in
- * advance. This sandboxes filesystem writes (and, incidentally, inbound
- * listening) only — not outbound egress or process visibility.
+ * advance.
  */
 export function spawnSandboxed(opts: SandboxSpawnOptions): ChildProcess {
 	const gitCommonDir = resolveGitCommonDir(opts.cwd);
@@ -111,14 +208,14 @@ export function spawnSandboxed(opts: SandboxSpawnOptions): ChildProcess {
 		"--net-allow",
 		"udp://*",
 	];
+	for (const denyPath of denyPathsOutsideSession(opts.cwd, gitCommonDir)) {
+		sandlockArgs.push("--fs-deny", denyPath);
+	}
 	for (const p of writablePaths) {
 		// Create it if missing — sandlock rejects a write rule for a path
 		// that doesn't exist yet (e.g. a backend's own data dir on first run).
 		if (p !== "/dev/null") mkdirSync(p, { recursive: true });
 		sandlockArgs.push("-w", p);
-	}
-	for (const port of opts.allowBindPorts ?? []) {
-		sandlockArgs.push("--net-allow-bind", String(port));
 	}
 	sandlockArgs.push("--", opts.command, ...opts.args);
 

@@ -20,11 +20,6 @@ import type {
 import { and, asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { type ClaudeHandle, chatClaude, startClaude } from "../agents/claude";
-import {
-	chatOpencode,
-	type OpencodeHandle,
-	startOpencode,
-} from "../agents/opencode";
 import { IDLE_TIMEOUT_MS } from "../agents/types";
 import { getDb } from "../db";
 import {
@@ -67,57 +62,6 @@ function toView(s: Session): SessionView {
 	};
 }
 
-/**
- * Convert an opencode part payload (from `client.session.messages`) into a
- * dilna normalized {@link MessagePart}. Returns null for part types dilna
- * doesn't surface (step-start, reasoning, snapshot, patch, agent, etc.).
- */
-function opencodePartToDilna(
-	part: Record<string, unknown>,
-): MessagePart | null {
-	const type = part.type as string;
-	if (type === "text") {
-		const text = (part.text as string) ?? "";
-		if (!text) return null;
-		return { type: "text", text };
-	}
-	if (type === "tool") {
-		const callId = (part.callID as string) ?? "";
-		const tool = (part.tool as string) ?? "unknown";
-		const state = (part.state as Record<string, unknown>) ?? {};
-		const input = state.input ?? {};
-		const status = (state.status as string) ?? "pending";
-		if (status === "completed") {
-			return {
-				type: "tool_call",
-				callId,
-				tool,
-				input,
-				output: (state.output as string) ?? "",
-			};
-		}
-		if (status === "error") {
-			const err = (state.error as string) ?? "unknown error";
-			return {
-				type: "tool_call",
-				callId,
-				tool,
-				input,
-				output: err,
-				error: err,
-			};
-		}
-		return {
-			type: "tool_call",
-			callId,
-			tool,
-			input,
-			output: "",
-		};
-	}
-	return null;
-}
-
 type ClaudeContentBlock = Record<string, unknown> & { type?: string };
 
 /**
@@ -140,9 +84,8 @@ function claudeContentToText(content: unknown): string {
  * into dilna normalized {@link Message} rows.
  *
  * Claude starts a brand-new SDKAssistantMessage (a new uuid) after every
- * tool round-trip within a single turn, unlike opencode which keeps one
- * message id for the whole turn. All assistant entries between one real
- * user message and the next are merged into a single Message row here —
+ * tool round-trip within a single turn. All assistant entries between one
+ * real user message and the next are merged into a single Message row here —
  * id'd by the *first* assistant entry's uuid — so persisted history has the
  * same one-row-per-turn granularity as the live view (see the matching
  * `currentTurnMessageId` merge in `agents/claude.ts`'s event normalizer;
@@ -150,10 +93,9 @@ function claudeContentToText(content: unknown): string {
  * sides picking the same id for a turn).
  *
  * Tool results arrive as separate synthetic user-role transcript entries;
- * they're merged back into the owning tool_call part (matching opencode's
- * merged pending/completed tool state) rather than persisted as their own
- * row. Real (non-tool-result) user entries are persisted as their own text
- * messages and also flush any in-progress assistant turn.
+ * they're merged back into the owning tool_call part rather than persisted
+ * as their own row. Real (non-tool-result) user entries are persisted as
+ * their own text messages and also flush any in-progress assistant turn.
  *
  * Claude's transcript entries carry no timestamp, so createdAt is
  * synthesized as `now + index` to preserve transcript order across a batch.
@@ -245,7 +187,7 @@ function claudeMessagesToDilna(
 type Listener = (event: AgentStreamEvent) => void;
 
 type ActiveAgent = {
-	handle: OpencodeHandle | ClaudeHandle;
+	handle: ClaudeHandle;
 	chatInProgress: boolean;
 	idleTimer: NodeJS.Timeout | null;
 };
@@ -301,7 +243,7 @@ class SessionManager {
 
 	async create(
 		repoId: string,
-		agentType: AgentType = "opencode",
+		agentType: AgentType = "claude",
 	): Promise<SessionView> {
 		if (agentType === "openai") {
 			throw new Error("openai agent backend is not implemented yet");
@@ -563,21 +505,16 @@ class SessionManager {
 
 		let expectedClaudeMessageId: string | undefined;
 		try {
-			if (handle.kind === "claude") {
-				expectedClaudeMessageId = await chatClaude(handle, {
-					message: text,
-					onEvent,
-				});
-			} else {
-				await chatOpencode(handle, { message: text, onEvent });
-			}
+			expectedClaudeMessageId = await chatClaude(handle, {
+				message: text,
+				onEvent,
+			});
 		} finally {
 			active.handle.listeners.delete(crashHandler);
 			active.chatInProgress = false;
 
 			// Claude's agentSessionId is unknown until the first turn's init
-			// message arrives (see claude.ts), so re-sync it post-chat — a
-			// no-op for opencode, whose id is already known at start time.
+			// message arrives (see claude.ts), so re-sync it post-chat.
 			if (handle.agentSessionId) {
 				const db = getDb();
 				db.update(sessionsTable)
@@ -606,65 +543,20 @@ class SessionManager {
 	 */
 	private async persistMessagesFromAgent(
 		sessionId: string,
-		handle: OpencodeHandle | ClaudeHandle,
+		handle: ClaudeHandle,
 		expectedClaudeMessageId?: string,
 	): Promise<void> {
+		if (!handle.agentSessionId) return;
 		const existing = new Set(
 			(await this.getMessages(sessionId)).map((m) => m.id),
 		);
-
-		if (handle.kind === "claude") {
-			if (!handle.agentSessionId) return;
-			const converted = await this.fetchClaudeMessagesWithRetry(
-				sessionId,
-				handle,
-				expectedClaudeMessageId,
-			);
-			for (const msg of converted) {
-				if (existing.has(msg.id)) continue;
-				this.persistMessage(sessionId, msg);
-			}
-			return;
-		}
-
-		let msgs: unknown[];
-		try {
-			const res = await handle.client.session.messages({
-				path: { id: handle.agentSessionId },
-				throwOnError: true,
-			});
-			msgs = (res.data ?? []) as unknown[];
-		} catch (err) {
-			console.error("[sessions] failed to fetch messages from opencode:", err);
-			return;
-		}
-
-		for (const entry of msgs) {
-			const e = entry as {
-				info: {
-					id: string;
-					role: "user" | "assistant";
-					time?: { created?: number };
-				};
-				parts: Array<Record<string, unknown>>;
-			};
-			const info = e.info;
-			if (!info || !e.parts) continue;
-			if (existing.has(info.id)) continue;
-			const parts: MessagePart[] = [];
-			for (const part of e.parts) {
-				const norm = opencodePartToDilna(part);
-				if (norm) parts.push(norm);
-			}
-			if (parts.length === 0) continue;
-			const createdAt = Math.floor((info.time?.created ?? Date.now()) / 1000);
-			const msg: Message = {
-				id: info.id,
-				sessionId,
-				role: info.role,
-				parts,
-				createdAt,
-			};
+		const converted = await this.fetchClaudeMessagesWithRetry(
+			sessionId,
+			handle,
+			expectedClaudeMessageId,
+		);
+		for (const msg of converted) {
+			if (existing.has(msg.id)) continue;
 			this.persistMessage(sessionId, msg);
 		}
 	}
@@ -762,10 +654,7 @@ class SessionManager {
 			worktreePath: session.worktreePath,
 			existingAgentSessionId: session.agentSessionId ?? undefined,
 		};
-		const handle: OpencodeHandle | ClaudeHandle =
-			session.agentType === "claude"
-				? await startClaude(startOpts)
-				: await startOpencode(startOpts);
+		const handle: ClaudeHandle = await startClaude(startOpts);
 
 		// Persist the agent's own session id so a later resume reconnects to
 		// the same backend session (cold-resume path per ADR-0003).
@@ -864,26 +753,15 @@ class SessionManager {
 
 	private async maybeSyncTitle(
 		id: string,
-		handle: OpencodeHandle | ClaudeHandle,
+		handle: ClaudeHandle,
 	): Promise<void> {
 		try {
-			if (handle.kind === "claude") {
-				if (!handle.agentSessionId) return;
-				const info = await getSessionInfo(handle.agentSessionId, {
-					dir: handle.worktreePath,
-				});
-				if (info?.summary) {
-					await this.setTitle(id, info.summary);
-				}
-				return;
-			}
-			const res = await handle.client.session.get({
-				path: { id: handle.agentSessionId },
-				throwOnError: true,
+			if (!handle.agentSessionId) return;
+			const info = await getSessionInfo(handle.agentSessionId, {
+				dir: handle.worktreePath,
 			});
-			const summary = (res.data as { summary?: { title?: string } }).summary;
-			if (summary?.title && summary.title !== "New session") {
-				await this.setTitle(id, summary.title);
+			if (info?.summary) {
+				await this.setTitle(id, info.summary);
 			}
 		} catch {
 			// title sync is best-effort

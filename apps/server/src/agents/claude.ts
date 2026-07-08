@@ -46,11 +46,10 @@ type NormalizeState = {
 	 * be attributed back to the same message for tool_call_end. */
 	toolMessageIds: Map<string, string>;
 	/**
-	 * dilna's message model expects one assistant messageId per user turn
-	 * (matching opencode, which keeps a single message id across an entire
-	 * tool-calling loop). Claude's transcript instead starts a brand new
-	 * SDKAssistantMessage — a new uuid — after every tool round-trip. This
-	 * pins every assistant message within one turn to the *first* uuid seen,
+	 * dilna's message model expects one assistant messageId per user turn.
+	 * Claude's transcript instead starts a brand new SDKAssistantMessage — a
+	 * new uuid — after every tool round-trip. This pins every assistant
+	 * message within one turn to the *first* uuid seen,
 	 * so the live UI renders one growing message with one tool-call group
 	 * instead of a separate single-tool-call message per round. Reset to
 	 * null on `result` (end of turn) so the next turn gets its own id.
@@ -61,14 +60,12 @@ type NormalizeState = {
 /**
  * Spawn a `claude-agent-sdk` query for the given worktree in streaming-input
  * mode, so a single underlying Claude Code subprocess stays resident across
- * multiple user turns (mirroring one `opencode serve` process per worktree,
- * per ADR-0003). Tool execution runs autonomously via `bypassPermissions`,
- * matching opencode's `permission: allow` auto-approve behavior.
+ * multiple user turns (one process per worktree, per ADR-0003). Tool
+ * execution runs autonomously via `bypassPermissions`.
  *
- * Unlike opencode (an HTTP server that answers a readiness probe before any
- * session exists), the Claude Agent SDK's streaming-input `query()` does not
- * emit anything — not even its `system`/`init` handshake — until it has
- * received the *first* item from the prompt async-iterable. Since dilna only
+ * The Claude Agent SDK's streaming-input `query()` does not emit anything —
+ * not even its `system`/`init` handshake — until it has received the *first*
+ * item from the prompt async-iterable. Since dilna only
  * ever pushes that first item from {@link chatClaude} (called after this
  * function returns), waiting here for `init` would deadlock. So this
  * function does not wait on the query at all: it starts the background
@@ -97,7 +94,7 @@ export async function startClaude(
 			},
 			// Per ADR-0003, bypassPermissions is only safe because the process's
 			// filesystem writes are confined to the worktree — spawnSandboxed
-			// (bubblewrap) is what actually enforces that boundary.
+			// (sandlock, per ADR-0010) is what actually enforces that boundary.
 			spawnClaudeCodeProcess: (spawnOpts) =>
 				spawnSandboxed({
 					command: spawnOpts.command,
@@ -105,16 +102,27 @@ export async function startClaude(
 					cwd: spawnOpts.cwd ?? opts.worktreePath,
 					env: spawnOpts.env,
 					signal: spawnOpts.signal,
-					// streaming-input mode writes to stdin; opencode's
-					// ignore-stdin default doesn't apply here.
+					// streaming-input mode writes to stdin.
 					stdio: ["pipe", "pipe", "pipe"],
-					// Claude's own cache/transcript data — not project files, and
-					// deliberately narrower than all of ~/.claude (which holds
-					// global settings, skills, and credentials the sandboxed
-					// agent has no business writing to).
+					// Claude's own cache/transcript/session-scratch data — not
+					// project files, and deliberately narrower than all of
+					// ~/.claude (which holds global settings, skills, and
+					// credentials the sandboxed agent has no business writing to).
+					// `/tmp/claude-<uid>` is the CLI's own per-invocation scratch
+					// dir, named after the (sanitized) worktree path plus a random
+					// suffix it picks itself — ungrantable at the exact leaf, so
+					// the whole per-uid parent is granted instead.
 					writablePaths: [
 						path.join(os.homedir(), ".cache", "claude"),
 						path.join(os.homedir(), ".cache", "claude-cli-nodejs"),
+						path.join(os.homedir(), ".claude", "session-env"),
+						// The CLI's own transcript storage — `getSessionMessages`/
+						// `getSessionInfo` in sessions/manager.ts read from here after
+						// every turn. Without this grant the sandboxed process can
+						// never write its own transcript, so persisted history and
+						// title auto-sync silently stay empty.
+						path.join(os.homedir(), ".claude", "projects"),
+						path.join(os.tmpdir(), `claude-${process.getuid?.() ?? 0}`),
 					],
 				}) as unknown as SpawnedProcess,
 		},
@@ -230,7 +238,7 @@ export async function startClaude(
  * Send a single user message to the agent and resolve when the turn goes
  * idle. Events that arrive via the persistent query loop are normalized to
  * dilna's {@link AgentStreamEvent} union and forwarded to
- * {@link opts.onEvent}, mirroring {@link chatOpencode}.
+ * {@link opts.onEvent}.
  *
  * Returns the messageId of the last assistant message_start seen during
  * this turn (or undefined if none arrived, e.g. an aborted/errored turn).

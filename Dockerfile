@@ -56,10 +56,6 @@ RUN curl -fsSL "https://github.com/multikernel/sandlock/releases/download/v${SAN
 	&& chmod +x /usr/local/bin/sandlock \
 	&& rm /tmp/sandlock.tar.gz
 
-# opencode CLI (spawned as `opencode serve` per ADR-0003) is a separate
-# binary from the @opencode-ai/sdk npm package, which is just its HTTP client.
-RUN npm install -g opencode-ai
-
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/apps/server/package.json ./apps/server/package.json

@@ -3,8 +3,7 @@ import { Bot } from "lucide-react";
 import type { AgentType } from "@/api/client";
 
 /** Brand icon per Agent backend. UI copy only (see agent-labels.ts). Simple
- * Icons has no OpenCode or OpenAI entry, so those fall back to a generic
- * bot icon. */
+ * Icons has no OpenAI entry, so it falls back to a generic bot icon. */
 export function AgentIcon({
 	agentType,
 	className,

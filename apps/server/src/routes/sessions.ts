@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { sessionManager } from "../sessions/manager";
 
-const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["opencode", "claude"];
+const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["claude"];
 
 type ListResponse = { sessions: SessionView[] };
 type OneResponse = { session: SessionView };

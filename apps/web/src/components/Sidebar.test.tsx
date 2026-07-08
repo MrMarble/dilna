@@ -22,7 +22,7 @@ function makeSession(overrides: Partial<SessionView> = {}): SessionView {
 		id: "sess-1",
 		repoId: "repo-1",
 		title: "New session",
-		agentType: "opencode",
+		agentType: "claude",
 		status: "working",
 		createdAt: 1,
 		lastActiveAt: 1,

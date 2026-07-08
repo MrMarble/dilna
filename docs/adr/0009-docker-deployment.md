@@ -1,5 +1,11 @@
 # Docker deployment: single container, host-passthrough credentials extended to the Claude backend
 
+> **Superseded in part by ADR-0011**: this ADR's opencode-specific details
+> (installing `opencode-ai` in the image, mounting `~/.config/opencode` and
+> `~/.local/share/opencode`) no longer apply — opencode was dropped as a
+> backend. The single-container model and Claude credential passthrough
+> described below are unchanged.
+
 ADR-0005 deferred all Docker-specific credential handling ("mounting `~/.ssh`, mounting or baking `~/.config/opencode/`, `known_hosts` population... deferred until the docker-image workstream"). This ADR is that workstream.
 
 ## Decision

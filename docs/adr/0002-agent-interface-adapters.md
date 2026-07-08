@@ -1,5 +1,11 @@
 # Thin Agent interface with pluggable adapters; opencode is the first adapter
 
+> **Superseded in part by ADR-0011**: the opencode adapter this ADR introduces
+> was removed once Claude Agent SDK (ADR-0007) became the only backend
+> actually in use. The thin-interface reasoning below still explains why
+> `agents/` is structured as adapter files rather than one inline
+> implementation.
+
 ## Context
 
 dilna's MVP runs `opencode serve` per worktree, but the product is intended to support other agent backends later — claude-agent-sdk, custom OpenAI-API agents. If the Hono handlers call `opencode-sdk-js` directly, adding a second backend means refactoring session lifecycle, streaming, and storage code across many files.

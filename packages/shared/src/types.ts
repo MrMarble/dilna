@@ -1,3 +1,3 @@
-export type AgentType = "opencode" | "claude" | "openai";
+export type AgentType = "claude" | "openai";
 
-export const DEFAULT_AGENT_TYPE: AgentType = "opencode";
+export const DEFAULT_AGENT_TYPE: AgentType = "claude";
