@@ -159,8 +159,11 @@ export async function startClaude(
 			}
 		} catch (err) {
 			if (!killed) {
+				const tail = stderrTail.length
+					? `\n${stderrTail.join("\n")}`
+					: " (no subprocess stderr captured)";
 				console.error(
-					`[claude-agent] event loop error: ${err instanceof Error ? err.message : String(err)}`,
+					`[claude-agent] event loop error: ${err instanceof Error ? err.message : String(err)}${tail}`,
 				);
 			}
 		} finally {

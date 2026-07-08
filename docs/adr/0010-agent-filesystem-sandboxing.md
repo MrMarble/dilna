@@ -3,9 +3,22 @@
 > **Note (ADR-0011)**: opencode was dropped as a backend after this ADR was
 > written. References below to `startOpencode`, opencode's writable paths,
 > and its `--net-allow-bind` port grant describe a mechanism that no longer
-> exists in the code; the sandboxing approach itself (Landlock + seccomp via
-> sandlock, sibling-deny read confinement) is unchanged and now applies to
-> the sole surviving Claude backend.
+> exists in the code; the write-confinement approach itself (Landlock +
+> seccomp via sandlock) is unchanged and now applies to the sole surviving
+> Claude backend.
+>
+> **Read confinement (`--fs-deny` sibling denial, described below) was
+> reverted**: it makes the Claude Agent SDK's Bun-compiled CLI exit
+> immediately with no output, for *any* `--fs-deny` rule regardless of which
+> path is denied — confirmed by bisecting down to a single irrelevant
+> `--fs-deny` path breaking a bare `claude --version`, while the same rule
+> set works fine for non-Bun commands (`echo`). This wasn't caught by this
+> ADR's original end-to-end verification because that testing never exercised
+> a `DILNA_DATA_DIR` inside dilna's own checkout with more than one
+> repo/session on disk — the only conditions under which
+> `denyPathsOutsideSession` actually emits a `--fs-deny` flag. See "Read
+> confinement via dynamic sibling denial" and Consequences below for what
+> this means going forward.
 
 ADR-0003 justified auto-approving every tool call ("no per-tool approval, the stop button is the manual override") on the assumption that "the agent runs in an isolated docker container with no host access, so the blast radius is the worktree only." That isolation was never actually built — `startOpencode`/`startClaude` just called `child_process.spawn()` on the host, with `cwd` set to the worktree as a convention, not a boundary. An agent could (and, during dogfooding, did) write outside its assigned worktree — in the observed incident, into dilna's own live checkout — via an absolute path or a `bash` tool call. A second dogfooding session then showed the same gap on the read side: asked about its own working directory, an agent walked up its own worktree's ancestor directories, read dilna's own `CLAUDE.md`, and used it to reason about a project it had no business seeing at all.
 
@@ -15,21 +28,23 @@ ADR-0003 justified auto-approving every tool call ("no per-tool approval, the st
 
 - The session's worktree is the one path granted write access (`-w`).
 - A handful of additional writable paths are granted for Claude's own cache/log/transcript directories: `~/.cache/claude`, `~/.cache/claude-cli-nodejs`, `~/.claude/session-env`, `~/.claude/projects` (the CLI's own session transcript storage — `getSessionMessages`/`getSessionInfo` read from here after every turn; omitting it silently breaks persisted history and title auto-sync, since the sandboxed process can never write its own transcript), and `/tmp/claude-<uid>` — all per-session scratch dirs the CLI creates itself, deliberately narrower than all of `~/.claude`, which also holds global settings, skills, and credentials the sandboxed agent has no business writing to. Also granted: `/dev/null` (needed by git during `add`/`commit`; Landlock doesn't expose device nodes through the broad `-r /` read grant the way a mount-namespace tool would), and the git worktree's shared common dir (resolved by reading the worktree's `.git` pointer file and its `commondir`, rather than reconstructing git's internal layout) — `git add` needs to write new blob objects to the origin repo's shared object store, not just the per-worktree metadata (HEAD, index, refs). Granting that is safe within dilna's model: it's the same Repo's own plumbing, not another session's or repo's data.
-- The base filesystem grant is still broad read (`-r /`) — the agent binary itself, git, bash, and their shared libraries all need to read arbitrary system paths to function, and enumerating exactly what they need would be its own maintenance burden. Read confinement to "this worktree only" is layered on top via `--fs-deny` (see below), not by narrowing `-r` directly.
+- The base filesystem grant is broad read (`-r /`) — the agent binary itself, git, bash, and their shared libraries all need to read arbitrary system paths to function, and enumerating exactly what they need would be its own maintenance burden. Narrowing this to "this worktree only" was attempted and reverted (see below); today read access is broad and unconfined, matching the original bwrap-era posture.
 - Networking is deny-by-default under sandlock (both outbound connect and inbound bind), unlike filesystem access. Outbound is opened unconditionally (`--net-allow '*'` + `--net-allow 'udp://*'`) since agents need it for LLM provider APIs, git remotes, and whatever else they're asked to fetch — none of which is enumerable in advance. Inbound bind is granted per-port only where needed: opencode's `serve` HTTP server (`allowBindPorts`), not Claude's SDK subprocess, which communicates over stdio.
 
-### Read confinement via dynamic sibling denial
+### Read confinement via dynamic sibling denial (tried, then reverted)
 
 The second incident above called for narrowing *read*, not just write, to the worktree. The natural-looking fix — deny read on dilna's whole checkout, then re-allow the one worktree nested inside `data/worktrees/<repo>/<session>` — does not work with sandlock: verified empirically that `--fs-deny` on a parent path always wins over a more specific `-r`/`-w` nested inside it, regardless of flag order. There is no "deny this, except that nested path" primitive.
 
-Instead, `denyPathsOutsideSession` in `sandbox.ts` computes deny rules for true *siblings* of what a session needs, never an ancestor of it:
+Instead, `denyPathsOutsideSession` (formerly in `sandbox.ts`, since removed) computed deny rules for true *siblings* of what a session needs, never an ancestor of it:
 
 - Siblings of the current repo under `data/worktrees/` (other repos' worktrees entirely).
 - Siblings of the current session under `data/worktrees/<repo>/` (other sessions of the same repo).
 - Siblings of the current repo's bare clone under `data/repos/` (other repos' shared git object stores).
-- When `DILNA_DATA_DIR` resolves inside dilna's own checkout (found by walking up from `sandbox.ts`'s own location for `pnpm-workspace.yaml`, as it does by default in local dev) — every sibling of the data dir at the checkout root: `apps/`, `packages/`, `docs/`, `.git/`, config files, etc. `node_modules` is deliberately excluded from this deny list even though it's dilna's own checkout content, since the agent backends' own binaries and dependencies live there (e.g. the Claude Agent SDK's native binary) and it isn't project data worth hiding.
+- When `DILNA_DATA_DIR` resolves inside dilna's own checkout (as it does by default in local dev, via `mise.toml`'s `DILNA_DATA_DIR=./data`) — every sibling of the data dir at the checkout root: `apps/`, `packages/`, `docs/`, `.git/`, config files, etc.
 
-This only reflects siblings that exist at spawn time — a sibling session/repo created after this process starts won't be denied for this process's lifetime (see Consequences).
+This shipped and was verified against a narrow test (single repo, single session, `DILNA_DATA_DIR` outside the checkout — see this ADR's original Consequences) where `denyPathsOutsideSession` happens to return an empty list, so no `--fs-deny` flag was ever actually passed during that verification. Real usage (`DILNA_DATA_DIR` defaulting to `./data` inside the checkout, per `mise.toml`) always produces at least one `--fs-deny` flag once dilna's other top-level directories exist — and that broke every Claude session outright: the Claude Agent SDK's CLI (`@anthropic-ai/claude-agent-sdk-linux-x64`, a Bun-compiled binary) exits immediately with code 1 and zero stdout/stderr output whenever *any* `--fs-deny` rule is present, independent of which path is denied. Confirmed by bisection: `sandlock run -r / -w <worktree> --fs-deny /some/irrelevant/path -- claude --version` fails the same way as the full rule set; the same sandbox invocation with `echo` instead of `claude` succeeds. No matching upstream issue found in sandlock's or Bun's issue trackers as of this writing — likely a novel interaction between Bun's runtime and Landlock's ruleset-change behavior when a deny rule is present, not investigated further.
+
+`denyPathsOutsideSession`, `denySiblings`, and `findWorkspaceRoot` were removed from `sandbox.ts` and `--fs-deny` is no longer emitted. **Read confinement is currently not implemented** — the second dogfooding incident (an agent reading dilna's own `CLAUDE.md`) is an open, unfixed gap again. Write confinement (the more severe of the two incidents, and unaffected by this bug) still holds.
 
 ## Why sandlock and not bubblewrap
 
@@ -57,7 +72,7 @@ Claude Code has its own built-in sandboxing (`/sandbox`) and a standalone `@anth
 ## Consequences
 
 - `sandlock` must be present in dilna's own container image (added to `Dockerfile`, pinned release version) and on the host for local/dev usage (not packaged for any distro — fetched as a prebuilt release binary).
-- Verified end-to-end, including inside a real Docker container: a sandboxed agent's attempt to write outside its worktree fails with a permission error and creates nothing on the host (confirmed via a canary-file test against the actual dilna image); normal operation inside the worktree (file writes, `git add`/`commit`/`log`) works unchanged on the host. Read confinement verified directly against real dev data: reading the session's own worktree succeeds, while dilna's own `CLAUDE.md`, sibling worktrees, and sibling bare repos all fail with a permission error, and basic subprocess sanity (`whoami`, `pwd`, `echo`) is unaffected.
-- A sibling session or repo created *after* a given agent process starts won't be in that process's deny list and remains readable to it for the rest of its lifetime — the deny rules are computed once at spawn time, not re-evaluated. Low severity: it only exposes another in-progress worktree's contents to an already-running agent, not a standing vulnerability.
+- Write confinement is verified end-to-end, including inside a real Docker container: a sandboxed agent's attempt to write outside its worktree fails with a permission error and creates nothing on the host (confirmed via a canary-file test against the actual dilna image); normal operation inside the worktree (file writes, `git add`/`commit`/`log`) works unchanged on the host.
+- **Read confinement is not implemented** (see "Read confinement via dynamic sibling denial (tried, then reverted)" above) — an agent can read anywhere the base `-r /` grant allows, including dilna's own source and sibling worktrees/repos. This is a known, currently-accepted gap, not a fixed decision: the second dogfooding incident this ADR opens with is unresolved. Re-attempting it would need either a fix/workaround for the Bun-binary + `--fs-deny` interaction, or a different mechanism entirely (e.g. an explicit `-r` allowlist instead of broad `-r /` plus deny rules — rejected originally as its own maintenance burden, but worth revisiting given `--fs-deny` is now known unusable with this backend).
 - This doesn't sandbox process visibility (no PID namespace) or restrict outbound network access (intentionally, per above) — an agent could still, in principle, signal unrelated host processes it has permission for, or exfiltrate data over the network. Full defense-in-depth (PID namespaces, egress allowlisting) is a larger follow-up, not required by the reported incidents.
-- The opencode-backend nested-spawn quirk above is an open, low-priority issue: opencode is a secondary backend and the primary one (Claude Agent SDK) isn't affected.
+- The opencode-backend nested-spawn quirk above no longer applies: opencode was dropped as a backend (ADR-0011).
