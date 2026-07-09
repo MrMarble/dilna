@@ -11,6 +11,7 @@ import {
 import type {
 	AgentStreamEvent,
 	AgentType,
+	ChangedFile,
 	Message,
 	MessagePart,
 	Session,
@@ -27,6 +28,7 @@ import {
 	sessions as sessionsTable,
 } from "../db/schema";
 import { repoManager } from "../repos/manager";
+import { computeChangedFiles } from "./diff";
 
 const execFileAsync = promisify(execFile);
 
@@ -467,6 +469,19 @@ class SessionManager {
 	}
 
 	/**
+	 * Compute the Session's Worktree diff against its Repo's default-branch
+	 * merge-base, including uncommitted changes (per the "Changed files"
+	 * panel spec). Recomputed live from git every call — never persisted.
+	 */
+	async getChangedFiles(id: string): Promise<ChangedFile[]> {
+		const session = await this.get(id);
+		if (!session) return [];
+		const repo = await repoManager.get(session.repoId);
+		if (!repo) return [];
+		return computeChangedFiles(session.worktreePath, repo.defaultBranch);
+	}
+
+	/**
 	 * Send a user message to the session's agent. Spawns the agent process
 	 * if it isn't running. Returns when the agent goes idle (chat complete).
 	 *
@@ -534,6 +549,18 @@ class SessionManager {
 
 			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
+
+			// Recompute the "Changed files" panel's diff now that the turn's
+			// worktree edits (committed or not) have settled.
+			try {
+				const files = await this.getChangedFiles(id);
+				this.broadcast(id, { type: "changed_files", files });
+			} catch (err) {
+				console.error(
+					`[sessions] failed to compute changed files for ${id}:`,
+					err,
+				);
+			}
 
 			await this.setStatus(id, "idle");
 			this.armIdleTimer(id, active);

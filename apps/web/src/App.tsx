@@ -2,6 +2,7 @@ import type { SessionListEvent } from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
+import { ChangedFilesPanel } from "@/components/ChangedFilesPanel";
 import { ChatHeader } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
@@ -180,10 +181,15 @@ export function App() {
 						</header>
 					)}
 					{selectedSession ? (
-						<ChatShell
-							sessionId={selectedSession.id}
-							session={selectedSession}
-						/>
+						<div className="flex flex-1 overflow-hidden">
+							<div className="flex flex-1 flex-col overflow-hidden">
+								<ChatShell
+									sessionId={selectedSession.id}
+									session={selectedSession}
+								/>
+							</div>
+							<ChangedFilesPanel sessionId={selectedSession.id} />
+						</div>
 					) : (
 						<div className="flex flex-1 items-center justify-center p-6">
 							{selectedRepo ? (

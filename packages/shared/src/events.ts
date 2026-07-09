@@ -1,5 +1,8 @@
+import type { ChangedFile } from "./diff";
+
 export type AgentStreamEvent =
 	| { type: "session_status"; status: SessionStatus }
+	| { type: "changed_files"; files: ChangedFile[] }
 	| { type: "message_start"; messageId: string; role: "user" | "assistant" }
 	| { type: "token"; messageId: string; chunk: string }
 	| {

@@ -1,6 +1,7 @@
 import type {
 	AgentStreamEvent,
 	AgentType,
+	ChangedFile,
 	Message,
 	Repo,
 	SessionListEvent,
@@ -10,6 +11,7 @@ import type {
 export type {
 	AgentStreamEvent,
 	AgentType,
+	ChangedFile,
 	Message,
 	Repo,
 	SessionListEvent,
@@ -90,6 +92,8 @@ export const api = {
 			}),
 		messages: (id: string) =>
 			request<{ messages: Message[] }>(`/api/sessions/${id}/messages`),
+		changedFiles: (id: string) =>
+			request<{ files: ChangedFile[] }>(`/api/sessions/${id}/changed-files`),
 		send: (id: string, text: string) =>
 			request<{ ok: boolean }>(`/api/sessions/${id}/messages`, {
 				method: "POST",
@@ -114,6 +118,7 @@ export const api = {
 				"message_end",
 				"error",
 				"agent_crashed",
+				"changed_files",
 			];
 			for (const t of eventTypes) {
 				es.addEventListener(t, (e: MessageEvent) => {

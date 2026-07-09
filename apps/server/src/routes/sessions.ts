@@ -1,4 +1,9 @@
-import type { AgentType, Message, SessionView } from "@dilna/shared";
+import type {
+	AgentType,
+	ChangedFile,
+	Message,
+	SessionView,
+} from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
@@ -61,6 +66,19 @@ sessionsRoute.get("/:id/messages", async (c) => {
 	const id = c.req.param("id");
 	const messages = await sessionManager.getMessages(id);
 	const body: { messages: Message[] } = { messages };
+	return c.json(body);
+});
+
+// Initial snapshot for the "Changed files" panel — mirrors GET
+// /:id/messages: fetched once on mount so the panel has content before the
+// first `changed_files` SSE event (e.g. resuming a session with prior
+// turns), then kept live via the session's SSE stream thereafter.
+sessionsRoute.get("/:id/changed-files", async (c) => {
+	const id = c.req.param("id");
+	const session = await sessionManager.get(id);
+	if (!session) throw new HTTPException(404, { message: "session not found" });
+	const files = await sessionManager.getChangedFiles(id);
+	const body: { files: ChangedFile[] } = { files };
 	return c.json(body);
 });
 
