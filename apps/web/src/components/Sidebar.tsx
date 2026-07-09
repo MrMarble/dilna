@@ -216,10 +216,11 @@ function BackgroundAgentsSection({
 /**
  * Account-wide plan rate-limit footer. Entirely absent — not an empty or
  * disabled shell — whenever there's nothing fresh to show: API-key auth
- * never produces rate-limit data server-side (see manager.ts's
- * `handleRateLimitEvent` gate on `apiKeySource === 'oauth'`), and a window
- * whose reset time has passed with no live Session to refresh it is treated
- * the same as unavailable rather than shown frozen at its last percentage.
+ * never produces rate-limit data server-side (the SDK simply never emits a
+ * `rate_limit_event` for those sessions — see `agents/claude.ts`), and a
+ * window whose reset time has passed with no live Session to refresh it is
+ * treated the same as unavailable rather than shown frozen at its last
+ * percentage.
  *
  * The 30s re-render tick below only recomputes staleness against
  * already-received `resetsAt` values — it makes no network request and

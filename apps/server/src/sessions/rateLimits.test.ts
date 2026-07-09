@@ -1,8 +1,10 @@
+import type { SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
 import {
 	freshRateLimitWindows,
 	normalizeResetsAt,
 	type RateLimitSnapshot,
+	toRateLimitWindow,
 } from "./rateLimits";
 
 describe("normalizeResetsAt", () => {
@@ -18,6 +20,58 @@ describe("normalizeResetsAt", () => {
 
 	it("floors fractional input", () => {
 		expect(normalizeResetsAt(1_780_000_000.7)).toBe(1_780_000_000);
+	});
+});
+
+describe("toRateLimitWindow", () => {
+	// Regression coverage for a real payload observed against a live OAuth
+	// subscription account: `status: "allowed"` with no `utilization` field
+	// at all — the SDK only starts including a number once usage is no
+	// longer comfortably under the threshold. Dropping the event in this
+	// case (the original bug) meant the footer never appeared for the common
+	// case of moderate usage.
+	it("defaults utilization to 0 when the SDK omits it on a low-usage event", () => {
+		const info: SDKRateLimitInfo = {
+			status: "allowed",
+			resetsAt: 1_783_614_000,
+			rateLimitType: "five_hour",
+		};
+		expect(toRateLimitWindow(info)).toEqual({
+			kind: "five_hour",
+			snapshot: { utilizationPct: 0, resetsAt: 1_783_614_000 },
+		});
+	});
+
+	it("passes through a real utilization value when the SDK includes one", () => {
+		const info: SDKRateLimitInfo = {
+			status: "allowed_warning",
+			resetsAt: 1_783_614_000,
+			rateLimitType: "seven_day",
+			utilization: 62,
+		};
+		expect(toRateLimitWindow(info)).toEqual({
+			kind: "seven_day",
+			snapshot: { utilizationPct: 62, resetsAt: 1_783_614_000 },
+		});
+	});
+
+	it("ignores per-model/overage sub-variants out of scope for the two-bar UI", () => {
+		const info: SDKRateLimitInfo = {
+			status: "allowed",
+			resetsAt: 1_783_614_000,
+			rateLimitType: "seven_day_opus",
+			utilization: 10,
+		};
+		expect(toRateLimitWindow(info)).toBeNull();
+	});
+
+	it("returns null when resetsAt is missing, since staleness can't be computed", () => {
+		const info: SDKRateLimitInfo = {
+			status: "allowed",
+			rateLimitType: "five_hour",
+			utilization: 10,
+		};
+		expect(toRateLimitWindow(info)).toBeNull();
 	});
 });
 

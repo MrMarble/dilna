@@ -33,9 +33,12 @@ export type RateLimitWindowKind = "five_hour" | "seven_day";
 
 /**
  * Last-known utilization for one plan rate-limit window, account-wide (not
- * per-Session). Only ever present for claude.ai OAuth-subscription accounts
- * — `apiKeySource !== 'oauth'` sessions never produce these (see ADR on
- * `SDKRateLimitEvent` in the research doc).
+ * per-Session). Only ever present for claude.ai subscription accounts — the
+ * SDK's `rate_limit_event` message is only emitted for those (an
+ * API-key/Bedrock/Vertex session never produces one); dilna forwards
+ * whatever it receives rather than re-checking `apiKeySource` itself, since
+ * that field's real-world values don't reliably match the SDK's documented
+ * `'oauth'` literal (see `agents/claude.ts`'s handling of `rate_limit_event`).
  */
 export type RateLimitWindow = {
 	kind: RateLimitWindowKind;

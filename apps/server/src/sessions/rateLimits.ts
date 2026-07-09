@@ -1,3 +1,4 @@
+import type { SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { RateLimitWindow, RateLimitWindowKind } from "@dilna/shared";
 
 /** Last-known reading for one rate-limit window, as held by SessionManager. */
@@ -19,6 +20,38 @@ export type RateLimitSnapshot = {
  */
 export function normalizeResetsAt(raw: number): number {
 	return raw > 1e12 ? Math.floor(raw / 1000) : Math.floor(raw);
+}
+
+/**
+ * Parse one SDK `rate_limit_event` payload into dilna's window shape, or
+ * `null` if it's not one of the two windows this UI shows (per-model/overage
+ * sub-variants) or is missing `resetsAt` (nothing to key staleness off of).
+ *
+ * `utilization` is optional on the SDK's own type, and a real "allowed, well
+ * under the threshold" event omits it entirely rather than sending `0` or
+ * some other placeholder — confirmed directly against a live account, not
+ * just inferred from the (undocumented-on-this-point) SDK types. Treating a
+ * missing value as "low usage" (default 0) rather than "unknown" (dropping
+ * the event) is what makes the footer actually appear for the common case
+ * of moderate usage, instead of only ever showing up once an account is
+ * already near its limit — which is when the SDK starts including a number.
+ */
+export function toRateLimitWindow(
+	info: SDKRateLimitInfo,
+): { kind: RateLimitWindowKind; snapshot: RateLimitSnapshot } | null {
+	const kind: RateLimitWindowKind | null =
+		info.rateLimitType === "five_hour" || info.rateLimitType === "seven_day"
+			? info.rateLimitType
+			: null;
+	if (kind === null || info.resetsAt === undefined) return null;
+
+	return {
+		kind,
+		snapshot: {
+			utilizationPct: info.utilization ?? 0,
+			resetsAt: normalizeResetsAt(info.resetsAt),
+		},
+	};
 }
 
 /**

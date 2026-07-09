@@ -39,8 +39,8 @@ import { repoManager } from "../repos/manager";
 import { computeChangedFiles } from "./diff";
 import {
 	freshRateLimitWindows,
-	normalizeResetsAt,
 	type RateLimitSnapshot,
+	toRateLimitWindow,
 } from "./rateLimits";
 
 const execFileAsync = promisify(execFile);
@@ -471,19 +471,9 @@ class SessionManager {
 	 * truth, no dedicated poller involved.
 	 */
 	private handleRateLimitEvent(info: SDKRateLimitInfo): void {
-		const kind: RateLimitWindowKind | null =
-			info.rateLimitType === "five_hour" || info.rateLimitType === "seven_day"
-				? info.rateLimitType
-				: null;
-		// Ignore the opus/sonnet/overage sub-variants (out of scope for this
-		// two-bar UI) and any event missing the fields this needs.
-		if (kind === null) return;
-		if (info.utilization === undefined || info.resetsAt === undefined) return;
-
-		this.rateLimits.set(kind, {
-			utilizationPct: info.utilization,
-			resetsAt: normalizeResetsAt(info.resetsAt),
-		});
+		const parsed = toRateLimitWindow(info);
+		if (!parsed) return;
+		this.rateLimits.set(parsed.kind, parsed.snapshot);
 		this.broadcastGlobal({
 			type: "rate_limits",
 			windows: this.getRateLimits(),

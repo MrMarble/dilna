@@ -95,11 +95,14 @@ export type ClaudeHandle = {
 	 */
 	readonly agentSessionId: string;
 	/**
-	 * Auth mode from the first turn's `system init` message — `'oauth'` means
-	 * a claude.ai Pro/Max/Team/Enterprise subscription login; any other value
-	 * is API-key-shaped auth. `null` until `init` arrives (see
-	 * {@link agentSessionId}'s doc comment for why this is a getter). Gates
-	 * whether rate-limit events are forwarded at all (see {@link startClaude}).
+	 * Auth mode from the first turn's `system init` message. `null` until
+	 * `init` arrives (see {@link agentSessionId}'s doc comment for why this
+	 * is a getter). Informational only — not used to gate rate-limit
+	 * forwarding (see {@link startClaude}'s handling of `rate_limit_event`
+	 * for why): observed runtime values include `"none"` for a real
+	 * claude.ai subscription session, which isn't even in the SDK's own
+	 * documented `ApiKeySource` union, so string-matching `'oauth'` here
+	 * silently dropped legitimate rate-limit data.
 	 */
 	readonly apiKeySource: ApiKeySource | null;
 	worktreePath: string;
@@ -274,12 +277,15 @@ export async function startClaude(
 					continue;
 				}
 				if (msg.type === "rate_limit_event") {
-					// SDKRateLimitEvent is explicitly documented as "for claude.ai
-					// subscription users" — gate on the auth mode captured from
-					// `init` above rather than trusting it never fires otherwise.
-					if (apiKeySource === "oauth") {
-						opts.onRateLimit?.(msg.rate_limit_info);
-					}
+					// SDKRateLimitEvent is documented as only firing "for claude.ai
+					// subscription users" — that gating happens SDK-side (an
+					// API-key/Bedrock/Vertex session simply never emits this message
+					// type), so forward it unconditionally rather than re-checking
+					// `apiKeySource` here: real-world values (e.g. `"none"` seen on
+					// an actual OAuth subscription session) don't reliably match the
+					// documented `'oauth'` literal, and doing so silently dropped
+					// genuine rate-limit data.
+					opts.onRateLimit?.(msg.rate_limit_info);
 					continue;
 				}
 				const events = normalizeMessage(msg, state);
