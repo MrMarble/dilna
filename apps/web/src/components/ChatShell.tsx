@@ -43,8 +43,9 @@ type Props = {
 type LiveMessage = {
 	id: string;
 	role: "user" | "assistant";
+	/** Text and tool_call parts in the order they actually streamed in, so
+	 * live rendering matches the interleaving persisted after the turn. */
 	parts: MessagePart[];
-	text: string;
 	/** Epoch seconds this message started streaming — used for the
 	 * attribution timestamp before it's persisted with a real createdAt. */
 	startedAt: number;
@@ -74,6 +75,21 @@ export function ChatShell({ sessionId, session }: Props) {
 
 	// Optimistic user message IDs whose first token should set (not append) text.
 	const optimisticIdsRef = useRef(new Set<string>());
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+	// Auto-grow the composer between 2 and 4 lines; beyond that it scrolls
+	// internally instead of pushing the rest of the page around.
+	useEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		const lineHeight = Number.parseFloat(getComputedStyle(el).lineHeight) || 20;
+		const minHeight = lineHeight * 2;
+		const maxHeight = lineHeight * 4;
+		el.style.height = "auto";
+		const next = Math.min(Math.max(el.scrollHeight, minHeight), maxHeight);
+		el.style.height = `${next}px`;
+		el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+	}, [input]);
 
 	const loadHistory = useCallback(async () => {
 		try {
@@ -119,17 +135,13 @@ export function ChatShell({ sessionId, session }: Props) {
 							const liveIds = new Set(entries.map(([k]) => k));
 							setMessages((prev) => {
 								const kept = prev.filter((m) => !liveIds.has(m.id));
-								const newMsgs = entries.map(([, m]) => {
-									const parts = [...m.parts];
-									if (m.text) parts.unshift({ type: "text", text: m.text });
-									return {
-										id: m.id,
-										sessionId,
-										role: m.role,
-										parts,
-										createdAt: Math.floor(Date.now() / 1000),
-									};
-								});
+								const newMsgs = entries.map(([, m]) => ({
+									id: m.id,
+									sessionId,
+									role: m.role,
+									parts: m.parts,
+									createdAt: Math.floor(Date.now() / 1000),
+								}));
 								return [...kept, ...newMsgs];
 							});
 							return {};
@@ -143,13 +155,12 @@ export function ChatShell({ sessionId, session }: Props) {
 						for (const [key, entry] of Object.entries(next)) {
 							if (key.startsWith("temp-") && entry.role === "user") {
 								optimisticIdsRef.current.delete(key);
-								const text = entry.text;
+								const parts = entry.parts;
 								delete next[key];
 								next[ev.messageId] = {
 									id: ev.messageId,
 									role: ev.role,
-									parts: [],
-									text,
+									parts,
 									startedAt: entry.startedAt,
 								};
 								optimisticIdsRef.current.add(ev.messageId);
@@ -160,7 +171,6 @@ export function ChatShell({ sessionId, session }: Props) {
 							id: ev.messageId,
 							role: ev.role,
 							parts: [],
-							text: "",
 							startedAt: nowSeconds(),
 						};
 						return next;
@@ -175,21 +185,31 @@ export function ChatShell({ sessionId, session }: Props) {
 								optimisticIdsRef.current.delete(ev.messageId);
 								return {
 									...prev,
-									[ev.messageId]: { ...m, text: ev.chunk },
+									[ev.messageId]: {
+										...m,
+										parts: [{ type: "text", text: ev.chunk }],
+									},
 								};
 							}
-							return {
-								...prev,
-								[ev.messageId]: { ...m, text: m.text + ev.chunk },
-							};
+							// Append to the trailing text part so streamed chunks join up;
+							// start a new part if the turn just returned from a tool call,
+							// preserving the real text/tool_call interleaving order.
+							const last = m.parts[m.parts.length - 1];
+							const parts: MessagePart[] =
+								last?.type === "text"
+									? [
+											...m.parts.slice(0, -1),
+											{ type: "text", text: last.text + ev.chunk },
+										]
+									: [...m.parts, { type: "text", text: ev.chunk }];
+							return { ...prev, [ev.messageId]: { ...m, parts } };
 						}
 						return {
 							...prev,
 							[ev.messageId]: {
 								id: ev.messageId,
 								role: "assistant",
-								parts: [],
-								text: ev.chunk,
+								parts: [{ type: "text", text: ev.chunk }],
 								startedAt: nowSeconds(),
 							},
 						};
@@ -281,8 +301,7 @@ export function ChatShell({ sessionId, session }: Props) {
 			[tempId]: {
 				id: tempId,
 				role: "user",
-				parts: [],
-				text,
+				parts: [{ type: "text", text }],
 				startedAt: nowSeconds(),
 			},
 		}));
@@ -323,12 +342,15 @@ export function ChatShell({ sessionId, session }: Props) {
 				createdAt: m.createdAt,
 			});
 		}
-		// Live messages — their text field may contain streamed content.
+		// Live messages — parts already carry streamed content in stream order.
 		for (const m of Object.values(live)) {
-			const parts = [...m.parts];
-			if (m.text) parts.unshift({ type: "text", text: m.text });
-			if (parts.length === 0) continue;
-			out.push({ id: m.id, role: m.role, parts, createdAt: m.startedAt });
+			if (m.parts.length === 0) continue;
+			out.push({
+				id: m.id,
+				role: m.role,
+				parts: m.parts,
+				createdAt: m.startedAt,
+			});
 		}
 		return out;
 	}, [messages, live]);
@@ -390,6 +412,7 @@ export function ChatShell({ sessionId, session }: Props) {
 			<div className="px-6 py-4">
 				<div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-zinc-200 bg-white px-3 py-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
 					<textarea
+						ref={textareaRef}
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
 						onKeyDown={(e) => {
@@ -404,7 +427,7 @@ export function ChatShell({ sessionId, session }: Props) {
 								? "Agent is working…"
 								: `Message ${AGENT_LABELS[session.agentType]}…`
 						}
-						rows={1}
+						rows={2}
 						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-sm outline-none"
 					/>
 					{working ? (
