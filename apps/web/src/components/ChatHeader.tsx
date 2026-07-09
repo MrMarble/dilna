@@ -2,6 +2,7 @@ import type { Repo, SessionView } from "@dilna/shared";
 import { ChevronDown, FolderGit2, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
+import { UsageBadge } from "@/components/UsageBadge";
 import { AGENT_LABELS } from "@/lib/agent-labels";
 import { cn } from "@/lib/utils";
 
@@ -32,6 +33,7 @@ export function ChatHeader({
 			/>
 			{selectedSession && (
 				<div className="ml-auto flex shrink-0 items-center gap-2">
+					<UsageBadge key={selectedSession.id} sessionId={selectedSession.id} />
 					<span className="rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-muted-foreground dark:border-zinc-800">
 						Agent · {AGENT_LABELS[selectedSession.agentType]}
 					</span>

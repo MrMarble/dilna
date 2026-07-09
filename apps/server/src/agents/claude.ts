@@ -11,7 +11,7 @@ import {
 	type SDKResultMessage,
 	type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentStreamEvent } from "@dilna/shared";
+import type { AgentStreamEvent, UsageTotals } from "@dilna/shared";
 import { getDataDir } from "../db";
 import type { AgentChatOptions, AgentStartOptions } from "./types";
 
@@ -88,7 +88,7 @@ export type ClaudeHandle = {
 	sendUserMessage: (text: string) => void;
 };
 
-type NormalizeState = {
+export type NormalizeState = {
 	seenMessageStarts: Set<string>;
 	/** tool_use callId -> the assistant messageId that emitted it, so the
 	 * paired tool_result (delivered in a later synthetic user message) can
@@ -105,6 +105,16 @@ type NormalizeState = {
 	 */
 	currentTurnMessageId: string | null;
 };
+
+// Exported alongside NormalizeState so claude.test.ts can build a fresh
+// state for normalizeMessage without duplicating its shape.
+export function createNormalizeState(): NormalizeState {
+	return {
+		seenMessageStarts: new Set(),
+		toolMessageIds: new Map(),
+		currentTurnMessageId: null,
+	};
+}
 
 /**
  * dilna's own writable scratch paths for the Claude CLI — its cache,
@@ -224,11 +234,7 @@ export async function startClaude(
 	});
 
 	const listeners = new Set<Listener>();
-	const state: NormalizeState = {
-		seenMessageStarts: new Set(),
-		toolMessageIds: new Map(),
-		currentTurnMessageId: null,
-	};
+	const state: NormalizeState = createNormalizeState();
 
 	let killed = false;
 	let alive = true;
@@ -456,7 +462,9 @@ function createInputQueue(): {
 	return { push, close, iterable: generate() };
 }
 
-function normalizeMessage(
+// Exported for unit testing the per-message/turn-end usage normalization
+// (see claude.test.ts) without spawning a real agent subprocess.
+export function normalizeMessage(
 	msg: SDKMessage,
 	state: NormalizeState,
 ): AgentStreamEvent[] {
@@ -507,6 +515,11 @@ function normalizeAssistantMessage(
 		}
 	}
 
+	const usage = extractUsageTotals((msg.message as { usage?: unknown }).usage);
+	if (usage) {
+		events.push({ type: "usage_update", messageId, usage });
+	}
+
 	if (msg.error) {
 		events.push({
 			type: "error",
@@ -515,6 +528,26 @@ function normalizeAssistantMessage(
 	}
 
 	return events;
+}
+
+/**
+ * Reads token counts off a Messages-API-shaped `usage` object — present on
+ * every `SDKAssistantMessage.message.usage` (per-API-call, not cumulative
+ * within a turn) and, cumulatively for the whole CLI session, on
+ * `SDKResultMessage.usage`. Tokens only, per issue #10 — cost fields
+ * (`total_cost_usd`, `costUSD`) are intentionally ignored. See
+ * docs/research/claude-agent-sdk-usage-limits.md.
+ */
+function extractUsageTotals(usage: unknown): UsageTotals | null {
+	if (!usage || typeof usage !== "object") return null;
+	const u = usage as { input_tokens?: unknown; output_tokens?: unknown };
+	if (
+		typeof u.input_tokens !== "number" ||
+		typeof u.output_tokens !== "number"
+	) {
+		return null;
+	}
+	return { inputTokens: u.input_tokens, outputTokens: u.output_tokens };
 }
 
 function normalizeUserMessage(
@@ -545,19 +578,36 @@ function normalizeResultMessage(
 	msg: SDKResultMessage,
 	state: NormalizeState,
 ): AgentStreamEvent[] {
-	// End of turn — the next assistant message starts a fresh turn id.
+	// End of turn — the next assistant message starts a fresh turn id. Fall
+	// back to the result's own uuid so the reconciling usage_update below
+	// still has a messageId even on a turn with no assistant content.
+	const turnMessageId = state.currentTurnMessageId ?? msg.uuid;
 	state.currentTurnMessageId = null;
+
+	const events: AgentStreamEvent[] = [];
+	const cumulative = extractUsageTotals(msg.usage);
+	if (cumulative) {
+		events.push({
+			type: "usage_update",
+			messageId: turnMessageId,
+			usage: cumulative,
+			cumulative,
+		});
+	}
+
 	if (msg.subtype !== "success") {
 		const detail = msg.errors?.length ? ` — ${msg.errors.join("; ")}` : "";
-		return [
+		events.push(
 			{
 				type: "error",
 				message: `claude agent turn ended: ${msg.subtype}${detail}`,
 			},
 			{ type: "session_status", status: "idle" },
-		];
+		);
+		return events;
 	}
-	return [{ type: "session_status", status: "idle" }];
+	events.push({ type: "session_status", status: "idle" });
+	return events;
 }
 
 function blockContentToText(content: unknown): string {

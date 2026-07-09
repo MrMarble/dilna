@@ -119,6 +119,7 @@ export const api = {
 				"error",
 				"agent_crashed",
 				"changed_files",
+				"usage_update",
 			];
 			for (const t of eventTypes) {
 				es.addEventListener(t, (e: MessageEvent) => {

@@ -21,7 +21,19 @@ export type AgentStreamEvent =
 	  }
 	| { type: "message_end"; messageId: string }
 	| { type: "error"; message: string; stderrTail?: string[] }
-	| { type: "agent_crashed"; exitCode: number; stderrTail: string[] };
+	| { type: "agent_crashed"; exitCode: number; stderrTail: string[] }
+	| {
+			type: "usage_update";
+			messageId: string;
+			/** This API call's token delta — per-message usage isn't cumulative
+			 * across the multiple API calls a turn can span, so consumers sum
+			 * these across a turn. */
+			usage: UsageTotals;
+			/** Present only on the turn-end reconciling event (from the SDK's
+			 * cumulative-for-the-session result usage): the authoritative total
+			 * to snap accumulated live totals to. */
+			cumulative?: UsageTotals;
+	  };
 
 export type SessionStatus =
 	| "idle"
@@ -29,3 +41,9 @@ export type SessionStatus =
 	| "working"
 	| "stopping"
 	| "crashed";
+
+/** Tokens-only usage totals (no cost) — see docs/research/claude-agent-sdk-usage-limits.md. */
+export type UsageTotals = {
+	inputTokens: number;
+	outputTokens: number;
+};
