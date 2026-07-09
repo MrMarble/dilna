@@ -1,4 +1,4 @@
-import type { SessionListEvent } from "@dilna/shared";
+import type { RateLimitWindow, SessionListEvent } from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
@@ -21,6 +21,9 @@ export function App() {
 	);
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
+	const [rateLimitWindows, setRateLimitWindows] = useState<RateLimitWindow[]>(
+		[],
+	);
 
 	const refreshRepos = useCallback(async () => {
 		setLoadingRepos(true);
@@ -53,6 +56,8 @@ export function App() {
 					delete next[ev.sessionId];
 					return next;
 				});
+			} else if (ev.type === "rate_limits") {
+				setRateLimitWindows(ev.windows);
 			}
 		});
 		return unsubscribe;
@@ -165,6 +170,7 @@ export function App() {
 						repos.map((r) => [r.id, r.slug] as const),
 					)}
 					onSelectBackgroundSession={handleSelectSession}
+					rateLimitWindows={rateLimitWindows}
 				/>
 				<main className="flex flex-1 flex-col overflow-hidden">
 					{selectedRepo ? (

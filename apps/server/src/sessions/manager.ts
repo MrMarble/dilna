@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import {
 	getSessionInfo,
 	getSessionMessages,
+	type SDKRateLimitInfo,
 	type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -14,13 +15,20 @@ import type {
 	ChangedFile,
 	Message,
 	MessagePart,
+	RateLimitWindow,
+	RateLimitWindowKind,
 	Session,
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
 import { and, asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { type ClaudeHandle, chatClaude, startClaude } from "../agents/claude";
+import {
+	type ClaudeHandle,
+	type ClaudeStartOptions,
+	chatClaude,
+	startClaude,
+} from "../agents/claude";
 import { IDLE_TIMEOUT_MS } from "../agents/types";
 import { getDb } from "../db";
 import {
@@ -29,6 +37,11 @@ import {
 } from "../db/schema";
 import { repoManager } from "../repos/manager";
 import { computeChangedFiles } from "./diff";
+import {
+	freshRateLimitWindows,
+	normalizeResetsAt,
+	type RateLimitSnapshot,
+} from "./rateLimits";
 
 const execFileAsync = promisify(execFile);
 
@@ -204,6 +217,12 @@ class SessionManager {
 	/** Cross-session status subscribers (per ADR-0008): one subscription per
 	 * app load, notified on every status change of every session. */
 	private globalSubscribers = new Set<(event: SessionListEvent) => void>();
+	/** Last-known account-wide plan rate-limit reading per window, reported
+	 * by whichever Session's agent process is currently live (see
+	 * `ensureStarted`'s `onRateLimit` wiring). Account-wide, not keyed by
+	 * session id — there's exactly one Anthropic account per dilna deploy.
+	 * Staleness is computed at read time (see rateLimits.ts), not stored. */
+	private rateLimits = new Map<RateLimitWindowKind, RateLimitSnapshot>();
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
 		const db = getDb();
@@ -430,6 +449,45 @@ class SessionManager {
 				// listener errors during broadcast are non-fatal
 			}
 		}
+	}
+
+	/**
+	 * Last-known account-wide rate-limit windows, filtered for staleness at
+	 * read time. Used both for the SSE snapshot-on-connect (routes/stream.ts)
+	 * and is implicitly what every `rate_limits` broadcast carries.
+	 */
+	getRateLimits(): RateLimitWindow[] {
+		return freshRateLimitWindows(
+			this.rateLimits,
+			Math.floor(Date.now() / 1000),
+		);
+	}
+
+	/**
+	 * Callback passed to `startClaude` (see `ensureStarted`). Rate limits are
+	 * account-wide, so this updates shared state regardless of which Session
+	 * reported it, then re-broadcasts the full (staleness-filtered) window
+	 * list on the cross-session stream — the sidebar footer's only source of
+	 * truth, no dedicated poller involved.
+	 */
+	private handleRateLimitEvent(info: SDKRateLimitInfo): void {
+		const kind: RateLimitWindowKind | null =
+			info.rateLimitType === "five_hour" || info.rateLimitType === "seven_day"
+				? info.rateLimitType
+				: null;
+		// Ignore the opus/sonnet/overage sub-variants (out of scope for this
+		// two-bar UI) and any event missing the fields this needs.
+		if (kind === null) return;
+		if (info.utilization === undefined || info.resetsAt === undefined) return;
+
+		this.rateLimits.set(kind, {
+			utilizationPct: info.utilization,
+			resetsAt: normalizeResetsAt(info.resetsAt),
+		});
+		this.broadcastGlobal({
+			type: "rate_limits",
+			windows: this.getRateLimits(),
+		});
 	}
 
 	// ---- Agent lifecycle ----------------------------------------------------
@@ -681,9 +739,10 @@ class SessionManager {
 		if (session.agentType === "openai") {
 			throw new Error("openai agent backend is not implemented yet");
 		}
-		const startOpts = {
+		const startOpts: ClaudeStartOptions = {
 			worktreePath: session.worktreePath,
 			existingAgentSessionId: session.agentSessionId ?? undefined,
+			onRateLimit: (info) => this.handleRateLimitEvent(info),
 		};
 		const handle: ClaudeHandle = await startClaude(startOpts);
 

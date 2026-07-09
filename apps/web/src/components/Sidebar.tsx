@@ -1,7 +1,15 @@
-import type { Repo, SessionView } from "@dilna/shared";
+import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
 import { FolderGit2, Plus, RefreshCw } from "lucide-react";
+import { useEffect, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import {
+	isRateLimitWindowFresh,
+	RATE_LIMIT_LABELS,
+	RATE_LIMIT_ORDER,
+	rateLimitBarColor,
+	rateLimitTooltip,
+} from "@/lib/rate-limits";
 
 const IS_MAC =
 	typeof navigator !== "undefined" &&
@@ -21,6 +29,11 @@ type Props = {
 	backgroundSessions: SessionView[];
 	repoSlugById: Record<string, string>;
 	onSelectBackgroundSession: (session: SessionView) => void;
+	/** Account-wide plan rate-limit windows (per ADR-0006-adjacent design in
+	 * the "Account-wide plan rate-limit footer" issue). Empty/absent when
+	 * unavailable — e.g. API-key auth, or no live Session has reported yet —
+	 * in which case the footer renders nothing at all. */
+	rateLimitWindows: RateLimitWindow[];
 };
 
 export function Sidebar({
@@ -36,6 +49,7 @@ export function Sidebar({
 	backgroundSessions,
 	repoSlugById,
 	onSelectBackgroundSession,
+	rateLimitWindows,
 }: Props) {
 	return (
 		<aside className="flex w-64 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
@@ -80,6 +94,8 @@ export function Sidebar({
 				repoSlugById={repoSlugById}
 				onSelect={onSelectBackgroundSession}
 			/>
+
+			<RateLimitFooter windows={rateLimitWindows} />
 		</aside>
 	);
 }
@@ -191,6 +207,69 @@ function BackgroundAgentsSection({
 						))}
 					</ul>
 				)}
+			</div>
+		</div>
+	);
+}
+
+/**
+ * Account-wide plan rate-limit footer. Entirely absent — not an empty or
+ * disabled shell — whenever there's nothing fresh to show: API-key auth
+ * never produces rate-limit data server-side (see manager.ts's
+ * `handleRateLimitEvent` gate on `apiKeySource === 'oauth'`), and a window
+ * whose reset time has passed with no live Session to refresh it is treated
+ * the same as unavailable rather than shown frozen at its last percentage.
+ *
+ * The 30s re-render tick below only recomputes staleness against
+ * already-received `resetsAt` values — it makes no network request and
+ * fetches no new data, so it isn't the "dedicated background poller" the
+ * issue rules out; data only ever changes via a live Session's push.
+ */
+function RateLimitFooter({ windows }: { windows: RateLimitWindow[] }) {
+	const [nowMs, setNowMs] = useState(() => Date.now());
+
+	useEffect(() => {
+		if (windows.length === 0) return;
+		const interval = setInterval(() => setNowMs(Date.now()), 30_000);
+		return () => clearInterval(interval);
+	}, [windows.length]);
+
+	const fresh = RATE_LIMIT_ORDER.map((kind) =>
+		windows.find((w) => w.kind === kind),
+	).filter(
+		(w): w is RateLimitWindow =>
+			w !== undefined && isRateLimitWindowFresh(w, nowMs),
+	);
+
+	if (fresh.length === 0) return null;
+
+	return (
+		<div className="space-y-2 border-t border-zinc-200 p-3 dark:border-zinc-800">
+			{fresh.map((window) => (
+				<RateLimitBar key={window.kind} window={window} nowMs={nowMs} />
+			))}
+		</div>
+	);
+}
+
+function RateLimitBar({
+	window,
+	nowMs,
+}: {
+	window: RateLimitWindow;
+	nowMs: number;
+}) {
+	const pct = Math.max(0, Math.min(100, window.utilizationPct));
+	return (
+		<div title={rateLimitTooltip(window, nowMs)}>
+			<div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
+				<span>{RATE_LIMIT_LABELS[window.kind]}</span>
+			</div>
+			<div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+				<div
+					className={`h-full rounded-full ${rateLimitBarColor(pct)}`}
+					style={{ width: `${pct}%` }}
+				/>
 			</div>
 		</div>
 	);

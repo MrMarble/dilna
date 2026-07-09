@@ -3,6 +3,7 @@ import type {
 	AgentType,
 	ChangedFile,
 	Message,
+	RateLimitWindow,
 	Repo,
 	SessionListEvent,
 	SessionView,
@@ -13,6 +14,7 @@ export type {
 	AgentType,
 	ChangedFile,
 	Message,
+	RateLimitWindow,
 	Repo,
 	SessionListEvent,
 	SessionView,
@@ -141,7 +143,7 @@ export const api = {
 	sessionList: {
 		stream: (onEvent: (event: SessionListEvent) => void): (() => void) => {
 			const es = new EventSource("/api/stream");
-			for (const t of ["session_status", "session_deleted"]) {
+			for (const t of ["session_status", "session_deleted", "rate_limits"]) {
 				es.addEventListener(t, (e: MessageEvent) => {
 					try {
 						const ev = JSON.parse(e.data as string) as SessionListEvent;

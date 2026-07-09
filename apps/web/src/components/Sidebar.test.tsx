@@ -1,4 +1,4 @@
-import type { Repo, SessionView } from "@dilna/shared";
+import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/Sidebar";
@@ -30,6 +30,17 @@ function makeSession(overrides: Partial<SessionView> = {}): SessionView {
 	};
 }
 
+function makeRateLimitWindow(
+	overrides: Partial<RateLimitWindow> = {},
+): RateLimitWindow {
+	return {
+		kind: "five_hour",
+		utilizationPct: 20,
+		resetsAt: Math.floor(Date.now() / 1000) + 3600,
+		...overrides,
+	};
+}
+
 function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 	return render(
 		<Sidebar
@@ -45,6 +56,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			backgroundSessions={[]}
 			repoSlugById={{}}
 			onSelectBackgroundSession={noop}
+			rateLimitWindows={[]}
 			{...overrides}
 		/>,
 	);
@@ -114,5 +126,74 @@ describe("Sidebar", () => {
 	it("renders an error message when repo loading fails", () => {
 		renderSidebar({ error: "boom" });
 		expect(screen.getByText("boom")).toBeInTheDocument();
+	});
+
+	describe("rate-limit footer", () => {
+		it("renders nothing when no rate-limit data is available", () => {
+			renderSidebar({ rateLimitWindows: [] });
+			expect(screen.queryByText("5-hour")).not.toBeInTheDocument();
+			expect(screen.queryByText("Weekly")).not.toBeInTheDocument();
+		});
+
+		it("renders a bar per fresh window, labeled 5-hour / Weekly", () => {
+			renderSidebar({
+				rateLimitWindows: [
+					makeRateLimitWindow({ kind: "five_hour", utilizationPct: 20 }),
+					makeRateLimitWindow({ kind: "seven_day", utilizationPct: 60 }),
+				],
+			});
+			expect(screen.getByText("5-hour")).toBeInTheDocument();
+			expect(screen.getByText("Weekly")).toBeInTheDocument();
+		});
+
+		it("omits a window whose reset time has already passed", () => {
+			renderSidebar({
+				rateLimitWindows: [
+					makeRateLimitWindow({
+						kind: "five_hour",
+						resetsAt: Math.floor(Date.now() / 1000) - 60,
+					}),
+				],
+			});
+			expect(screen.queryByText("5-hour")).not.toBeInTheDocument();
+		});
+
+		it("reveals the exact percentage and time-to-reset on hover via title", () => {
+			renderSidebar({
+				rateLimitWindows: [
+					makeRateLimitWindow({
+						kind: "five_hour",
+						utilizationPct: 42,
+						resetsAt: Math.floor(Date.now() / 1000) + 3600,
+					}),
+				],
+			});
+			const label = screen.getByText("5-hour");
+			const bar = label.closest("[title]");
+			expect(bar).not.toBeNull();
+			expect(bar?.getAttribute("title")).toMatch(/42% used/);
+			expect(bar?.getAttribute("title")).toMatch(/resets in/);
+		});
+
+		it("color-codes below 50% as neutral", () => {
+			const { container } = renderSidebar({
+				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 30 })],
+			});
+			expect(container.querySelector(".bg-zinc-400")).not.toBeNull();
+		});
+
+		it("color-codes 50-80% as yellow", () => {
+			const { container } = renderSidebar({
+				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 65 })],
+			});
+			expect(container.querySelector(".bg-amber-500")).not.toBeNull();
+		});
+
+		it("color-codes above 80% as red", () => {
+			const { container } = renderSidebar({
+				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 95 })],
+			});
+			expect(container.querySelector(".bg-red-500")).not.toBeNull();
+		});
 	});
 });

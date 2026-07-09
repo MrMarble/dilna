@@ -21,6 +21,21 @@ streamRoute.get("/", (c) => {
 			});
 		}
 
+		// 1b. Snapshot last-known plan rate-limit windows (already
+		//     staleness-filtered by getRateLimits), if any are available. Sent
+		//     only when non-empty so a fresh tab with no data yet renders no
+		//     footer at all, rather than an empty one.
+		const rateLimitWindows = sessionManager.getRateLimits();
+		if (rateLimitWindows.length > 0) {
+			await stream.writeSSE({
+				event: "rate_limits",
+				data: JSON.stringify({
+					type: "rate_limits",
+					windows: rateLimitWindows,
+				}),
+			});
+		}
+
 		// 2. Subscribe to live cross-session status changes.
 		const queue: { event: string; data: string }[] = [];
 		let resolveFlush: (() => void) | null = null;

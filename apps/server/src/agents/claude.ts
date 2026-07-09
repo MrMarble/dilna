@@ -4,10 +4,12 @@ import path from "node:path";
 import { setTimeout as setTimeoutAsync } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
+	type ApiKeySource,
 	type Query,
 	query,
 	type SDKAssistantMessage,
 	type SDKMessage,
+	type SDKRateLimitInfo,
 	type SDKResultMessage,
 	type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -70,6 +72,20 @@ type ContentBlock = Record<string, unknown> & { type?: string };
 
 export type Listener = (event: AgentStreamEvent) => void;
 
+/**
+ * `startClaude` options extended with a callback for account-wide rate-limit
+ * updates. Kept separate from the shared `AgentStartOptions` (used by the
+ * generic `Agent` interface in `agents/types.ts`) rather than added to it:
+ * rate limits are a Claude-Agent-SDK-specific concept (`SDKRateLimitEvent`),
+ * and per ADR-0006 `AgentStreamEvent` is deliberately per-session-only, so
+ * this data is forwarded out-of-band instead of being contorted into either
+ * shared union — see `SessionManager.ensureStarted`/`handleRateLimitEvent`
+ * for the consumer side.
+ */
+export type ClaudeStartOptions = AgentStartOptions & {
+	onRateLimit?: (info: SDKRateLimitInfo) => void;
+};
+
 export type ClaudeHandle = {
 	kind: "claude";
 	/**
@@ -78,6 +94,14 @@ export type ClaudeHandle = {
 	 * live state rather than a value snapshotted at handle-creation time.
 	 */
 	readonly agentSessionId: string;
+	/**
+	 * Auth mode from the first turn's `system init` message — `'oauth'` means
+	 * a claude.ai Pro/Max/Team/Enterprise subscription login; any other value
+	 * is API-key-shaped auth. `null` until `init` arrives (see
+	 * {@link agentSessionId}'s doc comment for why this is a getter). Gates
+	 * whether rate-limit events are forwarded at all (see {@link startClaude}).
+	 */
+	readonly apiKeySource: ApiKeySource | null;
 	worktreePath: string;
 	listeners: Set<Listener>;
 	stop: () => Promise<void>;
@@ -153,7 +177,7 @@ const CLAUDE_SCRATCH_WRITABLE_PATHS = [
  * accurate once the first turn's `init` message arrives.
  */
 export async function startClaude(
-	opts: AgentStartOptions,
+	opts: ClaudeStartOptions,
 ): Promise<ClaudeHandle> {
 	const stderrTail: string[] = [];
 	const inputQueue = createInputQueue();
@@ -239,12 +263,23 @@ export async function startClaude(
 	let killed = false;
 	let alive = true;
 	let agentSessionId = opts.existingAgentSessionId ?? "";
+	let apiKeySource: ApiKeySource | null = null;
 
 	const loopPromise = (async () => {
 		try {
 			for await (const msg of q) {
 				if (msg.type === "system" && msg.subtype === "init") {
 					agentSessionId = msg.session_id;
+					apiKeySource = msg.apiKeySource;
+					continue;
+				}
+				if (msg.type === "rate_limit_event") {
+					// SDKRateLimitEvent is explicitly documented as "for claude.ai
+					// subscription users" — gate on the auth mode captured from
+					// `init` above rather than trusting it never fires otherwise.
+					if (apiKeySource === "oauth") {
+						opts.onRateLimit?.(msg.rate_limit_info);
+					}
 					continue;
 				}
 				const events = normalizeMessage(msg, state);
@@ -327,6 +362,9 @@ export async function startClaude(
 		kind: "claude",
 		get agentSessionId() {
 			return agentSessionId;
+		},
+		get apiKeySource() {
+			return apiKeySource;
 		},
 		worktreePath: opts.worktreePath,
 		listeners,
