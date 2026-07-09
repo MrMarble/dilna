@@ -25,7 +25,7 @@ export function App() {
 		[],
 	);
 
-	const refreshRepos = useCallback(async () => {
+	const reloadRepos = useCallback(async () => {
 		setLoadingRepos(true);
 		setRepoError(null);
 		try {
@@ -38,9 +38,35 @@ export function App() {
 		}
 	}, []);
 
+	// Sidebar's refresh button: pull every repo's default branch from its
+	// origin remote (a bare clone otherwise has no way to pick up upstream
+	// commits — see RepoManager.pull) before reloading the list. A repo whose
+	// remote is unreachable shouldn't block the others from updating.
+	const pullRepos = useCallback(async () => {
+		setLoadingRepos(true);
+		setRepoError(null);
+		const results = await Promise.allSettled(
+			repos.map((r) => api.repos.pull(r.id)),
+		);
+		const failed = results.filter((r) => r.status === "rejected").length;
+		if (failed > 0) {
+			setRepoError(
+				`failed to pull ${failed} of ${results.length} repositor${results.length === 1 ? "y" : "ies"}`,
+			);
+		}
+		try {
+			const { repos: updated } = await api.repos.list();
+			setRepos(updated);
+		} catch (e) {
+			setRepoError(e instanceof Error ? e.message : "failed to load repos");
+		} finally {
+			setLoadingRepos(false);
+		}
+	}, [repos]);
+
 	useEffect(() => {
-		refreshRepos();
-	}, [refreshRepos]);
+		reloadRepos();
+	}, [reloadRepos]);
 
 	// Single cross-session status subscription (per ADR-0008) — the source
 	// of truth for every session's live state, across every repo. Powers the
@@ -161,7 +187,7 @@ export function App() {
 					error={repoError}
 					selectedRepoId={selectedRepoId}
 					onSelectRepo={handleSelectRepo}
-					onRefreshRepos={refreshRepos}
+					onRefreshRepos={pullRepos}
 					onNewRepo={() => setNewRepoOpen(true)}
 					onNewSession={handleNewSession}
 					creatingSession={creatingSession}
@@ -210,7 +236,7 @@ export function App() {
 			<NewRepoDialog
 				open={newRepoOpen}
 				onOpenChange={setNewRepoOpen}
-				onCloned={refreshRepos}
+				onCloned={reloadRepos}
 			/>
 		</>
 	);

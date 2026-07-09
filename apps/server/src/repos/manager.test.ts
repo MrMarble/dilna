@@ -76,4 +76,52 @@ describe("RepoManager", () => {
 		const repos = await repoManager.list();
 		expect(repos.find((r) => r.id === repo.id)).toBeUndefined();
 	});
+
+	it("pull updates the default branch ref from origin without a working tree", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `pull-${Date.now()}`);
+		const before = await git(["rev-parse", "refs/heads/main"], {
+			cwd: repo.path,
+		});
+
+		writeFileSync(path.join(fixtureRepo, "NEW.md"), "new commit\n");
+		await git(["add", "."], { cwd: fixtureRepo });
+		await git(["commit", "-m", "second"], { cwd: fixtureRepo });
+		const { stdout: originHead } = await git(["rev-parse", "HEAD"], {
+			cwd: fixtureRepo,
+		});
+
+		await repoManager.pull(repo);
+
+		const after = await git(["rev-parse", "refs/heads/main"], {
+			cwd: repo.path,
+		});
+		expect(after.stdout.trim()).toBe(originHead.trim());
+		expect(after.stdout.trim()).not.toBe(before.stdout.trim());
+
+		await repoManager.delete(repo.id);
+	});
+
+	it("pull never touches an unrelated local-only branch (e.g. a Session's own branch)", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`pull-local-${Date.now()}`,
+		);
+		await git(["branch", "dilna/fake-session"], { cwd: repo.path });
+		const before = await git(["rev-parse", "refs/heads/dilna/fake-session"], {
+			cwd: repo.path,
+		});
+
+		writeFileSync(path.join(fixtureRepo, "NEW2.md"), "third commit\n");
+		await git(["add", "."], { cwd: fixtureRepo });
+		await git(["commit", "-m", "third"], { cwd: fixtureRepo });
+
+		await repoManager.pull(repo);
+
+		const after = await git(["rev-parse", "refs/heads/dilna/fake-session"], {
+			cwd: repo.path,
+		});
+		expect(after.stdout.trim()).toBe(before.stdout.trim());
+
+		await repoManager.delete(repo.id);
+	});
 });

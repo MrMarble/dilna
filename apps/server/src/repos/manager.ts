@@ -143,6 +143,36 @@ export class RepoManager {
 		return repo;
 	}
 
+	/**
+	 * Fetch the Repo's default branch from its `origin` remote into the bare
+	 * clone, so new Sessions (which branch off `defaultBranch` — see
+	 * `SessionManager.create`) start from up-to-date history. A bare clone
+	 * doesn't configure a fetch refspec by default the way a normal clone's
+	 * `origin/HEAD`-tracking does (verified directly: `git clone --bare`
+	 * leaves `remote.origin.fetch` unset, so a plain `git fetch` updates
+	 * `FETCH_HEAD` only, not any local ref), so this fetches `defaultBranch`
+	 * explicitly into the same-named local ref — scoped to that one branch
+	 * so Sessions' own `dilna/<id>` branches living in the same bare repo are
+	 * never touched by this call.
+	 */
+	async pull(repo: Repo): Promise<void> {
+		try {
+			await git(
+				[
+					"fetch",
+					"origin",
+					`+refs/heads/${repo.defaultBranch}:refs/heads/${repo.defaultBranch}`,
+				],
+				{ cwd: repo.path },
+			);
+		} catch (err) {
+			const e = err as { stderr?: string; message?: string };
+			throw new Error(
+				`git fetch failed for ${repo.slug}: ${e.stderr?.trim() || e.message}`,
+			);
+		}
+	}
+
 	async delete(id: string): Promise<void> {
 		const repo = await this.get(id);
 		if (!repo) return;

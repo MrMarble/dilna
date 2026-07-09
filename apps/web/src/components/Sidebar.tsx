@@ -124,6 +124,7 @@ function ReposSection({
 				newTitle="New repository"
 				onNew={onNew}
 				onRefresh={onRefresh}
+				refreshTitle="Pull latest default-branch changes"
 			/>
 			<div className="max-h-64 overflow-y-auto px-2 pb-2">
 				{loading && repos.length === 0 ? (
@@ -280,11 +281,13 @@ function SidebarSectionHeader({
 	newTitle,
 	onNew,
 	onRefresh,
+	refreshTitle = "Refresh",
 }: {
 	title: string;
 	newTitle: string;
 	onNew: () => void;
 	onRefresh?: () => void;
+	refreshTitle?: string;
 }) {
 	return (
 		<div className="flex items-center justify-between px-4 py-2">
@@ -297,7 +300,7 @@ function SidebarSectionHeader({
 						type="button"
 						onClick={onRefresh}
 						className="rounded-md p-1 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-800"
-						title="Refresh"
+						title={refreshTitle}
 					>
 						<RefreshCw className="size-3.5" />
 					</button>

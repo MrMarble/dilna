@@ -38,6 +38,20 @@ reposRoute.post("/", async (c) => {
 	}
 });
 
+reposRoute.post("/:id/pull", async (c) => {
+	const id = c.req.param("id");
+	const repo = await repoManager.get(id);
+	if (!repo) throw new HTTPException(404, { message: "repo not found" });
+	try {
+		await repoManager.pull(repo);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : "pull failed";
+		throw new HTTPException(500, { message: msg });
+	}
+	const body: OneResponse = { repo };
+	return c.json(body);
+});
+
 reposRoute.delete("/:id", async (c) => {
 	const id = c.req.param("id");
 	await repoManager.delete(id);

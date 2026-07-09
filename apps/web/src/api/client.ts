@@ -71,6 +71,8 @@ export const api = {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
+		pull: (id: string) =>
+			request<{ repo: Repo }>(`/api/repos/${id}/pull`, { method: "POST" }),
 		delete: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/repos/${id}`, {
 				method: "DELETE",
