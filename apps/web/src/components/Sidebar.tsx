@@ -17,6 +17,7 @@ type Props = {
 	onRefreshRepos: () => void;
 	onNewRepo: () => void;
 	onNewSession: () => void;
+	creatingSession: boolean;
 	backgroundSessions: SessionView[];
 	repoSlugById: Record<string, string>;
 	onSelectBackgroundSession: (session: SessionView) => void;
@@ -31,6 +32,7 @@ export function Sidebar({
 	onRefreshRepos,
 	onNewRepo,
 	onNewSession,
+	creatingSession,
 	backgroundSessions,
 	repoSlugById,
 	onSelectBackgroundSession,
@@ -47,7 +49,7 @@ export function Sidebar({
 				<button
 					type="button"
 					onClick={onNewSession}
-					disabled={!selectedRepoId}
+					disabled={!selectedRepoId || creatingSession}
 					title={
 						selectedRepoId
 							? "New session"
@@ -56,7 +58,7 @@ export function Sidebar({
 					className="flex w-full items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
 				>
 					<Plus className="size-3.5" />
-					New session
+					{creatingSession ? "Creating…" : "New session"}
 					<span className="ml-auto text-xs font-normal text-zinc-400 dark:text-zinc-500">
 						{NEW_SESSION_SHORTCUT}
 					</span>

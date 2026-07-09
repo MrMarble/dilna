@@ -5,7 +5,6 @@ import { api, type Repo, type SessionView } from "@/api/client";
 import { ChatHeader } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
-import { NewSessionDialog } from "@/components/NewSessionDialog";
 import { Sidebar } from "@/components/Sidebar";
 
 export function App() {
@@ -20,7 +19,7 @@ export function App() {
 		null,
 	);
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
-	const [newSessionOpen, setNewSessionOpen] = useState(false);
+	const [creatingSession, setCreatingSession] = useState(false);
 
 	const refreshRepos = useCallback(async () => {
 		setLoadingRepos(true);
@@ -38,20 +37,6 @@ export function App() {
 	useEffect(() => {
 		refreshRepos();
 	}, [refreshRepos]);
-
-	// Cmd/Ctrl+K opens New Session for the currently selected repo, mirroring
-	// the sidebar button's shortcut hint. No-op with no repo selected, same
-	// as the button's disabled state.
-	useEffect(() => {
-		function onKeyDown(e: KeyboardEvent) {
-			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-				e.preventDefault();
-				if (selectedRepoId) setNewSessionOpen(true);
-			}
-		}
-		document.addEventListener("keydown", onKeyDown);
-		return () => document.removeEventListener("keydown", onKeyDown);
-	}, [selectedRepoId]);
 
 	// Single cross-session status subscription (per ADR-0008) — the source
 	// of truth for every session's live state, across every repo. Powers the
@@ -114,6 +99,35 @@ export function App() {
 		setSelectedSessionId(session.id);
 	}, []);
 
+	// No agent picker to confirm (Claude is the only backend), so "New
+	// session" creates immediately rather than opening a dialog.
+	const handleNewSession = useCallback(async () => {
+		if (!selectedRepoId || creatingSession) return;
+		setCreatingSession(true);
+		try {
+			const { session } = await api.sessions.create(selectedRepoId);
+			handleSessionCreated(session);
+		} catch (e) {
+			console.error(e);
+		} finally {
+			setCreatingSession(false);
+		}
+	}, [selectedRepoId, creatingSession, handleSessionCreated]);
+
+	// Cmd/Ctrl+K creates a new session for the currently selected repo,
+	// mirroring the sidebar button's shortcut hint. No-op with no repo
+	// selected, same as the button's disabled state.
+	useEffect(() => {
+		function onKeyDown(e: KeyboardEvent) {
+			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+				e.preventDefault();
+				handleNewSession();
+			}
+		}
+		document.addEventListener("keydown", onKeyDown);
+		return () => document.removeEventListener("keydown", onKeyDown);
+	}, [handleNewSession]);
+
 	const handleDeleteSession = useCallback(
 		async (id: string) => {
 			try {
@@ -143,7 +157,8 @@ export function App() {
 					onSelectRepo={handleSelectRepo}
 					onRefreshRepos={refreshRepos}
 					onNewRepo={() => setNewRepoOpen(true)}
-					onNewSession={() => setNewSessionOpen(true)}
+					onNewSession={handleNewSession}
+					creatingSession={creatingSession}
 					backgroundSessions={backgroundSessions}
 					repoSlugById={Object.fromEntries(
 						repos.map((r) => [r.id, r.slug] as const),
@@ -185,14 +200,6 @@ export function App() {
 				onOpenChange={setNewRepoOpen}
 				onCloned={refreshRepos}
 			/>
-			{selectedRepoId && (
-				<NewSessionDialog
-					open={newSessionOpen}
-					onOpenChange={setNewSessionOpen}
-					repoId={selectedRepoId}
-					onCreated={handleSessionCreated}
-				/>
-			)}
 		</>
 	);
 }

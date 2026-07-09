@@ -41,6 +41,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			onRefreshRepos={noop}
 			onNewRepo={noop}
 			onNewSession={noop}
+			creatingSession={false}
 			backgroundSessions={[]}
 			repoSlugById={{}}
 			onSelectBackgroundSession={noop}
