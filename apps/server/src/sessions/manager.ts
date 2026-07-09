@@ -289,7 +289,11 @@ class SessionManager {
 			branchName,
 			agentType,
 			agentSessionId: null,
-			title: "New session",
+			// Distinguishable placeholder until the agent's own auto-derived
+			// title lands (see maybeSyncTitle) — "New session" for every session
+			// made every entry in the session dropdown indistinguishable until
+			// the first message was sent.
+			title: `Session ${id.slice(0, 4)}`,
 			status: "idle",
 			createdAt: now,
 			lastActiveAt: now,
