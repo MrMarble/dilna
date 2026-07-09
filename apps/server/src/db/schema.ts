@@ -22,6 +22,12 @@ export const sessions = sqliteTable("sessions", {
 	agentSessionId: text("agent_session_id"),
 	title: text("title").notNull().default("New session"),
 	status: text("status").notNull().default("idle"),
+	/** Session-lifetime token totals, accumulated turn by turn (see
+	 * SessionManager.accumulateSessionUsage — the SDK only reports per-turn
+	 * usage, so dilna has to do its own bookkeeping for totals to survive
+	 * idle-kill/resume and page reloads). */
+	inputTokens: integer("input_tokens").notNull().default(0),
+	outputTokens: integer("output_tokens").notNull().default(0),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 	lastActiveAt: integer("last_active_at").notNull().$defaultFn(now),
 });

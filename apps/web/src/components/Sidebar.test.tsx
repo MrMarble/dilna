@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<SessionView> = {}): SessionView {
 		title: "New session",
 		agentType: "claude",
 		status: "working",
+		usage: { inputTokens: 0, outputTokens: 0 },
 		createdAt: 1,
 		lastActiveAt: 1,
 		...overrides,

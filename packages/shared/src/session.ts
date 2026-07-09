@@ -1,4 +1,4 @@
-import type { SessionStatus } from "./events";
+import type { SessionStatus, UsageTotals } from "./events";
 import type { AgentType } from "./types";
 
 export type Session = {
@@ -11,6 +11,10 @@ export type Session = {
 	agentSessionId: string | null;
 	title: string;
 	status: SessionStatus;
+	/** Session-lifetime token totals, persisted turn by turn (the agent only
+	 * reports per-turn usage, so dilna accumulates it itself — see
+	 * SessionManager.accumulateSessionUsage). */
+	usage: UsageTotals;
 	createdAt: number;
 	lastActiveAt: number;
 };
@@ -21,6 +25,9 @@ export type SessionView = {
 	title: string;
 	agentType: AgentType;
 	status: SessionStatus;
+	/** See {@link Session.usage}. Seeds the chat header's token badge on
+	 * mount, so it doesn't restart from 0 after a reload or session switch. */
+	usage: UsageTotals;
 	createdAt: number;
 	lastActiveAt: number;
 };

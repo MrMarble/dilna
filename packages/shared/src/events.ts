@@ -29,9 +29,14 @@ export type AgentStreamEvent =
 			 * across the multiple API calls a turn can span, so consumers sum
 			 * these across a turn. */
 			usage: UsageTotals;
-			/** Present only on the turn-end reconciling event (from the SDK's
-			 * cumulative-for-the-session result usage): the authoritative total
-			 * to snap accumulated live totals to. */
+			/** Present only on the turn-end reconciling event: the session's
+			 * lifetime total to snap accumulated live totals to. The adapter
+			 * emits the turn's own usage here (the SDK reports per-turn, not
+			 * session-cumulative — verified empirically); the server folds it
+			 * into the DB-persisted session total and rewrites this field to
+			 * that total before broadcasting, so it always matches what
+			 * `GET /api/sessions/:id` serves — see
+			 * SessionManager.accumulateSessionUsage. */
 			cumulative?: UsageTotals;
 	  };
 

@@ -21,7 +21,7 @@ import type {
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
 	type ClaudeHandle,
@@ -63,6 +63,7 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		agentSessionId: row.agentSessionId,
 		title: row.title,
 		status: row.status as Session["status"],
+		usage: { inputTokens: row.inputTokens, outputTokens: row.outputTokens },
 		createdAt: row.createdAt,
 		lastActiveAt: row.lastActiveAt,
 	};
@@ -75,6 +76,7 @@ function toView(s: Session): SessionView {
 		title: s.title,
 		agentType: s.agentType,
 		status: s.status,
+		usage: s.usage,
 		createdAt: s.createdAt,
 		lastActiveAt: s.lastActiveAt,
 	};
@@ -324,6 +326,7 @@ class SessionManager {
 			// the first message was sent.
 			title: `Session ${id.slice(0, 4)}`,
 			status: "idle",
+			usage: { inputTokens: 0, outputTokens: 0 },
 			createdAt: now,
 			lastActiveAt: now,
 		};
@@ -629,7 +632,8 @@ class SessionManager {
 		});
 
 		const handle = active.handle;
-		const onEvent = (ev: AgentStreamEvent) => this.broadcast(id, ev);
+		const onEvent = (ev: AgentStreamEvent) =>
+			this.broadcast(id, this.accumulateSessionUsage(id, ev));
 
 		const crashHandler: Listener = (ev) => {
 			if (ev.type === "agent_crashed") {
@@ -686,6 +690,51 @@ class SessionManager {
 			await this.setStatus(id, "idle");
 			this.armIdleTimer(id, active);
 		}
+	}
+
+	/**
+	 * Fold a turn-end `usage_update` into the session's lifetime token totals.
+	 *
+	 * Despite the SDK docs describing result usage as cumulative "for the
+	 * session", in dilna's streaming-input mode it is per-turn — verified
+	 * empirically with two turns in one process (3319 then 2 input tokens,
+	 * not a running sum), and it also resets on every process respawn. So
+	 * the turn's value is simply added to the `sessions` row, and the
+	 * outgoing event's `cumulative` is rewritten to the persisted lifetime
+	 * total — the badge's live snap-to number is then the same one
+	 * `GET /api/sessions/:id` serves after a reload. Non-turn-end events
+	 * pass through untouched.
+	 */
+	private accumulateSessionUsage(
+		sessionId: string,
+		ev: AgentStreamEvent,
+	): AgentStreamEvent {
+		if (ev.type !== "usage_update" || !ev.cumulative) return ev;
+
+		const db = getDb();
+		db.update(sessionsTable)
+			.set({
+				inputTokens: sql`${sessionsTable.inputTokens} + ${ev.cumulative.inputTokens}`,
+				outputTokens: sql`${sessionsTable.outputTokens} + ${ev.cumulative.outputTokens}`,
+			})
+			.where(eq(sessionsTable.id, sessionId))
+			.run();
+		const row = db
+			.select({
+				inputTokens: sessionsTable.inputTokens,
+				outputTokens: sessionsTable.outputTokens,
+			})
+			.from(sessionsTable)
+			.where(eq(sessionsTable.id, sessionId))
+			.get();
+		if (!row) return ev;
+		return {
+			...ev,
+			cumulative: {
+				inputTokens: row.inputTokens,
+				outputTokens: row.outputTokens,
+			},
+		};
 	}
 
 	/**

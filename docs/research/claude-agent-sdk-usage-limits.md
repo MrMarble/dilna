@@ -42,7 +42,7 @@ type ModelUsage = {
 };
 ```
 
-`total_cost_usd` and `usage` on `SDKResultMessage` are **cumulative for the whole CLI session** (every turn so far, matching what `/cost` and `/usage` print in the CLI), not just the one turn — useful for a running "tokens this session" stat without dilna doing its own accumulation.
+`total_cost_usd` and `usage` on `SDKResultMessage` were originally believed to be **cumulative for the whole CLI session** — the SDK's doc comments read that way. **Empirically false in streaming-input mode** (verified 2026-07: two turns in one process reported `input_tokens` 3319 then 2, `num_turns: 1` each time — per-turn values, not a running sum; and a resumed process likewise reports only its own turns). Treat `SDKResultMessage.usage` as **that turn's usage**; any session-lifetime total is dilna's own bookkeeping (see `SessionManager.accumulateSessionUsage` and the `sessions.input_tokens`/`output_tokens` columns).
 
 **Where this plugs in:** `normalizeResultMessage` (claude.ts:544) already special-cases `msg.subtype !== "success"`; extending it to read `usage`/`total_cost_usd`/`modelUsage` from the success branch and emitting a new `AgentStreamEvent` variant (e.g. `usage_update`) is the natural hook. This directly informs the "stats de uso de sesión (tokens)" ticket (Especificar qué stats de uso mostrar y dónde) once it's unblocked.
 

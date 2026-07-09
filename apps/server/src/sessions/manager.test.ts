@@ -48,6 +48,7 @@ describe("SessionManager", () => {
 		const session = await sessionManager.create(repo.id);
 		expect(session.status).toBe("idle");
 		expect(session.title).toBe(`Session ${session.id.slice(0, 4)}`);
+		expect(session.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
 
 		// Worktree on disk
 		const worktreePath = path.join(dataDir, "worktrees", repo.slug, session.id);

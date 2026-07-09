@@ -609,8 +609,11 @@ function normalizeAssistantMessage(
 /**
  * Reads token counts off a Messages-API-shaped `usage` object — present on
  * every `SDKAssistantMessage.message.usage` (per-API-call, not cumulative
- * within a turn) and, cumulatively for the whole CLI session, on
- * `SDKResultMessage.usage`. Tokens only, per issue #10 — cost fields
+ * within a turn) and on `SDKResultMessage.usage`. Despite the SDK docs
+ * calling the latter session-cumulative, in streaming-input mode it is
+ * per-turn (verified empirically — two turns in one process reported 3319
+ * then 2 input tokens, not a running sum); SessionManager does the actual
+ * session-lifetime accumulation. Tokens only, per issue #10 — cost fields
  * (`total_cost_usd`, `costUSD`) are intentionally ignored. See
  * docs/research/claude-agent-sdk-usage-limits.md.
  */
@@ -661,13 +664,17 @@ function normalizeResultMessage(
 	state.currentTurnMessageId = null;
 
 	const events: AgentStreamEvent[] = [];
-	const cumulative = extractUsageTotals(msg.usage);
-	if (cumulative) {
+	// This turn's total usage (per-turn, not session-cumulative — see
+	// extractUsageTotals). Emitted in `cumulative` position so SessionManager
+	// folds it into the session's persisted lifetime total and rewrites the
+	// field to that total before broadcasting.
+	const turnUsage = extractUsageTotals(msg.usage);
+	if (turnUsage) {
 		events.push({
 			type: "usage_update",
 			messageId: turnMessageId,
-			usage: cumulative,
-			cumulative,
+			usage: turnUsage,
+			cumulative: turnUsage,
 		});
 	}
 
