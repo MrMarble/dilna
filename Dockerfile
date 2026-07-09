@@ -34,27 +34,17 @@ FROM node:24-bookworm-slim AS runtime
 
 # git + openssh-client: cloning repos (ADR-0005 host-passthrough — the
 # container inherits whatever ~/.ssh the operator mounts in).
-# ca-certificates: TLS for git https:// clones, outbound API calls, and the
-# sandlock download below.
+# ca-certificates: TLS for git https:// clones and outbound API calls.
+# bubblewrap + socat: Claude Code's own built-in sandbox (ADR-0010) — bwrap
+# does the per-Bash-command filesystem/process isolation, socat relays its
+# network proxy. Both are invoked by the `claude` CLI itself, per command,
+# not by dilna directly.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		git openssh-client ca-certificates curl \
+		git openssh-client ca-certificates bubblewrap socat \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
 		>> /etc/ssh/ssh_known_hosts 2>/dev/null
-
-# sandlock sandboxes each spawned agent process to its worktree (ADR-0010).
-# Not packaged for Debian, so fetch the prebuilt release binary directly —
-# runs unprivileged in this container with just SYS_PTRACE (see
-# docker-compose.yml / k8s securityContext.capabilities), unlike bubblewrap
-# (the first implementation), which needed CAP_SYS_ADMIN plus disabling
-# both seccomp and AppArmor entirely.
-ARG SANDLOCK_VERSION=0.8.4
-RUN curl -fsSL "https://github.com/multikernel/sandlock/releases/download/v${SANDLOCK_VERSION}/sandlock-x86_64-unknown-linux-gnu.tar.gz" \
-		-o /tmp/sandlock.tar.gz \
-	&& tar -xzf /tmp/sandlock.tar.gz -C /usr/local/bin ./sandlock \
-	&& chmod +x /usr/local/bin/sandlock \
-	&& rm /tmp/sandlock.tar.gz
 
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
@@ -69,6 +59,11 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 
 ENV PORT=3001
 ENV DILNA_DATA_DIR=/data
+# Tells the Claude backend's sandbox setup (ADR-0010) that an outer container
+# already provides process/mount isolation, so bwrap can run in its weaker
+# nested mode (bind-mounting the container's existing /proc instead of
+# mounting a fresh one, which an unprivileged container blocks).
+ENV DILNA_CONTAINERIZED=true
 VOLUME ["/data"]
 EXPOSE 3001
 

@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as setTimeoutAsync } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import {
 	type Query,
 	query,
@@ -8,11 +10,58 @@ import {
 	type SDKMessage,
 	type SDKResultMessage,
 	type SDKUserMessage,
-	type SpawnedProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStreamEvent } from "@dilna/shared";
-import { spawnSandboxed } from "./sandbox";
+import { getDataDir } from "../db";
 import type { AgentChatOptions, AgentStartOptions } from "./types";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * A git worktree's `.git` is a *file* (not a directory) pointing at its own
+ * metadata directory (HEAD, index, refs, logs) under the origin repo's git
+ * dir. That metadata dir's own `commondir` file in turn points at the
+ * *shared* git dir (objects, refs, config) — normally `../..`, i.e. the bare
+ * repo root itself. The native sandbox (see {@link startClaude}) already
+ * grants the shared dir write access automatically for a worktree cwd, but
+ * not read access, so this is used to add it to `filesystem.allowRead`
+ * ourselves when `denyRead` would otherwise cover it (e.g. `git log`/`git
+ * diff` need to read historical objects from the shared store).
+ */
+function resolveGitCommonDir(worktreePath: string): string | null {
+	try {
+		const dotGit = readFileSync(path.join(worktreePath, ".git"), "utf8");
+		const match = dotGit.match(/^gitdir:\s*(.+)$/m);
+		const worktreeGitDir = match?.[1]?.trim();
+		if (!worktreeGitDir) return null;
+
+		const commondir = readFileSync(
+			path.join(worktreeGitDir, "commondir"),
+			"utf8",
+		).trim();
+		return path.resolve(worktreeGitDir, commondir);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Walk up from `start` to find dilna's own monorepo root (marked by
+ * `pnpm-workspace.yaml`). Used to detect whether `DILNA_DATA_DIR` (and thus
+ * every worktree) lives nested inside dilna's own checkout — the condition
+ * under which a sandboxed agent's default project-memory discovery would
+ * otherwise pick up dilna's own `CLAUDE.md` while working on someone else's
+ * repo (see {@link startClaude}'s `claudeMdExcludes`/`denyRead` setup).
+ */
+function findWorkspaceRoot(start: string): string {
+	let dir = start;
+	while (true) {
+		if (existsSync(path.join(dir, "pnpm-workspace.yaml"))) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) return start;
+		dir = parent;
+	}
+}
 
 // The Claude Agent SDK's types are large and unstable in shape; we import
 // only the ones we use here and treat message content blocks as opaque
@@ -58,6 +107,26 @@ type NormalizeState = {
 };
 
 /**
+ * dilna's own writable scratch paths for the Claude CLI — its cache,
+ * transcript storage, and session-env directory, not project files. Passed
+ * to the native sandbox's `filesystem.allowWrite` (see {@link startClaude}).
+ * `~/.claude/projects` is the CLI's own transcript storage — `getSessionMessages`/
+ * `getSessionInfo` in sessions/manager.ts read from here after every turn;
+ * without this grant persisted history and title auto-sync silently stay
+ * empty. `/tmp/claude-<uid>` is the CLI's own per-invocation scratch dir,
+ * named after the (sanitized) worktree path plus a random suffix it picks
+ * itself — ungrantable at the exact leaf, so the whole per-uid parent is
+ * granted instead.
+ */
+const CLAUDE_SCRATCH_WRITABLE_PATHS = [
+	path.join(os.homedir(), ".cache", "claude"),
+	path.join(os.homedir(), ".cache", "claude-cli-nodejs"),
+	path.join(os.homedir(), ".claude", "session-env"),
+	path.join(os.homedir(), ".claude", "projects"),
+	path.join(os.tmpdir(), `claude-${process.getuid?.() ?? 0}`),
+];
+
+/**
  * Spawn a `claude-agent-sdk` query for the given worktree in streaming-input
  * mode, so a single underlying Claude Code subprocess stays resident across
  * multiple user turns (one process per worktree, per ADR-0003). Tool
@@ -79,6 +148,19 @@ export async function startClaude(
 	const stderrTail: string[] = [];
 	const inputQueue = createInputQueue();
 
+	// If DILNA_DATA_DIR (and thus every worktree) lives nested inside dilna's
+	// own checkout, per ADR-0010 a sandboxed agent's default project-memory
+	// discovery would otherwise walk up from the worktree and pick up
+	// dilna's own CLAUDE.md while working on someone else's repo — the exact
+	// incident this ADR opens with. Deny read on the checkout root and
+	// re-open only this worktree (plus its repo's shared git object store,
+	// for `git log`/`git diff`), and exclude any CLAUDE.md under the
+	// checkout from project-memory loading.
+	const gitCommonDir = resolveGitCommonDir(opts.worktreePath);
+	const workspaceRoot = findWorkspaceRoot(__dirname);
+	const dataDir = getDataDir();
+	const nestedInCheckout = dataDir.startsWith(`${workspaceRoot}${path.sep}`);
+
 	const q = query({
 		prompt: inputQueue.iterable,
 		options: {
@@ -93,38 +175,51 @@ export async function startClaude(
 				if (stderrTail.length > 50) stderrTail.shift();
 			},
 			// Per ADR-0003, bypassPermissions is only safe because the process's
-			// filesystem writes are confined to the worktree — spawnSandboxed
-			// (sandlock, per ADR-0010) is what actually enforces that boundary.
-			spawnClaudeCodeProcess: (spawnOpts) =>
-				spawnSandboxed({
-					command: spawnOpts.command,
-					args: spawnOpts.args,
-					cwd: spawnOpts.cwd ?? opts.worktreePath,
-					env: spawnOpts.env,
-					signal: spawnOpts.signal,
-					// streaming-input mode writes to stdin.
-					stdio: ["pipe", "pipe", "pipe"],
-					// Claude's own cache/transcript/session-scratch data — not
-					// project files, and deliberately narrower than all of
-					// ~/.claude (which holds global settings, skills, and
-					// credentials the sandboxed agent has no business writing to).
-					// `/tmp/claude-<uid>` is the CLI's own per-invocation scratch
-					// dir, named after the (sanitized) worktree path plus a random
-					// suffix it picks itself — ungrantable at the exact leaf, so
-					// the whole per-uid parent is granted instead.
-					writablePaths: [
-						path.join(os.homedir(), ".cache", "claude"),
-						path.join(os.homedir(), ".cache", "claude-cli-nodejs"),
-						path.join(os.homedir(), ".claude", "session-env"),
-						// The CLI's own transcript storage — `getSessionMessages`/
-						// `getSessionInfo` in sessions/manager.ts read from here after
-						// every turn. Without this grant the sandboxed process can
-						// never write its own transcript, so persisted history and
-						// title auto-sync silently stay empty.
-						path.join(os.homedir(), ".claude", "projects"),
-						path.join(os.tmpdir(), `claude-${process.getuid?.() ?? 0}`),
-					],
-				}) as unknown as SpawnedProcess,
+			// filesystem writes are confined to the worktree. Enforced here by
+			// Claude Code's own built-in sandbox (bwrap-based on Linux, invoked
+			// per Bash command from inside the CLI process itself) rather than
+			// an external wrapper — see ADR-0010 for why the earlier external
+			// wrapper (sandlock) was abandoned.
+			sandbox: {
+				enabled: true,
+				autoAllowBashIfSandboxed: true,
+				failIfUnavailable: true,
+				// Set only inside dilna's own Docker image (DILNA_CONTAINERIZED=true
+				// in the Dockerfile): bwrap can't mount a fresh /proc inside an
+				// already-unprivileged container, so it bind-mounts the container's
+				// existing one instead. Only safe when an outer container already
+				// provides the real isolation boundary, which is the case here but
+				// not for bare-host dev.
+				enableWeakerNestedSandbox: process.env.DILNA_CONTAINERIZED === "true",
+				// No domain is pre-allowed by default, which would otherwise block
+				// on an approval prompt no human can answer in dilna's headless
+				// sessions. Agents need arbitrary outbound access (LLM APIs, git
+				// remotes, whatever they're asked to fetch), matching the
+				// previous sandlock config's unconditional `--net-allow '*'`.
+				network: { allowedDomains: ["*"] },
+				filesystem: {
+					allowWrite: CLAUDE_SCRATCH_WRITABLE_PATHS,
+					...(nestedInCheckout
+						? {
+								denyRead: [workspaceRoot],
+								allowRead: [
+									opts.worktreePath,
+									...(gitCommonDir ? [gitCommonDir] : []),
+								],
+							}
+						: {}),
+				},
+			},
+			...(nestedInCheckout
+				? {
+						settings: {
+							claudeMdExcludes: [
+								path.join(workspaceRoot, "CLAUDE.md"),
+								path.join(workspaceRoot, "**", "CLAUDE.md"),
+							],
+						},
+					}
+				: {}),
 		},
 	});
 
