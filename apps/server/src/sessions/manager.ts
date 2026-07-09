@@ -27,18 +27,21 @@ import {
 	type ClaudeHandle,
 	type ClaudeStartOptions,
 	chatClaude,
+	fetchClaudeRateLimits,
 	startClaude,
 } from "../agents/claude";
 import { IDLE_TIMEOUT_MS } from "../agents/types";
 import { getDb } from "../db";
 import {
 	messages as messagesTable,
+	rateLimits as rateLimitsTable,
 	sessions as sessionsTable,
 } from "../db/schema";
 import { repoManager } from "../repos/manager";
 import { computeChangedFiles } from "./diff";
 import {
 	freshRateLimitWindows,
+	pullRateLimitsToWindows,
 	type RateLimitSnapshot,
 	toRateLimitWindow,
 } from "./rateLimits";
@@ -219,10 +222,15 @@ class SessionManager {
 	private globalSubscribers = new Set<(event: SessionListEvent) => void>();
 	/** Last-known account-wide plan rate-limit reading per window, reported
 	 * by whichever Session's agent process is currently live (see
-	 * `ensureStarted`'s `onRateLimit` wiring). Account-wide, not keyed by
-	 * session id — there's exactly one Anthropic account per dilna deploy.
-	 * Staleness is computed at read time (see rateLimits.ts), not stored. */
+	 * `ensureStarted`'s `onRateLimit` wiring and `sendMessage`'s post-turn
+	 * pull). Account-wide, not keyed by session id — there's exactly one
+	 * Anthropic account per dilna deploy. Mirrored to the `rate_limits`
+	 * table on every update and hydrated from it lazily, so a page reload
+	 * after a server restart shows the last reading immediately instead of
+	 * waiting for the next agent turn. Staleness is computed at read time
+	 * (see rateLimits.ts), not stored. */
 	private rateLimits = new Map<RateLimitWindowKind, RateLimitSnapshot>();
+	private rateLimitsHydrated = false;
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
 		const db = getDb();
@@ -457,27 +465,88 @@ class SessionManager {
 	 * and is implicitly what every `rate_limits` broadcast carries.
 	 */
 	getRateLimits(): RateLimitWindow[] {
+		this.hydrateRateLimits();
 		return freshRateLimitWindows(
 			this.rateLimits,
 			Math.floor(Date.now() / 1000),
 		);
 	}
 
+	/** Load the persisted last-known windows into memory, once. Lazy (first
+	 * read or write) rather than in the constructor because the singleton is
+	 * constructed at module import time, before tests get to point
+	 * DILNA_DATA_DIR at their scratch directory. */
+	private hydrateRateLimits(): void {
+		if (this.rateLimitsHydrated) return;
+		this.rateLimitsHydrated = true;
+		const rows = getDb().select().from(rateLimitsTable).all();
+		for (const row of rows) {
+			if (row.kind !== "five_hour" && row.kind !== "seven_day") continue;
+			this.rateLimits.set(row.kind, {
+				utilizationPct: row.utilizationPct,
+				resetsAt: row.resetsAt,
+			});
+		}
+	}
+
 	/**
-	 * Callback passed to `startClaude` (see `ensureStarted`). Rate limits are
-	 * account-wide, so this updates shared state regardless of which Session
-	 * reported it, then re-broadcasts the full (staleness-filtered) window
+	 * Single write path for rate-limit readings from either source (push
+	 * `rate_limit_event` or post-turn pull). Rate limits are account-wide, so
+	 * this updates shared state regardless of which Session reported it,
+	 * mirrors each window to the `rate_limits` table (so restarts/reloads
+	 * don't lose it), then re-broadcasts the full (staleness-filtered) window
 	 * list on the cross-session stream — the sidebar footer's only source of
 	 * truth, no dedicated poller involved.
 	 */
-	private handleRateLimitEvent(info: SDKRateLimitInfo): void {
-		const parsed = toRateLimitWindow(info);
-		if (!parsed) return;
-		this.rateLimits.set(parsed.kind, parsed.snapshot);
+	private applyRateLimitWindows(
+		entries: { kind: RateLimitWindowKind; snapshot: RateLimitSnapshot }[],
+	): void {
+		if (entries.length === 0) return;
+		this.hydrateRateLimits();
+		const db = getDb();
+		const updatedAt = Math.floor(Date.now() / 1000);
+		for (const { kind, snapshot } of entries) {
+			this.rateLimits.set(kind, snapshot);
+			db.insert(rateLimitsTable)
+				.values({
+					kind,
+					utilizationPct: snapshot.utilizationPct,
+					resetsAt: snapshot.resetsAt,
+					updatedAt,
+				})
+				.onConflictDoUpdate({
+					target: rateLimitsTable.kind,
+					set: {
+						utilizationPct: snapshot.utilizationPct,
+						resetsAt: snapshot.resetsAt,
+						updatedAt,
+					},
+				})
+				.run();
+		}
 		this.broadcastGlobal({
 			type: "rate_limits",
 			windows: this.getRateLimits(),
 		});
+	}
+
+	/** Callback passed to `startClaude` (see `ensureStarted`). Only events
+	 * that carry a real utilization number make it through
+	 * `toRateLimitWindow` — the common `allowed` event omits the field and is
+	 * dropped so it can't overwrite a pulled reading with a placeholder. */
+	private handleRateLimitEvent(info: SDKRateLimitInfo): void {
+		const parsed = toRateLimitWindow(info);
+		if (!parsed) return;
+		this.applyRateLimitWindows([parsed]);
+	}
+
+	/** Best-effort post-turn refresh from the SDK's pull API — the only
+	 * source that reliably carries utilization for both windows (see
+	 * `fetchClaudeRateLimits`). Fire-and-forget from `sendMessage` so turn
+	 * completion latency doesn't wait on the extra control round-trip. */
+	private async refreshRateLimits(handle: ClaudeHandle): Promise<void> {
+		const raw = await fetchClaudeRateLimits(handle);
+		this.applyRateLimitWindows(pullRateLimitsToWindows(raw));
 	}
 
 	// ---- Agent lifecycle ----------------------------------------------------
@@ -597,6 +666,10 @@ class SessionManager {
 
 			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
+
+			// Best-effort: pull fresh account rate limits while the agent
+			// process is still alive (the control request needs a live query).
+			this.refreshRateLimits(handle).catch(() => {});
 
 			// Recompute the "Changed files" panel's diff now that the turn's
 			// worktree edits (committed or not) have settled.

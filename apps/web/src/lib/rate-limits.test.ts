@@ -51,6 +51,18 @@ describe("formatTimeToReset", () => {
 		expect(formatTimeToReset(2 * 3600 + 14 * 60, nowMs)).toBe("2h 14m");
 	});
 
+	it("rolls hours into days past 24h, dropping minute precision", () => {
+		const nowMs = 0;
+		expect(formatTimeToReset(6 * 86_400 + 22 * 3600 + 34 * 60, nowMs)).toBe(
+			"6d 22h",
+		);
+	});
+
+	it("omits a zero hours part at day scale", () => {
+		const nowMs = 0;
+		expect(formatTimeToReset(7 * 86_400, nowMs)).toBe("7d");
+	});
+
 	it("reports 'now' once the reset time has passed", () => {
 		expect(formatTimeToReset(-1, 0)).toBe("now");
 	});
@@ -63,8 +75,6 @@ describe("rateLimitTooltip", () => {
 			utilizationPct: 37.4,
 			resetsAt: 90 * 60,
 		};
-		expect(rateLimitTooltip(window, 0)).toBe(
-			"5-hour: 37% used · resets in 1h 30m",
-		);
+		expect(rateLimitTooltip(window, 0)).toBe("5h: 37% used · resets in 1h 30m");
 	});
 });

@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { getDb } from "../db";
+import { rateLimits as rateLimitsTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
 import { sessionManager } from "./manager";
 
@@ -105,5 +107,22 @@ describe("SessionManager", () => {
 
 		await sessionManager.delete(session.id);
 		await repoManager.delete(repo.id);
+	});
+
+	// Simulates the restart/reload path: a reading persisted by a previous
+	// server process must be served on the very first getRateLimits() call
+	// (the SSE connect snapshot), without waiting for any agent turn.
+	// Depends on hydration being lazy: no earlier test in this file may call
+	// getRateLimits(), or the singleton hydrates before the row exists.
+	it("serves persisted rate-limit windows on first read after a restart", () => {
+		const future = Math.floor(Date.now() / 1000) + 3600;
+		getDb()
+			.insert(rateLimitsTable)
+			.values({ kind: "five_hour", utilizationPct: 32, resetsAt: future })
+			.run();
+
+		expect(sessionManager.getRateLimits()).toEqual([
+			{ kind: "five_hour", utilizationPct: 32, resetsAt: future },
+		]);
 	});
 });

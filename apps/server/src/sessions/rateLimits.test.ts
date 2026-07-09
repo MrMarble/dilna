@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	freshRateLimitWindows,
 	normalizeResetsAt,
+	pullRateLimitsToWindows,
 	type RateLimitSnapshot,
 	toRateLimitWindow,
 } from "./rateLimits";
@@ -26,20 +27,18 @@ describe("normalizeResetsAt", () => {
 describe("toRateLimitWindow", () => {
 	// Regression coverage for a real payload observed against a live OAuth
 	// subscription account: `status: "allowed"` with no `utilization` field
-	// at all — the SDK only starts including a number once usage is no
-	// longer comfortably under the threshold. Dropping the event in this
-	// case (the original bug) meant the footer never appeared for the common
-	// case of moderate usage.
-	it("defaults utilization to 0 when the SDK omits it on a low-usage event", () => {
+	// at all, while the account was genuinely at 32% of the window. The SDK
+	// only includes a number once usage crosses its own warning threshold,
+	// so a missing value means "unknown", not "low" — an earlier version
+	// defaulted it to 0, which froze the sidebar footer at 0% and let these
+	// events overwrite real readings pulled via pullRateLimitsToWindows.
+	it("drops an event that omits utilization instead of inventing 0", () => {
 		const info: SDKRateLimitInfo = {
 			status: "allowed",
 			resetsAt: 1_783_614_000,
 			rateLimitType: "five_hour",
 		};
-		expect(toRateLimitWindow(info)).toEqual({
-			kind: "five_hour",
-			snapshot: { utilizationPct: 0, resetsAt: 1_783_614_000 },
-		});
+		expect(toRateLimitWindow(info)).toBeNull();
 	});
 
 	it("passes through a real utilization value when the SDK includes one", () => {
@@ -72,6 +71,70 @@ describe("toRateLimitWindow", () => {
 			utilization: 10,
 		};
 		expect(toRateLimitWindow(info)).toBeNull();
+	});
+});
+
+describe("pullRateLimitsToWindows", () => {
+	// Mirrors a real response from the SDK's usage pull API (probed against a
+	// live subscription account): resets_at is an ISO 8601 string here, not
+	// the push event's epoch number, and both windows carry real percentages.
+	it("parses both windows from a real-shaped pull response", () => {
+		const windows = pullRateLimitsToWindows({
+			five_hour: {
+				utilization: 32,
+				resets_at: "2026-07-09T21:20:00.235531+00:00",
+			},
+			seven_day: {
+				utilization: 4,
+				resets_at: "2026-07-16T16:00:00.235555+00:00",
+			},
+		});
+		expect(windows).toEqual([
+			{
+				kind: "five_hour",
+				snapshot: {
+					utilizationPct: 32,
+					resetsAt: Math.floor(
+						Date.parse("2026-07-09T21:20:00.235531+00:00") / 1000,
+					),
+				},
+			},
+			{
+				kind: "seven_day",
+				snapshot: {
+					utilizationPct: 4,
+					resetsAt: Math.floor(
+						Date.parse("2026-07-16T16:00:00.235555+00:00") / 1000,
+					),
+				},
+			},
+		]);
+	});
+
+	it("returns an empty list for a null rate_limits object (API-key auth)", () => {
+		expect(pullRateLimitsToWindows(null)).toEqual([]);
+	});
+
+	it("skips a window with null fields without dropping the other one", () => {
+		const windows = pullRateLimitsToWindows({
+			five_hour: { utilization: null, resets_at: null },
+			seven_day: { utilization: 12, resets_at: "2026-07-16T16:00:00Z" },
+		});
+		expect(windows).toHaveLength(1);
+		expect(windows[0]?.kind).toBe("seven_day");
+	});
+
+	// The pull API is explicitly experimental upstream — an unparseable
+	// resets_at must degrade to "window absent", never throw.
+	it("skips a window whose resets_at fails to parse", () => {
+		const windows = pullRateLimitsToWindows({
+			five_hour: { utilization: 32, resets_at: "not-a-date" },
+		});
+		expect(windows).toEqual([]);
+	});
+
+	it("ignores windows missing entirely from the response", () => {
+		expect(pullRateLimitsToWindows({})).toEqual([]);
 	});
 });
 

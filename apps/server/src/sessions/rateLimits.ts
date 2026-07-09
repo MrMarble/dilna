@@ -1,4 +1,7 @@
-import type { SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
+import type {
+	SDKControlGetUsageResponse,
+	SDKRateLimitInfo,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { RateLimitWindow, RateLimitWindowKind } from "@dilna/shared";
 
 /** Last-known reading for one rate-limit window, as held by SessionManager. */
@@ -25,16 +28,17 @@ export function normalizeResetsAt(raw: number): number {
 /**
  * Parse one SDK `rate_limit_event` payload into dilna's window shape, or
  * `null` if it's not one of the two windows this UI shows (per-model/overage
- * sub-variants) or is missing `resetsAt` (nothing to key staleness off of).
+ * sub-variants), is missing `resetsAt` (nothing to key staleness off of), or
+ * is missing `utilization`.
  *
- * `utilization` is optional on the SDK's own type, and a real "allowed, well
- * under the threshold" event omits it entirely rather than sending `0` or
- * some other placeholder — confirmed directly against a live account, not
- * just inferred from the (undocumented-on-this-point) SDK types. Treating a
- * missing value as "low usage" (default 0) rather than "unknown" (dropping
- * the event) is what makes the footer actually appear for the common case
- * of moderate usage, instead of only ever showing up once an account is
- * already near its limit — which is when the SDK starts including a number.
+ * A missing `utilization` means "unknown", not "low": a live account probed
+ * at a real 32% five-hour utilization still received `status: "allowed"`
+ * events with no `utilization` field at all — the SDK only starts including
+ * a number once usage crosses its own warning threshold. (An earlier version
+ * defaulted the missing value to 0, which froze the footer at 0% for any
+ * normally-used account.) The authoritative percentages instead come from
+ * the pull path ({@link pullRateLimitsToWindows}); events without a number
+ * are dropped here so they can't overwrite a real pulled reading with 0.
  */
 export function toRateLimitWindow(
 	info: SDKRateLimitInfo,
@@ -44,14 +48,51 @@ export function toRateLimitWindow(
 			? info.rateLimitType
 			: null;
 	if (kind === null || info.resetsAt === undefined) return null;
+	if (info.utilization === undefined) return null;
 
 	return {
 		kind,
 		snapshot: {
-			utilizationPct: info.utilization ?? 0,
+			utilizationPct: info.utilization,
 			resetsAt: normalizeResetsAt(info.resetsAt),
 		},
 	};
+}
+
+/**
+ * Parse the `rate_limits` object returned by the SDK's pull API
+ * (`Query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`) into
+ * dilna's window shape. This is the primary source of utilization numbers —
+ * unlike the push `rate_limit_event`, it always carries real percentages for
+ * both windows (see toRateLimitWindow's doc comment), sourced from the
+ * claude.ai usage endpoint.
+ *
+ * The method is explicitly experimental upstream, so this parses defensively:
+ * `null`/absent windows, null fields, or an unparseable `resets_at` (an ISO
+ * 8601 string here, unlike the push event's epoch number) just drop that
+ * window rather than throwing — worst case the footer degrades to absent, it
+ * never crashes a session.
+ */
+export function pullRateLimitsToWindows(
+	rateLimits: SDKControlGetUsageResponse["rate_limits"] | null,
+): { kind: RateLimitWindowKind; snapshot: RateLimitSnapshot }[] {
+	if (!rateLimits) return [];
+	const out: { kind: RateLimitWindowKind; snapshot: RateLimitSnapshot }[] = [];
+	for (const kind of ["five_hour", "seven_day"] as const) {
+		const window = rateLimits[kind];
+		if (!window || typeof window.utilization !== "number") continue;
+		if (typeof window.resets_at !== "string") continue;
+		const resetsAtMs = Date.parse(window.resets_at);
+		if (Number.isNaN(resetsAtMs)) continue;
+		out.push({
+			kind,
+			snapshot: {
+				utilizationPct: window.utilization,
+				resetsAt: Math.floor(resetsAtMs / 1000),
+			},
+		});
+	}
+	return out;
 }
 
 /**

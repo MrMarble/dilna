@@ -8,8 +8,8 @@ export const RATE_LIMIT_ORDER: RateLimitWindowKind[] = [
 ];
 
 export const RATE_LIMIT_LABELS: Record<RateLimitWindowKind, string> = {
-	five_hour: "5-hour",
-	seven_day: "Weekly",
+	five_hour: "5h",
+	seven_day: "7d",
 };
 
 /** Neutral below 50%, yellow 50-80% (inclusive), red above 80% — per the
@@ -33,7 +33,10 @@ export function isRateLimitWindowFresh(
 	return window.resetsAt * 1000 > nowMs;
 }
 
-/** "2h 14m" / "42m" / "now" — for the hover tooltip's time-to-reset. */
+/** "6d 22h" / "2h 14m" / "42m" / "now" — time-to-reset, shown next to each
+ * bar's label and in the hover tooltip. Two units max: the weekly window
+ * would otherwise read as "166h 34m", and minute precision is noise at
+ * day scale anyway. */
 export function formatTimeToReset(
 	resetsAtSeconds: number,
 	nowMs: number,
@@ -41,10 +44,15 @@ export function formatTimeToReset(
 	const diffMs = resetsAtSeconds * 1000 - nowMs;
 	if (diffMs <= 0) return "now";
 	const totalMinutes = Math.round(diffMs / 60_000);
-	const hours = Math.floor(totalMinutes / 60);
+	const totalHours = Math.floor(totalMinutes / 60);
+	if (totalHours >= 24) {
+		const days = Math.floor(totalHours / 24);
+		const hours = totalHours % 24;
+		return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
+	}
 	const minutes = totalMinutes % 60;
-	if (hours === 0) return `${minutes}m`;
-	return `${hours}h ${minutes}m`;
+	if (totalHours === 0) return `${minutes}m`;
+	return `${totalHours}h ${minutes}m`;
 }
 
 /** Full hover-tooltip text: exact percentage + time-to-reset. */

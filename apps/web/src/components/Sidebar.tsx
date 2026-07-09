@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import {
+	formatTimeToReset,
 	isRateLimitWindowFresh,
 	RATE_LIMIT_LABELS,
 	RATE_LIMIT_ORDER,
@@ -216,8 +217,8 @@ function BackgroundAgentsSection({
 /**
  * Account-wide plan rate-limit footer. Entirely absent — not an empty or
  * disabled shell — whenever there's nothing fresh to show: API-key auth
- * never produces rate-limit data server-side (the SDK simply never emits a
- * `rate_limit_event` for those sessions — see `agents/claude.ts`), and a
+ * never produces rate-limit data server-side (the SDK reports plan limits
+ * only for claude.ai subscription sessions — see `agents/claude.ts`), and a
  * window whose reset time has passed with no live Session to refresh it is
  * treated the same as unavailable rather than shown frozen at its last
  * percentage.
@@ -225,7 +226,9 @@ function BackgroundAgentsSection({
  * The 30s re-render tick below only recomputes staleness against
  * already-received `resetsAt` values — it makes no network request and
  * fetches no new data, so it isn't the "dedicated background poller" the
- * issue rules out; data only ever changes via a live Session's push.
+ * issue rules out; data only ever changes via a server push (the SDK's
+ * post-turn usage pull or a `rate_limit_event`, both persisted server-side
+ * and re-served as the SSE connect snapshot after a reload).
  */
 function RateLimitFooter({ windows }: { windows: RateLimitWindow[] }) {
 	const [nowMs, setNowMs] = useState(() => Date.now());
@@ -246,7 +249,7 @@ function RateLimitFooter({ windows }: { windows: RateLimitWindow[] }) {
 	if (fresh.length === 0) return null;
 
 	return (
-		<div className="space-y-2 border-t border-zinc-200 p-3 dark:border-zinc-800">
+		<div className="flex gap-3 border-t border-zinc-200 p-3 dark:border-zinc-800">
 			{fresh.map((window) => (
 				<RateLimitBar key={window.kind} window={window} nowMs={nowMs} />
 			))}
@@ -263,9 +266,12 @@ function RateLimitBar({
 }) {
 	const pct = Math.max(0, Math.min(100, window.utilizationPct));
 	return (
-		<div title={rateLimitTooltip(window, nowMs)}>
+		<div className="min-w-0 flex-1" title={rateLimitTooltip(window, nowMs)}>
 			<div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
 				<span>{RATE_LIMIT_LABELS[window.kind]}</span>
+				<span className="truncate pl-1">
+					{formatTimeToReset(window.resetsAt, nowMs)}
+				</span>
 			</div>
 			<div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
 				<div

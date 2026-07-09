@@ -34,11 +34,12 @@ export type RateLimitWindowKind = "five_hour" | "seven_day";
 /**
  * Last-known utilization for one plan rate-limit window, account-wide (not
  * per-Session). Only ever present for claude.ai subscription accounts — the
- * SDK's `rate_limit_event` message is only emitted for those (an
- * API-key/Bedrock/Vertex session never produces one); dilna forwards
- * whatever it receives rather than re-checking `apiKeySource` itself, since
- * that field's real-world values don't reliably match the SDK's documented
- * `'oauth'` literal (see `agents/claude.ts`'s handling of `rate_limit_event`).
+ * SDK reports plan limits only for those (`rate_limits` is null for
+ * API-key/Bedrock/Vertex sessions). Sourced primarily from the SDK's usage
+ * pull API after each turn, with the push `rate_limit_event` as a secondary
+ * feed when it carries a real number (see `agents/claude.ts`'s
+ * `fetchClaudeRateLimits` and sessions/rateLimits.ts), and persisted
+ * server-side so it survives restarts.
  */
 export type RateLimitWindow = {
 	kind: RateLimitWindowKind;
@@ -62,9 +63,9 @@ export type SessionListEvent =
 	| {
 			/**
 			 * Account-wide plan rate-limit utilization, pushed whenever a live
-			 * Session's agent process reports a change (see
-			 * `agents/claude.ts`'s `onRateLimit` and
-			 * `SessionManager.handleRateLimitEvent`). Deliberately not part of
+			 * Session's agent process reports a change — either the SDK's
+			 * push `rate_limit_event` or the post-turn usage pull (see
+			 * `SessionManager.applyRateLimitWindows`). Deliberately not part of
 			 * the per-session `AgentStreamEvent` union (ADR-0006): rate limits
 			 * are account-wide, not scoped to the Session that happened to
 			 * report them, so contorting the per-session event union to carry

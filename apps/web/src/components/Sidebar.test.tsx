@@ -131,19 +131,31 @@ describe("Sidebar", () => {
 	describe("rate-limit footer", () => {
 		it("renders nothing when no rate-limit data is available", () => {
 			renderSidebar({ rateLimitWindows: [] });
-			expect(screen.queryByText("5-hour")).not.toBeInTheDocument();
-			expect(screen.queryByText("Weekly")).not.toBeInTheDocument();
+			expect(screen.queryByText("5h")).not.toBeInTheDocument();
+			expect(screen.queryByText("7d")).not.toBeInTheDocument();
 		});
 
-		it("renders a bar per fresh window, labeled 5-hour / Weekly", () => {
+		it("renders a bar per fresh window, labeled 5h / 7d", () => {
 			renderSidebar({
 				rateLimitWindows: [
 					makeRateLimitWindow({ kind: "five_hour", utilizationPct: 20 }),
 					makeRateLimitWindow({ kind: "seven_day", utilizationPct: 60 }),
 				],
 			});
-			expect(screen.getByText("5-hour")).toBeInTheDocument();
-			expect(screen.getByText("Weekly")).toBeInTheDocument();
+			expect(screen.getByText("5h")).toBeInTheDocument();
+			expect(screen.getByText("7d")).toBeInTheDocument();
+		});
+
+		it("shows the time to reset next to each bar's label", () => {
+			renderSidebar({
+				rateLimitWindows: [
+					makeRateLimitWindow({
+						kind: "five_hour",
+						resetsAt: Math.floor(Date.now() / 1000) + 90 * 60,
+					}),
+				],
+			});
+			expect(screen.getByText("1h 30m")).toBeInTheDocument();
 		});
 
 		it("omits a window whose reset time has already passed", () => {
@@ -155,7 +167,7 @@ describe("Sidebar", () => {
 					}),
 				],
 			});
-			expect(screen.queryByText("5-hour")).not.toBeInTheDocument();
+			expect(screen.queryByText("5h")).not.toBeInTheDocument();
 		});
 
 		it("reveals the exact percentage and time-to-reset on hover via title", () => {
@@ -168,7 +180,7 @@ describe("Sidebar", () => {
 					}),
 				],
 			});
-			const label = screen.getByText("5-hour");
+			const label = screen.getByText("5h");
 			const bar = label.closest("[title]");
 			expect(bar).not.toBeNull();
 			expect(bar?.getAttribute("title")).toMatch(/42% used/);

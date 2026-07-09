@@ -8,6 +8,7 @@ import {
 	type Query,
 	query,
 	type SDKAssistantMessage,
+	type SDKControlGetUsageResponse,
 	type SDKMessage,
 	type SDKRateLimitInfo,
 	type SDKResultMessage,
@@ -463,6 +464,37 @@ export async function chatClaude(
 		if (abortSignal) {
 			abortSignal.removeEventListener("abort", abortHandler);
 		}
+	}
+}
+
+/**
+ * Pull the account's plan rate-limit windows from the SDK's usage control
+ * request. This — not the push `rate_limit_event` — is where real utilization
+ * percentages come from: the push event omits `utilization` entirely on
+ * ordinary `allowed` turns and never fires for the seven-day window at all
+ * (both observed against a live subscription account; see
+ * docs/research/claude-agent-sdk-usage-limits.md §2).
+ *
+ * Must be called while the agent process is still alive — the control
+ * request has nothing to talk to once the query closes (a single-shot query
+ * rejects with "Query closed before response received" right after its
+ * result message). SessionManager calls this after each completed turn,
+ * inside the window before the idle-timeout kill.
+ *
+ * The upstream method name is a deliberate warning that the API is unstable,
+ * so per the research doc's caveat this soft-fails to `null` on any error —
+ * the footer degrades to absent rather than a shape change crashing turns.
+ */
+export async function fetchClaudeRateLimits(
+	handle: ClaudeHandle,
+): Promise<SDKControlGetUsageResponse["rate_limits"] | null> {
+	if (!handle.isAlive()) return null;
+	try {
+		const usage =
+			await handle.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+		return usage.rate_limits ?? null;
+	} catch {
+		return null;
 	}
 }
 

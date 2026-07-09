@@ -34,6 +34,21 @@ export const messages = sqliteTable("messages", {
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 
+/**
+ * Last-known account-wide plan rate-limit reading per window (one row per
+ * `RateLimitWindowKind`), persisted so the sidebar footer survives a server
+ * restart / page reload without waiting for the next agent turn to re-fetch
+ * from the SDK. Staleness is still computed at read time (see
+ * sessions/rateLimits.ts) — rows whose `resetsAt` has passed are simply
+ * filtered out, never eagerly deleted.
+ */
+export const rateLimits = sqliteTable("rate_limits", {
+	kind: text("kind").primaryKey(),
+	utilizationPct: integer("utilization_pct").notNull(),
+	resetsAt: integer("resets_at").notNull(),
+	updatedAt: integer("updated_at").notNull().$defaultFn(now),
+});
+
 export const sessionsRelations = relations(sessions, ({ many }) => ({
 	messages: many(messages),
 }));
