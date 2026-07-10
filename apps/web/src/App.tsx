@@ -1,4 +1,3 @@
-import { useMediaQuery } from "@base-ui/react/unstable-use-media-query";
 import type {
 	RateLimitWindow,
 	RepoStats,
@@ -14,12 +13,8 @@ import { ContextPanel } from "@/components/ContextPanel";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
+import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
-
-// Tailwind's default `md` breakpoint (no `--breakpoint-md` override in
-// index.css), matching the `md:hidden`/`md:flex` classes used throughout —
-// see issue #12.
-const DESKTOP_QUERY = "(min-width: 768px)";
 
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
@@ -43,7 +38,7 @@ export function App() {
 	// Below 768px the desktop Sidebar/ContextPanel aren't rendered at all
 	// (rather than just hidden via CSS) so their SSE subscriptions don't run
 	// twice alongside the mobile sheet's own instances — see issue #12.
-	const isDesktop = useMediaQuery(DESKTOP_QUERY, { noSsr: true });
+	const isDesktop = useIsDesktop();
 	const mobileSheet = useMobileSheet();
 
 	// Crossing back over the breakpoint (window resize, tablet rotation) while
@@ -292,6 +287,7 @@ export function App() {
 								<ChatShell
 									sessionId={selectedSession.id}
 									session={selectedSession}
+									isDesktop={isDesktop}
 								/>
 							</div>
 							{selectedRepo && isDesktop && (
