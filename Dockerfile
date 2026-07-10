@@ -11,11 +11,22 @@ ENV CI=true
 # commit date into the web bundle (see apps/web/vite.config.ts). Needs the
 # .git dir to actually be present in the build context too (see
 # .dockerignore — it is not excluded, unlike most other dev-only paths).
+# curl: fetches the mise install script below (the runtime stage installs
+# its own curl too, for sessions — see below — but copies this stage's
+# already-downloaded mise binary rather than re-running the installer).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		python3 make g++ git \
+		python3 make g++ git curl \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
+
+# mise (ADR-0012): gives sessions a per-user way to install whatever
+# language/tool version the repo they're working on actually needs (node,
+# go, python, ...) without root — dilna's own baked node/pnpm above is only
+# for building dilna itself, not for the arbitrary repos agents are pointed
+# at. A single static binary, so the runtime stage just copies it rather
+# than re-running the installer.
+RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
 
 WORKDIR /app
 
@@ -48,12 +59,35 @@ FROM node:24-bookworm-slim AS runtime
 # before exec'ing node, without losing PID 1 signal handling the way `su`
 # would. Claude Code's bypassPermissions mode (ADR-0003/0010) refuses to run
 # as root for safety, so the server (which spawns it) can't run as root.
+# curl: general-purpose fetch for whatever a session's Bash tool needs
+# (hitting its own dev server, GitHub/GitLab APIs, one-off scripts) — also
+# what mise's asdf/vfox-compatible plugins shell out to for the long tail of
+# tools beyond its Rust-native core backends (node/go/python/...), which
+# fetch without it (ADR-0012).
+# unzip + xz-utils: mise's own core backends extract archives internally,
+# but asdf-style plugin install scripts commonly unpack a `.zip` or `.tar.xz`
+# release asset themselves via these system binaries.
+# jq: the de facto way a Bash-tool command parses JSON output (package.json,
+# `gh`/REST API responses, lockfiles) without reaching for a scripting
+# language just to pluck a field.
+# procps + lsof: a session iterating on a repo commonly starts a dev
+# server/watcher in the background; these are what let it find and kill
+# what's holding a port or PID rather than getting stuck on "address already
+# in use".
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
+		curl unzip xz-utils jq procps lsof \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
 		>> /etc/ssh/ssh_known_hosts 2>/dev/null
+
+# mise (ADR-0012): the static binary built in the build stage, copied rather
+# than re-running the installer here. Compiling a language from source (e.g.
+# mise's core `python` backend) still has no toolchain at runtime —
+# python3/make/g++ above are build-stage-only, a known follow-up if
+# requested.
+COPY --from=build /usr/local/bin/mise /usr/local/bin/mise
 
 WORKDIR /app
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
@@ -78,6 +112,22 @@ ENV HOME=/home/node
 ENV DILNA_CONTAINERIZED=true
 RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
+
+# mise (ADR-0012): shims dir first on PATH so `node`/`go`/`python`/etc.
+# resolve to whatever version a session has installed for its own worktree,
+# ahead of the node/pnpm baked in for building dilna itself. mise's default
+# data/state/cache/config dirs (all under $HOME) are pre-created here so the
+# native Bash sandbox (see apps/server/src/agents/claude.ts) has a concrete,
+# already-`node`-owned path to grant `filesystem.allowWrite` on — everything
+# under $HOME is otherwise outside the worktree the sandbox confines writes
+# to.
+ENV PATH="/home/node/.local/share/mise/shims:${PATH}"
+RUN mkdir -p \
+		/home/node/.local/share/mise \
+		/home/node/.local/state/mise \
+		/home/node/.cache/mise \
+		/home/node/.config/mise \
+	&& chown -R node:node /home/node/.local /home/node/.cache /home/node/.config
 EXPOSE 3001
 
 ENTRYPOINT ["docker-entrypoint.sh"]

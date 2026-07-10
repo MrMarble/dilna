@@ -192,6 +192,22 @@ const CLAUDE_SCRATCH_WRITABLE_PATHS = [
 ];
 
 /**
+ * mise's own state (ADR-0012): the per-user tool installs, shims, and
+ * config that let a session install whatever node/go/python/etc. version
+ * the repo it's working on actually needs. All of it lives under $HOME by
+ * mise's own default layout, not under the worktree, so — same reasoning as
+ * {@link CLAUDE_SCRATCH_WRITABLE_PATHS} — it needs an explicit
+ * `filesystem.allowWrite` grant or every `mise install`/`mise use` fails
+ * "read-only file system" under the native sandbox.
+ */
+const MISE_WRITABLE_PATHS = [
+	path.join(os.homedir(), ".local", "share", "mise"),
+	path.join(os.homedir(), ".local", "state", "mise"),
+	path.join(os.homedir(), ".cache", "mise"),
+	path.join(os.homedir(), ".config", "mise"),
+];
+
+/**
  * Spawn a `claude-agent-sdk` query for the given worktree in streaming-input
  * mode, so a single underlying Claude Code subprocess stays resident across
  * multiple user turns (one process per worktree, per ADR-0003). Tool
@@ -274,6 +290,7 @@ export async function startClaude(
 					// worktree session.
 					allowWrite: [
 						...CLAUDE_SCRATCH_WRITABLE_PATHS,
+						...MISE_WRITABLE_PATHS,
 						...(gitCommonDir ? [gitCommonDir] : []),
 					],
 					...(nestedInCheckout
