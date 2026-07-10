@@ -14,8 +14,13 @@ ENV CI=true
 # curl: fetches the mise install script below (the runtime stage installs
 # its own curl too, for sessions — see below — but copies this stage's
 # already-downloaded mise binary rather than re-running the installer).
+# ca-certificates: unlike pnpm/npm (Node's TLS stack bundles its own root
+# CA store), curl relies on the system's — and node:*-bookworm-slim, unlike
+# the non-slim variants, ships without it. Without this, curl fails
+# immediately with exit 77 ("problem with reading the SSL CA cert") on its
+# very first HTTPS request below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		python3 make g++ git curl \
+		python3 make g++ git curl ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
