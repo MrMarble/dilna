@@ -1,6 +1,7 @@
 import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
 import { FolderGit2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { AppVersion } from "@/components/AppVersion";
 import { StatusDot } from "@/components/StatusDot";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { LanguageIcon } from "@/lib/languages";
@@ -90,6 +91,7 @@ export function Sidebar({
 				<div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
 					<FolderGit2 className="size-5 text-muted-foreground" />
 					<span className="font-semibold tracking-tight">dilna</span>
+					<AppVersion />
 					<ThemeToggle className="ml-auto" />
 				</div>
 			)}

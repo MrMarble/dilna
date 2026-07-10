@@ -7,6 +7,7 @@ import type {
 import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
+import { AppVersion } from "@/components/AppVersion";
 import { ChatHeader, MobileMenuButton } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { ContextPanel } from "@/components/ContextPanel";
@@ -282,6 +283,7 @@ export function App() {
 						<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
 							<MobileMenuButton trigger={mobileSheet.menuTrigger} />
 							<span className="text-muted-foreground">dilna</span>
+							<AppVersion className="ml-1 max-w-none" />
 						</header>
 					)}
 					{selectedSession ? (
