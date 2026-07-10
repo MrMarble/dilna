@@ -395,7 +395,7 @@ export function ChatShell({ sessionId, session }: Props) {
 				<MessageScrollerProvider autoScroll>
 					<MessageScroller className="h-full">
 						<MessageScrollerViewport>
-							<MessageScrollerContent className="p-4">
+							<MessageScrollerContent className="mx-auto w-full max-w-[max(48rem,80%)] px-6 py-5">
 								{rendered.length === 0 && !thinking ? (
 									<EmptyHint />
 								) : (
@@ -421,14 +421,11 @@ export function ChatShell({ sessionId, session }: Props) {
 										{thinking && <ThinkingMarker word={thinkingWord} />}
 										{error && (
 											<MessageScrollerItem messageId="__error">
-												<Marker
-													variant="border"
-													className="text-red-500 dark:text-red-400"
-												>
+												<Marker variant="border" className="text-destructive">
 													<MarkerIcon>
 														<AlertCircle className="size-4" />
 													</MarkerIcon>
-													<MarkerContent className="text-red-500 dark:text-red-400">
+													<MarkerContent className="text-destructive">
 														{error}
 													</MarkerContent>
 												</Marker>
@@ -444,7 +441,7 @@ export function ChatShell({ sessionId, session }: Props) {
 			</div>
 
 			<div className="px-6 py-4">
-				<div className="mx-auto flex max-w-3xl items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
+				<div className="mx-auto flex max-w-[max(48rem,80%)] items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60">
 					<textarea
 						ref={textareaRef}
 						value={input}
@@ -462,13 +459,13 @@ export function ChatShell({ sessionId, session }: Props) {
 								: `Message ${AGENT_LABELS[session.agentType]}…`
 						}
 						rows={2}
-						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-[0.9375rem] outline-none"
+						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-base outline-none"
 					/>
 					{working ? (
 						<button
 							type="button"
 							onClick={handleStop}
-							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg border border-border hover:bg-accent"
+							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg border border-border transition-colors hover:bg-accent active:scale-[0.97]"
 							title="Stop"
 						>
 							<Square className="size-3.5" />
@@ -478,7 +475,7 @@ export function ChatShell({ sessionId, session }: Props) {
 							type="button"
 							onClick={handleSend}
 							disabled={!input.trim() || sending}
-							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
+							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
 							title="Send"
 						>
 							{sending ? (
@@ -489,7 +486,7 @@ export function ChatShell({ sessionId, session }: Props) {
 						</button>
 					)}
 				</div>
-				<p className="mx-auto mt-1.5 max-w-3xl text-center text-xs text-muted-foreground">
+				<p className="mx-auto mt-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
 					Enter to send, Shift+Enter for newline.
 				</p>
 			</div>
@@ -549,7 +546,7 @@ function ChatMessageRow({
 		if (p.type === "text") {
 			flushTools();
 			rows.push(
-				<div key={`t-${i}`} className="text-[0.9375rem] leading-relaxed">
+				<div key={`t-${i}`} className="text-base leading-relaxed">
 					{role === "assistant" ? (
 						<Markdown>{p.text}</Markdown>
 					) : (
@@ -580,14 +577,16 @@ function ChatMessageRow({
 			</div>
 			<MessageContent>
 				{showAttribution ? (
-					<MessageHeader className="gap-1.5 px-0">
-						<span className="text-sm font-semibold text-foreground">
+					<MessageHeader className="items-baseline gap-2 px-0">
+						<span className="text-lg font-semibold leading-tight text-foreground">
 							{name}
 						</span>
-						<span className="text-xs">{formatClockTime(createdAt)}</span>
+						<span className="text-xs tabular-nums">
+							{formatClockTime(createdAt)}
+						</span>
 					</MessageHeader>
 				) : (
-					<MessageHeader className="gap-1.5 px-0 invisible text-xs group-hover/message:visible">
+					<MessageHeader className="gap-1.5 px-0 invisible text-xs tabular-nums group-hover/message:visible">
 						<span>{formatClockTime(createdAt)}</span>
 					</MessageHeader>
 				)}
@@ -624,7 +623,7 @@ function ToolCallGroup({
 				<button
 					type="button"
 					onClick={() => setExpanded((v) => !v)}
-					className="flex w-full cursor-pointer items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+					className="flex w-full cursor-pointer items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
 				>
 					{expanded ? (
 						<ChevronDown className="size-3" />
@@ -704,7 +703,7 @@ function ToolCallMarker({
 				)}
 				<span className="ml-auto flex shrink-0 items-center text-xs text-muted-foreground">
 					{failed ? (
-						<span className="text-red-500 dark:text-red-400">failed</span>
+						<span className="text-destructive">failed</span>
 					) : (
 						hasDetails &&
 						(open ? (

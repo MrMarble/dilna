@@ -76,7 +76,7 @@ export function UsageBadge({ sessionId }: Props) {
 
 	return (
 		<span
-			className="rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-muted-foreground dark:border-zinc-800"
+			className="rounded-full border border-border px-2 py-0.5 text-xs tabular-nums text-muted-foreground"
 			title={`Input ${total.inputTokens.toLocaleString()} · Output ${total.outputTokens.toLocaleString()}`}
 		>
 			Tokens · {formatTokenCount(totalTokens)}

@@ -97,7 +97,7 @@ export function ContextPanel({ session, repo, stats }: Props) {
 	return (
 		<aside className="flex w-80 shrink-0 flex-col border-l border-sidebar-border bg-sidebar">
 			<div className="flex h-14 shrink-0 items-center border-b border-sidebar-border px-4">
-				<span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+				<span className="text-xs font-medium text-muted-foreground">
 					Context
 				</span>
 			</div>
@@ -125,9 +125,7 @@ function SectionCard({
 	return (
 		<section className="rounded-xl border border-sidebar-border bg-card p-3 shadow-sm">
 			<div className="mb-2 flex items-center gap-2">
-				<h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-					{title}
-				</h3>
+				<h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
 				{badge}
 			</div>
 			{children}
@@ -219,7 +217,7 @@ function ChangedFilesSection({
 						</span>
 					)}
 					{(totalAdditions > 0 || totalDeletions > 0) && (
-						<span className="ml-auto shrink-0 font-mono text-xs">
+						<span className="ml-auto shrink-0 font-mono text-xs tabular-nums">
 							<span className="text-emerald-600 dark:text-emerald-400">
 								+{totalAdditions}
 							</span>{" "}
@@ -232,7 +230,7 @@ function ChangedFilesSection({
 			}
 		>
 			{error ? (
-				<p className="text-sm text-red-500">{error}</p>
+				<p className="text-sm text-destructive">{error}</p>
 			) : files.length === 0 ? (
 				<p className="text-sm text-muted-foreground">No changes yet.</p>
 			) : (
@@ -281,7 +279,7 @@ function ChangedFileRow({ file }: { file: ChangedFile }) {
 		>
 			<Icon className={`size-3.5 shrink-0 ${meta.className}`} />
 			<span className="truncate font-mono text-xs">{file.path}</span>
-			<span className="ml-auto shrink-0 whitespace-nowrap font-mono text-xs">
+			<span className="ml-auto shrink-0 whitespace-nowrap font-mono text-xs tabular-nums">
 				{file.additions > 0 && (
 					<span className="text-emerald-600 dark:text-emerald-400">
 						+{file.additions}

@@ -76,7 +76,7 @@ export function Sidebar({
 							? "New session"
 							: "Select a repository to start a session"
 					}
-					className="flex w-full items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
+					className="flex w-full items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
 				>
 					<Plus className="size-3.5" />
 					{creatingSession ? "Creating…" : "New session"}
@@ -142,9 +142,9 @@ function ReposSection({
 			/>
 			<div className="max-h-64 overflow-y-auto px-2 pb-2">
 				{loading && repos.length === 0 ? (
-					<p className="px-2 py-2 text-sm text-muted-foreground">Loading…</p>
+					<RepoListSkeleton />
 				) : error ? (
-					<p className="px-2 py-2 text-sm text-red-500">{error}</p>
+					<p className="px-2 py-2 text-sm text-destructive">{error}</p>
 				) : repos.length === 0 ? (
 					<p className="px-2 py-2 text-sm text-muted-foreground">
 						No repos. Click + to clone one.
@@ -168,12 +168,35 @@ function ReposSection({
 										className="size-4 shrink-0 text-muted-foreground"
 									/>
 									<span className="truncate">{repo.slug}</span>
+									<span className="ml-auto shrink-0 text-[0.6875rem] text-muted-foreground/80">
+										{repo.defaultBranch}
+									</span>
 								</button>
 							</li>
 						))}
 					</ul>
 				)}
 			</div>
+		</div>
+	);
+}
+
+/** Shape-matched placeholder rows shown while the initial repo list loads. */
+function RepoListSkeleton() {
+	return (
+		<div className="flex flex-col gap-1 px-2 py-1" aria-hidden="true">
+			{[0, 1, 2].map((i) => (
+				<div
+					key={i}
+					className="flex animate-pulse items-center gap-2 px-1 py-1.5"
+				>
+					<div className="size-4 shrink-0 rounded bg-sidebar-accent/70" />
+					<div
+						className="h-3 rounded bg-sidebar-accent/70"
+						style={{ width: `${72 - i * 14}%` }}
+					/>
+				</div>
+			))}
 		</div>
 	);
 }
@@ -197,7 +220,7 @@ function BackgroundAgentsSection({
 	return (
 		<div className="mx-2 mb-2 flex max-h-64 flex-col overflow-hidden rounded-xl border border-sidebar-border bg-card shadow-sm">
 			<div className="flex items-center justify-between px-3 py-2">
-				<span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+				<span className="text-xs font-medium text-muted-foreground">
 					Background Agents
 				</span>
 				<span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
@@ -211,7 +234,7 @@ function BackgroundAgentsSection({
 							<button
 								type="button"
 								onClick={() => onSelect(session)}
-								className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/50"
+								className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50"
 							>
 								<span className="flex items-center gap-1.5 overflow-hidden">
 									<StatusDot status={session.status} />
@@ -284,7 +307,7 @@ function RateLimitBar({
 		<div className="min-w-0 flex-1" title={rateLimitTooltip(window, nowMs)}>
 			<div className="mb-1 flex items-center justify-between text-xs text-muted-foreground">
 				<span>{RATE_LIMIT_LABELS[window.kind]}</span>
-				<span className="truncate pl-1">
+				<span className="truncate pl-1 tabular-nums">
 					{formatTimeToReset(window.resetsAt, nowMs)}
 				</span>
 			</div>
@@ -313,15 +336,13 @@ function SidebarSectionHeader({
 }) {
 	return (
 		<div className="flex items-center justify-between px-4 py-2">
-			<span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-				{title}
-			</span>
+			<span className="text-xs font-medium text-muted-foreground">{title}</span>
 			<div className="flex items-center gap-0.5">
 				{onRefresh && (
 					<button
 						type="button"
 						onClick={onRefresh}
-						className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent"
+						className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
 						title={refreshTitle}
 					>
 						<RefreshCw className="size-3.5" />
@@ -330,7 +351,7 @@ function SidebarSectionHeader({
 				<button
 					type="button"
 					onClick={onNew}
-					className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent"
+					className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
 					title={newTitle}
 				>
 					<Plus className="size-3.5" />

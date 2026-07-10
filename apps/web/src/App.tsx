@@ -282,13 +282,15 @@ export function App() {
 
 function EmptyState() {
 	return (
-		<div className="text-center">
-			<FolderGit2 className="mx-auto mb-3 size-10 text-muted-foreground" />
-			<h1 className="text-2xl font-semibold tracking-tight">dilna</h1>
-			<p className="mt-2 text-sm text-muted-foreground">
+		<div className="max-w-sm text-center">
+			<span className="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl border border-border bg-card shadow-sm">
+				<FolderGit2 className="size-6 text-muted-foreground" />
+			</span>
+			<h1 className="text-3xl font-semibold tracking-tight">dilna</h1>
+			<p className="mt-2 text-balance text-sm text-muted-foreground">
 				self-hosted workspace for AI coding agents
 			</p>
-			<p className="mt-1 text-xs text-muted-foreground">
+			<p className="mt-1 text-balance text-xs text-muted-foreground">
 				Clone a repository from the sidebar to get started.
 			</p>
 		</div>
@@ -297,12 +299,12 @@ function EmptyState() {
 
 function RepoEmpty({ repo }: { repo: Repo }) {
 	return (
-		<div className="text-center">
+		<div className="max-w-sm text-center">
 			<p className="text-sm font-medium">{repo.remoteUrl}</p>
 			<p className="mt-1 text-xs text-muted-foreground">
-				default branch: {repo.defaultBranch}
+				default branch: <span className="font-mono">{repo.defaultBranch}</span>
 			</p>
-			<p className="mt-4 text-sm text-muted-foreground">
+			<p className="mt-4 text-balance text-sm text-muted-foreground">
 				Click "New session" in the sidebar to start one, or pick an existing
 				session from the dropdown above.
 			</p>

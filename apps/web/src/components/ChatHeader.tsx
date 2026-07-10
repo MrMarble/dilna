@@ -41,7 +41,7 @@ export function ChatHeader({
 						type="button"
 						onClick={() => onDeleteSession(selectedSession.id)}
 						title="Delete session"
-						className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-red-500"
+						className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
 					>
 						<Trash2 className="size-3.5" />
 					</button>
@@ -86,7 +86,7 @@ function SessionSwitcher({
 			<button
 				type="button"
 				onClick={() => setOpen((v) => !v)}
-				className="flex items-center gap-1 rounded-md px-2 py-1 text-sm font-medium hover:bg-accent/50"
+				className="flex items-center gap-1.5 rounded-md border border-border bg-secondary/50 px-2.5 py-1 text-sm font-medium transition-colors hover:bg-accent"
 			>
 				{selectedSession ? selectedSession.title : "Select a session"}
 				<ChevronDown className="size-3.5 text-muted-foreground" />
@@ -107,7 +107,7 @@ function SessionSwitcher({
 									setOpen(false);
 								}}
 								className={cn(
-									"flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-sm hover:bg-accent/50",
+									"flex w-full items-center gap-1.5 px-3 py-1.5 text-left text-sm transition-colors hover:bg-accent/50",
 									s.id === selectedSession?.id && "bg-accent/70",
 								)}
 							>
