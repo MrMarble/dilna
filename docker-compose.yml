@@ -10,11 +10,28 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       # Alternative to CLAUDE_CODE_OAUTH_TOKEN: a metered API key.
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Set these to your host user's `id -u`/`id -g` if the SSH mount below
+      # fails to authenticate — the container runs as an unprivileged user
+      # (uid 1000 by default) and needs matching ownership to read a
+      # tightly-permissioned private key. Leave unset if your host user is
+      # already uid/gid 1000.
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
     volumes:
       # dilna's own state: cloned repos, worktrees, sqlite db.
       - dilna-data:/data
       # Git auth (ADR-0005): read-only, host-provided SSH config + keys.
-      - ${HOME}/.ssh:/root/.ssh:ro
+      # Mounted into the `dilna` user's home (the container no longer runs
+      # as root — see docker-entrypoint.sh), not /root.
+      - ${HOME}/.ssh:/home/node/.ssh:ro
+    # Docker's default seccomp profile blocks the clone/unshare/setns calls
+    # bubblewrap needs to create the user namespace behind Claude Code's
+    # sandbox (ADR-0010), which would otherwise fail every session. This is
+    # Podman's default profile (containers/common) — identical to Docker's
+    # default except it also allows those specific namespace syscalls, so it
+    # stays far narrower than `seccomp=unconfined`.
+    security_opt:
+      - seccomp=./seccomp-bubblewrap.json
 
 volumes:
   dilna-data:
