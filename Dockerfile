@@ -14,8 +14,13 @@ ENV CI=true
 # curl: fetches the mise install script below (the runtime stage installs
 # its own curl too, for sessions — see below — but copies this stage's
 # already-downloaded mise binary rather than re-running the installer).
+# ca-certificates: unlike pnpm/npm (Node's TLS stack bundles its own root
+# CA store), curl relies on the system's — and node:*-bookworm-slim, unlike
+# the non-slim variants, ships without it. Without this, curl fails
+# immediately with exit 77 ("problem with reading the SSL CA cert") on its
+# very first HTTPS request below.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-		python3 make g++ git curl \
+		python3 make g++ git curl ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
@@ -26,7 +31,23 @@ RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 # for building dilna itself, not for the arbitrary repos agents are pointed
 # at. A single static binary, so the runtime stage just copies it rather
 # than re-running the installer.
-RUN curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh
+# Pinned (like node/pnpm above) for reproducible builds rather than
+# whatever's newest the day the image happens to be built.
+# Downloaded to a file and executed as a separate step, not piped straight
+# into `sh` (`curl ... | sh`): Docker's default RUN shell is `sh -c`, which
+# has no `pipefail` — if curl fails (network blip, proxy, whatever) mid-pipe,
+# `sh` still gets run with empty stdin, does nothing, and exits 0, so the
+# failure only ever surfaces later as a baffling "not found" on the COPY
+# below in the runtime stage, in a different layer entirely. `&&`-chaining
+# the download makes curl's own exit code fail the build immediately, and
+# the trailing `test -x` is a belt-and-suspenders check that the installer
+# actually produced a binary before this stage is considered done.
+ARG MISE_VERSION=2026.7.5
+RUN curl -fsSL https://mise.run -o /tmp/mise-install.sh \
+	&& MISE_VERSION="v${MISE_VERSION}" MISE_INSTALL_PATH=/usr/local/bin/mise \
+		sh /tmp/mise-install.sh \
+	&& rm -f /tmp/mise-install.sh \
+	&& test -x /usr/local/bin/mise
 
 WORKDIR /app
 

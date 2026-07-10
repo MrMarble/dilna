@@ -22,9 +22,14 @@ needs root).
 ## Decision
 
 Install [mise](https://mise.jdx.dev) in the runtime image as a single
-static binary, fetched once in the build stage (`curl | sh`, since the
-build stage already needs network access for `pnpm install`) and copied
-into the runtime stage rather than re-running the installer there:
+static binary, fetched once in the build stage — pinned to a specific
+version via `ARG MISE_VERSION` (same pattern as `node`/`pnpm` above), and
+downloaded to a file before executing it rather than the common
+`curl ... | sh` one-liner, which silently no-ops instead of failing the
+build if `curl` can't reach the network (Docker's default `RUN` shell has
+no `pipefail`, so a failed `curl` piped into `sh` still leaves `sh`
+exiting 0 on its empty stdin) — and copied into the runtime stage rather
+than re-running the installer there:
 
 - Per-user installs, no root needed: mise installs everything under
   `$HOME/.local/share/mise`, matching the container's non-root `node` user
