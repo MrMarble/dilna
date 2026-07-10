@@ -1,6 +1,12 @@
-import { useRef, useState } from "react";
+import { type RefObject, useCallback, useRef, useState } from "react";
 
 export type MobileSheetKey = "menu" | "files";
+
+export type MobileSheetTrigger = {
+	ref: RefObject<HTMLButtonElement | null>;
+	open: boolean;
+	onToggle: () => void;
+};
 
 /**
  * Shared open/active-content state for the mobile header's menu/files icons
@@ -19,17 +25,26 @@ export function useMobileSheet() {
 	const lastActiveRef = useRef<MobileSheetKey>("menu");
 	if (active !== null) lastActiveRef.current = active;
 
-	function toggle(key: MobileSheetKey) {
+	const toggle = useCallback((key: MobileSheetKey) => {
 		setActive((current) => (current === key ? null : key));
-	}
+	}, []);
+	const close = useCallback(() => setActive(null), []);
+	const toggleMenu = useCallback(() => toggle("menu"), [toggle]);
+	const toggleFiles = useCallback(() => toggle("files"), [toggle]);
 
 	return {
 		active,
-		close: () => setActive(null),
-		toggleMenu: () => toggle("menu"),
-		toggleFiles: () => toggle("files"),
-		menuTriggerRef,
-		filesTriggerRef,
+		close,
+		menuTrigger: {
+			ref: menuTriggerRef,
+			open: active === "menu",
+			onToggle: toggleMenu,
+		} satisfies MobileSheetTrigger,
+		filesTrigger: {
+			ref: filesTriggerRef,
+			open: active === "files",
+			onToggle: toggleFiles,
+		} satisfies MobileSheetTrigger,
 		finalFocusRef:
 			lastActiveRef.current === "files" ? filesTriggerRef : menuTriggerRef,
 	};

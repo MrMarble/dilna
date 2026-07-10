@@ -1,8 +1,9 @@
 import type { Repo, SessionView } from "@dilna/shared";
 import { ChevronDown, FileDiff, FolderGit2, Menu, Trash2 } from "lucide-react";
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
 import { UsageBadge } from "@/components/UsageBadge";
+import type { MobileSheetTrigger } from "@/hooks/useMobileSheet";
 import { AGENT_LABELS } from "@/lib/agent-labels";
 import { cn } from "@/lib/utils";
 
@@ -16,12 +17,8 @@ type Props = {
 	 * bottom sheet in place of the desktop Sidebar/ContextPanel; hidden via
 	 * `md:hidden` above the breakpoint, where the desktop panels are always
 	 * visible instead. */
-	menuTriggerRef: RefObject<HTMLButtonElement | null>;
-	mobileMenuOpen: boolean;
-	onToggleMobileMenu: () => void;
-	filesTriggerRef: RefObject<HTMLButtonElement | null>;
-	mobileFilesOpen: boolean;
-	onToggleMobileFiles: () => void;
+	menuTrigger: MobileSheetTrigger;
+	filesTrigger: MobileSheetTrigger;
 };
 
 export function ChatHeader({
@@ -30,25 +27,12 @@ export function ChatHeader({
 	selectedSession,
 	onSelectSession,
 	onDeleteSession,
-	menuTriggerRef,
-	mobileMenuOpen,
-	onToggleMobileMenu,
-	filesTriggerRef,
-	mobileFilesOpen,
-	onToggleMobileFiles,
+	menuTrigger,
+	filesTrigger,
 }: Props) {
 	return (
 		<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
-			<button
-				ref={menuTriggerRef}
-				type="button"
-				onClick={onToggleMobileMenu}
-				aria-label="Toggle menu"
-				aria-pressed={mobileMenuOpen}
-				className="-ml-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
-			>
-				<Menu className="size-4" />
-			</button>
+			<MobileMenuButton trigger={menuTrigger} />
 			<FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
 			<span className="font-medium">{repo.slug}</span>
 			<span className="text-muted-foreground">/</span>
@@ -61,11 +45,11 @@ export function ChatHeader({
 				<div className="ml-auto flex shrink-0 items-center gap-2">
 					<UsageBadge key={selectedSession.id} sessionId={selectedSession.id} />
 					<button
-						ref={filesTriggerRef}
+						ref={filesTrigger.ref}
 						type="button"
-						onClick={onToggleMobileFiles}
+						onClick={filesTrigger.onToggle}
 						aria-label="Toggle changed files"
-						aria-pressed={mobileFilesOpen}
+						aria-pressed={filesTrigger.open}
 						className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
 					>
 						<FileDiff className="size-4" />
@@ -84,6 +68,24 @@ export function ChatHeader({
 				</div>
 			)}
 		</header>
+	);
+}
+
+/** Shared with App.tsx's no-repo-selected fallback header, so the menu icon
+ * that opens the mobile sheet's Repos & Sessions content looks and behaves
+ * identically whether or not a repo is selected yet. */
+export function MobileMenuButton({ trigger }: { trigger: MobileSheetTrigger }) {
+	return (
+		<button
+			ref={trigger.ref}
+			type="button"
+			onClick={trigger.onToggle}
+			aria-label="Toggle menu"
+			aria-pressed={trigger.open}
+			className="-ml-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+		>
+			<Menu className="size-4" />
+		</button>
 	);
 }
 

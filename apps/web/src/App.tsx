@@ -4,10 +4,10 @@ import type {
 	RepoStats,
 	SessionListEvent,
 } from "@dilna/shared";
-import { FolderGit2, Menu } from "lucide-react";
+import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
-import { ChatHeader } from "@/components/ChatHeader";
+import { ChatHeader, MobileMenuButton } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { ContextPanel } from "@/components/ContextPanel";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
@@ -239,27 +239,30 @@ export function App() {
 	const primaryLanguageByRepoId = Object.fromEntries(
 		Object.entries(statsByRepoId).map(([id, s]) => [id, s.languages[0]?.name]),
 	);
+	// Shared by the desktop Sidebar and its mobile-sheet counterpart, which
+	// differ only in `variant` and (for the sheet) closing itself before
+	// handing off to the New Repo dialog.
+	const sidebarProps = {
+		repos,
+		loadingRepos,
+		error: repoError,
+		selectedRepoId,
+		onSelectRepo: handleSelectRepo,
+		onRefreshRepos: pullRepos,
+		onNewSession: handleNewSession,
+		creatingSession,
+		backgroundSessions,
+		repoSlugById,
+		onSelectBackgroundSession: handleSelectSession,
+		rateLimitWindows,
+		primaryLanguageByRepoId,
+	};
 
 	return (
 		<>
 			<div className="flex h-screen w-screen">
 				{isDesktop && (
-					<Sidebar
-						repos={repos}
-						loadingRepos={loadingRepos}
-						error={repoError}
-						selectedRepoId={selectedRepoId}
-						onSelectRepo={handleSelectRepo}
-						onRefreshRepos={pullRepos}
-						onNewRepo={() => setNewRepoOpen(true)}
-						onNewSession={handleNewSession}
-						creatingSession={creatingSession}
-						backgroundSessions={backgroundSessions}
-						repoSlugById={repoSlugById}
-						onSelectBackgroundSession={handleSelectSession}
-						rateLimitWindows={rateLimitWindows}
-						primaryLanguageByRepoId={primaryLanguageByRepoId}
-					/>
+					<Sidebar {...sidebarProps} onNewRepo={() => setNewRepoOpen(true)} />
 				)}
 				<main className="flex flex-1 flex-col overflow-hidden">
 					{selectedRepo ? (
@@ -269,25 +272,12 @@ export function App() {
 							selectedSession={selectedSession}
 							onSelectSession={handleSelectSession}
 							onDeleteSession={handleDeleteSession}
-							menuTriggerRef={mobileSheet.menuTriggerRef}
-							mobileMenuOpen={mobileSheet.active === "menu"}
-							onToggleMobileMenu={mobileSheet.toggleMenu}
-							filesTriggerRef={mobileSheet.filesTriggerRef}
-							mobileFilesOpen={mobileSheet.active === "files"}
-							onToggleMobileFiles={mobileSheet.toggleFiles}
+							menuTrigger={mobileSheet.menuTrigger}
+							filesTrigger={mobileSheet.filesTrigger}
 						/>
 					) : (
 						<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
-							<button
-								ref={mobileSheet.menuTriggerRef}
-								type="button"
-								onClick={mobileSheet.toggleMenu}
-								aria-label="Toggle menu"
-								aria-pressed={mobileSheet.active === "menu"}
-								className="-ml-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
-							>
-								<Menu className="size-4" />
-							</button>
+							<MobileMenuButton trigger={mobileSheet.menuTrigger} />
 							<span className="text-muted-foreground">dilna</span>
 						</header>
 					)}
@@ -332,24 +322,12 @@ export function App() {
 				<DrawerContent finalFocus={mobileSheet.finalFocusRef}>
 					{mobileSheet.active === "menu" && (
 						<Sidebar
+							{...sidebarProps}
 							variant="sheet"
-							repos={repos}
-							loadingRepos={loadingRepos}
-							error={repoError}
-							selectedRepoId={selectedRepoId}
-							onSelectRepo={handleSelectRepo}
-							onRefreshRepos={pullRepos}
 							onNewRepo={() => {
 								mobileSheet.close();
 								setNewRepoOpen(true);
 							}}
-							onNewSession={handleNewSession}
-							creatingSession={creatingSession}
-							backgroundSessions={backgroundSessions}
-							repoSlugById={repoSlugById}
-							onSelectBackgroundSession={handleSelectSession}
-							rateLimitWindows={rateLimitWindows}
-							primaryLanguageByRepoId={primaryLanguageByRepoId}
 						/>
 					)}
 					{mobileSheet.active === "files" &&
