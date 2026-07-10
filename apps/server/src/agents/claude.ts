@@ -162,19 +162,25 @@ export function createNormalizeState(): NormalizeState {
  * dilna's own writable scratch paths for the Claude CLI — its cache,
  * transcript storage, and session-env directory, not project files. Passed
  * to the native sandbox's `filesystem.allowWrite` (see {@link startClaude}).
- * `~/.claude/projects` is the CLI's own transcript storage — `getSessionMessages`/
- * `getSessionInfo` in sessions/manager.ts read from here after every turn;
- * without this grant persisted history and title auto-sync silently stay
- * empty. `/tmp/claude-<uid>` is the CLI's own per-invocation scratch dir,
- * named after the (sanitized) worktree path plus a random suffix it picks
- * itself — ungrantable at the exact leaf, so the whole per-uid parent is
- * granted instead.
+ * The transcript/session-env paths live under `CLAUDE_CONFIG_DIR`, not
+ * `~/.claude` directly — db/index.ts redirects that env var into
+ * `DILNA_DATA_DIR` (the one persistent volume in the reference deployment)
+ * as a side effect of its own import, which this module's `../db` import
+ * transitively triggers before this constant is evaluated. `getSessionMessages`/
+ * `getSessionInfo` in sessions/manager.ts read from the same place after
+ * every turn; without this grant persisted history and title auto-sync
+ * silently stay empty. `/tmp/claude-<uid>` is the CLI's own per-invocation
+ * scratch dir, named after the (sanitized) worktree path plus a random
+ * suffix it picks itself — ungrantable at the exact leaf, so the whole
+ * per-uid parent is granted instead.
  */
+const CLAUDE_HOME =
+	process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 const CLAUDE_SCRATCH_WRITABLE_PATHS = [
 	path.join(os.homedir(), ".cache", "claude"),
 	path.join(os.homedir(), ".cache", "claude-cli-nodejs"),
-	path.join(os.homedir(), ".claude", "session-env"),
-	path.join(os.homedir(), ".claude", "projects"),
+	path.join(CLAUDE_HOME, "session-env"),
+	path.join(CLAUDE_HOME, "projects"),
 	path.join(os.tmpdir(), `claude-${process.getuid?.() ?? 0}`),
 ];
 

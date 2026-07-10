@@ -227,6 +227,12 @@ type ActiveAgent = {
 	handle: ClaudeHandle;
 	chatInProgress: boolean;
 	idleTimer: NodeJS.Timeout | null;
+	/** One-shot: set by `ensureStarted` when it had to start a fresh Claude
+	 * session instead of resuming (the prior one was unresumable — see
+	 * `buildContextPrimer`), consumed and cleared by the next `sendMessage`
+	 * so the freshly-spawned agent gets dilna's own persisted history as
+	 * context instead of starting completely blind. */
+	contextPrimer?: string;
 };
 
 class SessionManager {
@@ -700,11 +706,19 @@ class SessionManager {
 		};
 		active.handle.listeners.add(crashHandler);
 
+		// One-shot: ensureStarted sets this when it had to start a fresh
+		// session instead of resuming (see buildContextPrimer). Only the
+		// outgoing prompt gets the recap prepended — the persisted user
+		// message keeps the original text so history doesn't show it twice.
+		const primer = active.contextPrimer;
+		active.contextPrimer = undefined;
+		const outgoingText = primer ? `${primer}\n\n${text}` : text;
+
 		let expectedClaudeMessageId: string | undefined;
 		let timedOut = false;
 		try {
 			expectedClaudeMessageId = await Promise.race([
-				chatClaude(handle, { message: text, onEvent }),
+				chatClaude(handle, { message: outgoingText, onEvent }),
 				setTimeoutAsync(TURN_TIMEOUT_MS).then((): never => {
 					throw new TurnTimeoutError();
 				}),
@@ -970,9 +984,36 @@ class SessionManager {
 		if (session.agentType === "openai") {
 			throw new Error("openai agent backend is not implemented yet");
 		}
+
+		// dilna's own history can outlive the Claude-native session it came
+		// from (e.g. CLAUDE_CONFIG_DIR wasn't on a persistent volume before —
+		// see db/index.ts — so a pod restart wiped the local transcript while
+		// this row's agentSessionId survived in dilna's own DB). Resuming a
+		// session whose transcript is gone fails mid-turn with "No
+		// conversation found with session ID: ..." and, worse, the process
+		// stays wedged on that same dead id for every subsequent send. Check
+		// upfront instead of discovering it that way: if the target isn't
+		// resumable, start fresh and prime it with dilna's own persisted
+		// history so the agent isn't starting completely blind.
+		let resumeId = session.agentSessionId ?? undefined;
+		let contextPrimer: string | undefined;
+		if (resumeId) {
+			const resumable = await this.isSessionResumable(
+				resumeId,
+				session.worktreePath,
+			);
+			if (!resumable) {
+				console.error(
+					`[sessions] claude session ${resumeId} for ${id} is no longer resumable — starting a fresh session primed with dilna's own history`,
+				);
+				resumeId = undefined;
+				contextPrimer = await this.buildContextPrimer(id);
+			}
+		}
+
 		const startOpts: ClaudeStartOptions = {
 			worktreePath: session.worktreePath,
-			existingAgentSessionId: session.agentSessionId ?? undefined,
+			existingAgentSessionId: resumeId,
 			onRateLimit: (info) => this.handleRateLimitEvent(info),
 		};
 		const handle: ClaudeHandle = await startClaude(startOpts);
@@ -989,11 +1030,75 @@ class SessionManager {
 			handle,
 			chatInProgress: false,
 			idleTimer: null,
+			contextPrimer,
 		};
 		this.active.set(id, active);
 		await this.setStatus(id, "idle");
 		this.broadcast(id, { type: "session_status", status: "idle" });
 		return active;
+	}
+
+	/**
+	 * Whether `agentSessionId`'s local transcript still exists. Inconclusive
+	 * lookup failures (permission errors, transient IO) resolve `true` —
+	 * this gate exists to skip a resume that's *guaranteed* to fail, not to
+	 * second-guess one that might still succeed.
+	 */
+	private async isSessionResumable(
+		agentSessionId: string,
+		worktreePath: string,
+	): Promise<boolean> {
+		try {
+			const info = await getSessionInfo(agentSessionId, { dir: worktreePath });
+			return info !== undefined;
+		} catch {
+			return true;
+		}
+	}
+
+	/**
+	 * Recap dilna's own persisted history as a single priming message for a
+	 * freshly-started (non-resumed) Claude session — see `ensureStarted`.
+	 * Capped so a long-lived session's full history can't blow the new
+	 * turn's context budget; older messages are dropped from the front
+	 * rather than truncated mid-message.
+	 */
+	private async buildContextPrimer(id: string): Promise<string | undefined> {
+		const MAX_CHARS = 20_000;
+		const history = await this.getMessages(id);
+		const lines = history
+			.map((m) => {
+				const text = m.parts
+					.map((p) => (p.type === "text" ? p.text : `[used tool: ${p.tool}]`))
+					.join("\n")
+					.trim();
+				return text ? `${m.role}: ${text}` : null;
+			})
+			.filter((l): l is string => l !== null);
+		if (lines.length === 0) return undefined;
+
+		let recap = lines.join("\n\n");
+		let truncated = false;
+		while (recap.length > MAX_CHARS && lines.length > 1) {
+			lines.shift();
+			recap = lines.join("\n\n");
+			truncated = true;
+		}
+
+		return [
+			"[dilna: this worktree has prior conversation history, but the agent",
+			"session that produced it was lost and could not be resumed — only the",
+			"agent's own memory of the conversation is gone, the worktree's files",
+			"are unaffected. Recovered from dilna's own history for context",
+			truncated
+				? "(earlier messages omitted for length):"
+				: "before continuing:",
+			"",
+			recap,
+			"",
+			"[end of recovered history — the message below continues this",
+			"conversation]",
+		].join("\n");
 	}
 
 	private armIdleTimer(id: string, active: ActiveAgent) {
