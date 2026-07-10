@@ -61,7 +61,7 @@ export function ChatHeader({
 						type="button"
 						onClick={() => onDeleteSession(selectedSession.id)}
 						title="Delete session"
-						className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+						className="hidden rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive md:inline-flex"
 					>
 						<Trash2 className="size-3.5" />
 					</button>

@@ -14,7 +14,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/api/client";
+import { useSessionUsage } from "@/hooks/useSessionUsage";
 import { LanguageIcon, languageColor } from "@/lib/languages";
+import { formatTokenCount } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 
 type Props = {
@@ -123,7 +125,7 @@ export function ContextPanel({
 			)}
 			<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
 				<RepositorySection repo={repo} stats={stats} />
-				<SessionSection session={session} />
+				<SessionSection session={session} showTokens={isSheet} />
 				<ChangedFilesSection files={files} error={error} />
 				<CommitsSection commits={commits} />
 			</div>
@@ -205,14 +207,42 @@ function RepositorySection({
 	);
 }
 
-function SessionSection({ session }: { session: SessionView }) {
+function SessionSection({
+	session,
+	showTokens = false,
+}: {
+	session: SessionView;
+	/** Mobile-only (issue #12 follow-up): the header hides its token badge on
+	 * narrow screens to reduce crowding, so the sheet shows the same total
+	 * here instead. Desktop keeps tokens in ChatHeader's `UsageBadge` and
+	 * leaves this section as-is. */
+	showTokens?: boolean;
+}) {
 	return (
 		<SectionCard title="Current session">
 			<div className="flex flex-col gap-1">
 				<FactRow label="Started" value={formatDateTime(session.createdAt)} />
 				<FactRow label="Last active" value={timeAgo(session.lastActiveAt)} />
+				{showTokens && <SessionTokensRow sessionId={session.id} />}
 			</div>
 		</SectionCard>
+	);
+}
+
+function SessionTokensRow({ sessionId }: { sessionId: string }) {
+	const usage = useSessionUsage(sessionId);
+	const totalTokens = usage.inputTokens + usage.outputTokens;
+	return (
+		<FactRow
+			label="Tokens"
+			value={
+				<span
+					title={`Input ${usage.inputTokens.toLocaleString()} · Output ${usage.outputTokens.toLocaleString()}`}
+				>
+					{formatTokenCount(totalTokens)}
+				</span>
+			}
+		/>
 	);
 }
 

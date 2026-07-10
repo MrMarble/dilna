@@ -1,5 +1,5 @@
 import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
-import { FolderGit2, Plus, RefreshCw } from "lucide-react";
+import { FolderGit2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -47,6 +47,14 @@ type Props = {
 	 * region instead of via the desktop flex-spacer trick, since the sheet's
 	 * height is bounded rather than always matching the full viewport. */
 	variant?: "panel" | "sheet";
+	/** The Session currently open in the chat, with its delete handler —
+	 * shown as a quick-action row in the sheet variant only, so mobile users
+	 * can delete the active Session without a "Delete session" button
+	 * crowding the header (issue #12 follow-up). Desktop keeps deletion in
+	 * ChatHeader instead; both are absent/no-op here when there's no
+	 * Session open yet. */
+	currentSession?: SessionView | null;
+	onDeleteCurrentSession?: (id: string) => void;
 };
 
 export function Sidebar({
@@ -65,6 +73,8 @@ export function Sidebar({
 	rateLimitWindows,
 	primaryLanguageByRepoId,
 	variant = "panel",
+	currentSession,
+	onDeleteCurrentSession,
 }: Props) {
 	const isSheet = variant === "sheet";
 	return (
@@ -110,6 +120,13 @@ export function Sidebar({
 					</button>
 				</div>
 
+				{isSheet && currentSession && onDeleteCurrentSession && (
+					<CurrentSessionRow
+						session={currentSession}
+						onDelete={onDeleteCurrentSession}
+					/>
+				)}
+
 				<ReposSection
 					repos={repos}
 					loading={loadingRepos}
@@ -136,6 +153,31 @@ export function Sidebar({
 
 			<RateLimitFooter windows={rateLimitWindows} />
 		</aside>
+	);
+}
+
+function CurrentSessionRow({
+	session,
+	onDelete,
+}: {
+	session: SessionView;
+	onDelete: (id: string) => void;
+}) {
+	return (
+		<div className="flex items-center gap-2 border-b border-sidebar-border px-4 py-2">
+			<StatusDot status={session.status} />
+			<span className="min-w-0 flex-1 truncate text-sm font-medium">
+				{session.title}
+			</span>
+			<button
+				type="button"
+				onClick={() => onDelete(session.id)}
+				title="Delete session"
+				className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+			>
+				<Trash2 className="size-3.5" />
+			</button>
+		</div>
 	);
 }
 

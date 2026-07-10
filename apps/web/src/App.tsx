@@ -256,6 +256,9 @@ export function App() {
 		onSelectBackgroundSession: handleSelectSession,
 		rateLimitWindows,
 		primaryLanguageByRepoId,
+		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
+		currentSession: selectedSession,
+		onDeleteCurrentSession: handleDeleteSession,
 	};
 
 	return (
