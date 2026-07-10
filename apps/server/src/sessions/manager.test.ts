@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../db";
 import { rateLimits as rateLimitsTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
-import { sessionManager } from "./manager";
+import { claudeMessagesToDilna, sessionManager } from "./manager";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -125,5 +125,55 @@ describe("SessionManager", () => {
 		expect(sessionManager.getRateLimits()).toEqual([
 			{ kind: "five_hour", utilizationPct: 32, resetsAt: future },
 		]);
+	});
+});
+
+/**
+ * Regression tests for transcript timestamp synthesis. Claude transcripts
+ * carry no timestamps, and the original `now + index` synthesis stamped rows
+ * minutes into the future on long transcripts — so the next turn's real-time
+ * pending-user placeholder sorted *before* the previous turn's rows and the
+ * UI interleaved messages out of order until the next reload.
+ */
+describe("claudeMessagesToDilna", () => {
+	type Raw = Parameters<typeof claudeMessagesToDilna>[1];
+
+	const entry = (type: "user" | "assistant", uuid: string, text: string) => ({
+		type,
+		uuid,
+		message: { role: type, content: [{ type: "text", text }] },
+	});
+
+	it("never stamps createdAt in the future, even on long transcripts", () => {
+		const raw: unknown[] = [];
+		for (let i = 0; i < 150; i++) {
+			raw.push(entry("user", `u-${i}`, `question ${i}`));
+			raw.push(entry("assistant", `a-${i}`, `answer ${i}`));
+		}
+		const messages = claudeMessagesToDilna("s1", raw as Raw);
+		const now = Math.floor(Date.now() / 1000);
+
+		expect(messages.length).toBe(300);
+		for (const m of messages) {
+			expect(m.createdAt).toBeLessThanOrEqual(now);
+		}
+	});
+
+	it("keeps createdAt monotonically increasing in transcript order", () => {
+		const raw = [
+			entry("user", "u-1", "first"),
+			entry("assistant", "a-1", "first answer"),
+			entry("user", "u-2", "second"),
+			entry("assistant", "a-2", "second answer"),
+		];
+		const messages = claudeMessagesToDilna("s1", raw as Raw);
+
+		expect(messages.map((m) => m.id)).toEqual(["u-1", "a-1", "u-2", "a-2"]);
+		for (let i = 1; i < messages.length; i++) {
+			const prev = messages[i - 1];
+			const cur = messages[i];
+			if (!prev || !cur) throw new Error("unreachable");
+			expect(cur.createdAt).toBeGreaterThanOrEqual(prev.createdAt);
+		}
 	});
 });

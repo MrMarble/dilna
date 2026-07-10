@@ -119,9 +119,14 @@ function claudeContentToText(content: unknown): string {
  * their own text messages and also flush any in-progress assistant turn.
  *
  * Claude's transcript entries carry no timestamp, so createdAt is
- * synthesized as `now + index` to preserve transcript order across a batch.
+ * synthesized as `now - (length - index)`: monotonically increasing within
+ * the batch, ending at persist time, and never in the future. Stamping
+ * *forward* from `now` (the original approach) pushed rows minutes past
+ * wall clock on long transcripts, so the next turn's real-time pending-user
+ * placeholder sorted *before* the previous turn's rows and the UI rendered
+ * messages out of order until the next reload.
  */
-function claudeMessagesToDilna(
+export function claudeMessagesToDilna(
 	sessionId: string,
 	raw: SessionMessage[],
 ): Message[] {
@@ -159,7 +164,7 @@ function claudeMessagesToDilna(
 	};
 
 	raw.forEach((entry, index) => {
-		const createdAt = baseCreatedAt + index;
+		const createdAt = baseCreatedAt - (raw.length - index);
 		const content = (entry.message as { content?: unknown })?.content;
 		const blocks = Array.isArray(content)
 			? (content as ClaudeContentBlock[])
@@ -775,16 +780,50 @@ class SessionManager {
 		expectedClaudeMessageId?: string,
 	): Promise<void> {
 		if (!handle.agentSessionId) return;
-		const existing = new Set(
-			(await this.getMessages(sessionId)).map((m) => m.id),
-		);
+		const persisted = await this.getMessages(sessionId);
+		const existing = new Set(persisted.map((m) => m.id));
 		const converted = await this.fetchClaudeMessagesWithRetry(
 			sessionId,
 			handle,
 			expectedClaudeMessageId,
 		);
-		for (const msg of converted) {
-			if (existing.has(msg.id)) continue;
+		const fresh = converted.filter((msg) => !existing.has(msg.id));
+		if (fresh.length === 0) return;
+
+		// Rows persisted before the past-stamping fix can carry timestamps
+		// minutes in the future; shift this batch above them so createdAt
+		// ordering stays monotonic for legacy sessions (drift then shrinks to
+		// nothing as wall clock catches up).
+		const pendingId = this.pendingUserMessageId(sessionId);
+		const maxExisting = Math.max(
+			0,
+			...persisted.filter((m) => m.id !== pendingId).map((m) => m.createdAt),
+		);
+		const minFresh = Math.min(...fresh.map((m) => m.createdAt));
+		if (minFresh <= maxExisting) {
+			const shift = maxExisting + 1 - minFresh;
+			for (const msg of fresh) msg.createdAt += shift;
+		}
+
+		// The transcript carries no timestamps (see claudeMessagesToDilna), but
+		// this turn's user message has a real one: the pending placeholder row
+		// written at send time. Hand it to the batch's last user row (the one
+		// the placeholder stands in for) so history shows when the user actually
+		// sent it, not when the turn ended. Skipped when it would break
+		// monotonic ordering (e.g. a recovery batch spanning several turns, or
+		// legacy future-stamped rows above).
+		const pending = persisted.find((m) => m.id === pendingId);
+		const turnUserRow = fresh.filter((m) => m.role === "user").at(-1);
+		if (pending && turnUserRow) {
+			const idx = fresh.indexOf(turnUserRow);
+			const prevStamp =
+				idx > 0 ? (fresh[idx - 1]?.createdAt ?? 0) : maxExisting;
+			if (pending.createdAt >= prevStamp) {
+				turnUserRow.createdAt = pending.createdAt;
+			}
+		}
+
+		for (const msg of fresh) {
 			this.persistMessage(sessionId, msg);
 		}
 	}

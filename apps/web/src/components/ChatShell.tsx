@@ -101,12 +101,14 @@ export function ChatShell({ sessionId, session }: Props) {
 	 * 'Thinking...' marker once content starts streaming. */
 	const [thinking, setThinking] = useState(false);
 
-	// Optimistic user message IDs whose first token should set (not append) text.
-	const optimisticIdsRef = useRef(new Set<string>());
+	// True once a turn has run on this subscription — gates the idle-time
+	// history reconcile so the subscribe-time idle snapshot doesn't refetch.
+	const sawTurnRef = useRef(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	// Auto-grow the composer between 2 and 4 lines; beyond that it scrolls
 	// internally instead of pushing the rest of the page around.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `input` isn't read directly, but the textarea must be re-measured after every keystroke re-renders it.
 	useEffect(() => {
 		const el = textareaRef.current;
 		if (!el) return;
@@ -141,22 +143,35 @@ export function ChatShell({ sessionId, session }: Props) {
 		}
 	}, [sessionId]);
 
+	// Keyed on sessionId only — deliberately NOT session.status: re-running
+	// this effect mid-turn (as a status flip used to) wipes the live entries
+	// and re-fetches history while the turn's rows are still provisional,
+	// which is how messages briefly rendered out of order.
 	useEffect(() => {
 		setLive({});
 		setMessages([]);
 		setError(null);
 		setThinking(false);
-		setStatus(session.status);
-		// Fetch history once on mount; live events keep us up-to-date after that.
+		sawTurnRef.current = false;
+		// Fetch history once on mount; live events keep us up-to-date after
+		// that, and the idle-time reconcile re-syncs after each turn.
 		loadHistory();
 		const unsubscribe = api.sessions.stream(sessionId, (ev) => {
 			switch (ev.type) {
 				case "session_status":
 					setStatus(ev.status);
+					if (ev.status === "working" || ev.status === "starting") {
+						sawTurnRef.current = true;
+					}
 					if (ev.status === "crashed") {
 						setThinking(false);
 					}
 					if (ev.status === "idle" || ev.status === "crashed") {
+						// Flush live entries into the local list so nothing flickers,
+						// then reconcile against the DB — the source of truth (ADR-0004):
+						// authoritative rows replace the flushed copies' provisional
+						// ids/timestamps, and the optimistic temp user entry (whose
+						// content the server persisted at send time) drops out.
 						setLive((currentLive) => {
 							const entries = Object.entries(currentLive);
 							if (entries.length === 0) return currentLive;
@@ -168,40 +183,33 @@ export function ChatShell({ sessionId, session }: Props) {
 									sessionId,
 									role: m.role,
 									parts: m.parts,
-									createdAt: Math.floor(Date.now() / 1000),
+									createdAt: m.startedAt,
 								}));
 								return [...kept, ...newMsgs];
 							});
 							return {};
 						});
+						if (sawTurnRef.current) {
+							sawTurnRef.current = false;
+							loadHistory();
+						}
 					}
 					break;
 				case "message_start":
+					// Always a new assistant turn message (claude.ts never emits
+					// user-role starts); the optimistic temp user entry stays in
+					// place until the idle-time reconcile swaps in the DB rows.
 					setLive((prev) => {
 						if (prev[ev.messageId]) return prev;
-						const next = { ...prev };
-						for (const [key, entry] of Object.entries(next)) {
-							if (key.startsWith("temp-") && entry.role === "user") {
-								optimisticIdsRef.current.delete(key);
-								const parts = entry.parts;
-								delete next[key];
-								next[ev.messageId] = {
-									id: ev.messageId,
-									role: ev.role,
-									parts,
-									startedAt: entry.startedAt,
-								};
-								optimisticIdsRef.current.add(ev.messageId);
-								return next;
-							}
-						}
-						next[ev.messageId] = {
-							id: ev.messageId,
-							role: ev.role,
-							parts: [],
-							startedAt: nowSeconds(),
+						return {
+							...prev,
+							[ev.messageId]: {
+								id: ev.messageId,
+								role: ev.role,
+								parts: [],
+								startedAt: nowSeconds(),
+							},
 						};
-						return next;
 					});
 					break;
 				case "token":
@@ -209,16 +217,6 @@ export function ChatShell({ sessionId, session }: Props) {
 					setLive((prev) => {
 						const m = prev[ev.messageId];
 						if (m) {
-							if (optimisticIdsRef.current.has(ev.messageId)) {
-								optimisticIdsRef.current.delete(ev.messageId);
-								return {
-									...prev,
-									[ev.messageId]: {
-										...m,
-										parts: [{ type: "text", text: ev.chunk }],
-									},
-								};
-							}
 							// Append to the trailing text part so streamed chunks join up;
 							// start a new part if the turn just returned from a tool call,
 							// preserving the real text/tool_call interleaving order.
@@ -304,7 +302,7 @@ export function ChatShell({ sessionId, session }: Props) {
 			}
 		});
 		return unsubscribe;
-	}, [sessionId, loadHistory, session.status]);
+	}, [sessionId, loadHistory]);
 
 	useEffect(() => {
 		setStatus(session.status);
@@ -327,9 +325,8 @@ export function ChatShell({ sessionId, session }: Props) {
 		setThinking(true);
 
 		// Optimistic user message placeholder — visible immediately so autoscroll
-		// follows it. The real message_start event will replace the temp ID.
+		// follows it; replaced by the authoritative DB row at the idle reconcile.
 		const tempId = `temp-${Date.now()}`;
-		optimisticIdsRef.current.add(tempId);
 		setLive((prev) => ({
 			...prev,
 			[tempId]: {
@@ -345,6 +342,14 @@ export function ChatShell({ sessionId, session }: Props) {
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "send failed");
 			setThinking(false);
+			// The message never reached the server — withdraw the optimistic
+			// entry instead of leaving a bubble the agent never saw.
+			setLive((prev) => {
+				if (!(tempId in prev)) return prev;
+				const next = { ...prev };
+				delete next[tempId];
+				return next;
+			});
 		} finally {
 			setSending(false);
 		}
@@ -395,17 +400,13 @@ export function ChatShell({ sessionId, session }: Props) {
 				<MessageScrollerProvider autoScroll>
 					<MessageScroller className="h-full">
 						<MessageScrollerViewport>
-							<MessageScrollerContent className="mx-auto w-full max-w-[max(48rem,80%)] px-6 py-5">
+							<MessageScrollerContent className="mx-auto w-full max-w-[max(48rem,80%)] px-6 pt-5 pb-8">
 								{rendered.length === 0 && !thinking ? (
 									<EmptyHint />
 								) : (
 									<>
 										{rendered.map((m, i) => (
-											<MessageScrollerItem
-												key={m.id}
-												messageId={m.id}
-												scrollAnchor={m.role === "user"}
-											>
+											<MessageScrollerItem key={m.id} messageId={m.id}>
 												<ChatMessageRow
 													id={m.id}
 													role={m.role}
@@ -546,6 +547,7 @@ function ChatMessageRow({
 		if (p.type === "text") {
 			flushTools();
 			rows.push(
+				// biome-ignore lint/suspicious/noArrayIndexKey: parts have no ids; the list is append-only within a message, so positional keys are stable.
 				<div key={`t-${i}`} className="text-base leading-relaxed">
 					{role === "assistant" ? (
 						<Markdown>{p.text}</Markdown>
