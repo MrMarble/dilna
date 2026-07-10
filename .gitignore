@@ -11,4 +11,5 @@ coverage/
 .vite/
 .turbo/
 .vitest/
-/data/.playwright-mcp/
+/data/
+.playwright-mcp/

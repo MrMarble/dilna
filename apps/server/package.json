@@ -14,20 +14,20 @@
 		"db:migrate": "tsx src/db/migrate.ts"
 	},
 	"dependencies": {
-		"@anthropic-ai/claude-agent-sdk": "latest",
+		"@anthropic-ai/claude-agent-sdk": "^0.3.203",
 		"@dilna/shared": "workspace:*",
-		"better-sqlite3": "latest",
-		"drizzle-orm": "latest",
-		"hono": "latest",
-		"@hono/node-server": "latest",
-		"nanoid": "latest"
+		"better-sqlite3": "^12.11.1",
+		"drizzle-orm": "^0.45.2",
+		"hono": "^4.12.28",
+		"@hono/node-server": "^2.0.8",
+		"nanoid": "^5.1.16"
 	},
 	"devDependencies": {
-		"@types/better-sqlite3": "latest",
-		"@types/node": "latest",
-		"drizzle-kit": "latest",
-		"tsup": "latest",
-		"tsx": "latest",
-		"typescript": "latest"
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/node": "^26.1.0",
+		"drizzle-kit": "^0.31.10",
+		"tsup": "^8.5.1",
+		"tsx": "^4.23.0",
+		"typescript": "^6.0.3"
 	}
 }

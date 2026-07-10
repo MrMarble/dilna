@@ -9,3 +9,8 @@ allowBuilds:
 onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
+# Force every transitive esbuild onto a patched release: tsup and
+# drizzle-kit's @esbuild-kit chain otherwise resolve versions flagged by
+# GHSA-67mh-4wv8-2f99 / GHSA-g7r4-m6w7-qqqr.
+overrides:
+  esbuild: ^0.28.1
