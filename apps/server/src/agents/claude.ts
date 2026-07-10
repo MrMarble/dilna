@@ -26,11 +26,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * metadata directory (HEAD, index, refs, logs) under the origin repo's git
  * dir. That metadata dir's own `commondir` file in turn points at the
  * *shared* git dir (objects, refs, config) — normally `../..`, i.e. the bare
- * repo root itself. The native sandbox (see {@link startClaude}) already
- * grants the shared dir write access automatically for a worktree cwd, but
- * not read access, so this is used to add it to `filesystem.allowRead`
- * ourselves when `denyRead` would otherwise cover it (e.g. `git log`/`git
- * diff` need to read historical objects from the shared store).
+ * repo root itself. ADR-0010 assumed the native sandbox (see
+ * {@link startClaude}) auto-detects a linked worktree's `cwd` and grants the
+ * shared dir write access on its own; live dilna sessions (worktrees under
+ * `DILNA_DATA_DIR`, backed by a bare repo elsewhere entirely rather than a
+ * conventional sibling `.git`) show that auto-detection doesn't fire —
+ * `git commit`/`git branch` fail with "Read-only file system" against both
+ * the per-worktree git-dir and the shared dir. So this is used to add the
+ * shared dir to both `filesystem.allowWrite` (so agents can actually commit)
+ * and `filesystem.allowRead` (when `denyRead` would otherwise cover it —
+ * e.g. `git log`/`git diff` need to read historical objects from the shared
+ * store) ourselves. Granting the shared dir also covers the per-worktree
+ * git-dir itself, since `.git/worktrees/<name>` is nested inside it.
  */
 function resolveGitCommonDir(worktreePath: string): string | null {
 	try {
@@ -160,19 +167,19 @@ export function createNormalizeState(): NormalizeState {
 
 /**
  * dilna's own writable scratch paths for the Claude CLI — its cache,
- * transcript storage, and session-env directory, not project files. Passed
- * to the native sandbox's `filesystem.allowWrite` (see {@link startClaude}).
- * The transcript/session-env paths live under `CLAUDE_CONFIG_DIR`, not
- * `~/.claude` directly — db/index.ts redirects that env var into
- * `DILNA_DATA_DIR` (the one persistent volume in the reference deployment)
- * as a side effect of its own import, which this module's `../db` import
- * transitively triggers before this constant is evaluated. `getSessionMessages`/
- * `getSessionInfo` in sessions/manager.ts read from the same place after
- * every turn; without this grant persisted history and title auto-sync
- * silently stay empty. `/tmp/claude-<uid>` is the CLI's own per-invocation
- * scratch dir, named after the (sanitized) worktree path plus a random
- * suffix it picks itself — ungrantable at the exact leaf, so the whole
- * per-uid parent is granted instead.
+ * transcript storage, and session-env directory, not project files. Folded
+ * into the native sandbox's `filesystem.allowWrite` alongside the worktree's
+ * shared git dir (see {@link startClaude}). The transcript/session-env paths
+ * live under `CLAUDE_CONFIG_DIR`, not `~/.claude` directly — db/index.ts
+ * redirects that env var into `DILNA_DATA_DIR` (the one persistent volume in
+ * the reference deployment) as a side effect of its own import, which this
+ * module's `../db` import transitively triggers before this constant is
+ * evaluated. `getSessionMessages`/`getSessionInfo` in sessions/manager.ts
+ * read from the same place after every turn; without this grant persisted
+ * history and title auto-sync silently stay empty. `/tmp/claude-<uid>` is
+ * the CLI's own per-invocation scratch dir, named after the (sanitized)
+ * worktree path plus a random suffix it picks itself — ungrantable at the
+ * exact leaf, so the whole per-uid parent is granted instead.
  */
 const CLAUDE_HOME =
 	process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
@@ -261,7 +268,14 @@ export async function startClaude(
 				// previous sandlock config's unconditional `--net-allow '*'`.
 				network: { allowedDomains: ["*"] },
 				filesystem: {
-					allowWrite: CLAUDE_SCRATCH_WRITABLE_PATHS,
+					// gitCommonDir isn't auto-granted by the native sandbox in
+					// practice (see resolveGitCommonDir's doc comment) — without
+					// this, `git commit`/`git branch` fail read-only inside every
+					// worktree session.
+					allowWrite: [
+						...CLAUDE_SCRATCH_WRITABLE_PATHS,
+						...(gitCommonDir ? [gitCommonDir] : []),
+					],
 					...(nestedInCheckout
 						? {
 								denyRead: [workspaceRoot],
