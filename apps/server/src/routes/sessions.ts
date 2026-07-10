@@ -101,6 +101,16 @@ sessionsRoute.post("/:id/messages", async (c) => {
 	if (!body?.text) {
 		throw new HTTPException(400, { message: "text is required" });
 	}
+	// Reject a duplicate send up front rather than letting it silently lose
+	// the race inside sendMessage: that failure surfaces only after an
+	// `await`, by which point this handler would already have returned 202,
+	// leaving the client's optimistic bubble dangling forever with nothing
+	// to roll it back (see the incident this guarded against).
+	if (sessionManager.isChatInProgress(id)) {
+		throw new HTTPException(409, {
+			message: "session already has a chat in progress",
+		});
+	}
 	// Fire the chat asynchronously. The HTTP response is sent immediately
 	// (202 Accepted) and the actual stream of events arrives on the SSE
 	// endpoint. This decouples the prompt from the long-lived stream so

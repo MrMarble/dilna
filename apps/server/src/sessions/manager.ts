@@ -31,7 +31,7 @@ import {
 	fetchClaudeRateLimits,
 	startClaude,
 } from "../agents/claude";
-import { IDLE_TIMEOUT_MS } from "../agents/types";
+import { IDLE_TIMEOUT_MS, TURN_TIMEOUT_MS } from "../agents/types";
 import { getDb } from "../db";
 import {
 	messages as messagesTable,
@@ -211,6 +211,17 @@ export function claudeMessagesToDilna(
 }
 
 type Listener = (event: AgentStreamEvent) => void;
+
+/** Thrown by the race in `sendMessage` when a turn exceeds `TURN_TIMEOUT_MS`
+ * with no `result`/crash from the agent backend. Distinguished from a real
+ * agent error so the `catch` in `sendMessage` can tell "the agent stalled"
+ * apart from "the agent actually failed" and re-throw anything else as-is. */
+class TurnTimeoutError extends Error {
+	constructor() {
+		super(`turn exceeded ${TURN_TIMEOUT_MS / 1000}s with no response`);
+		this.name = "TurnTimeoutError";
+	}
+}
 
 type ActiveAgent = {
 	handle: ClaudeHandle;
@@ -577,6 +588,20 @@ class SessionManager {
 		};
 	}
 
+	/**
+	 * True if the session currently has a turn in flight. `sendMessage` itself
+	 * only discovers this after an `await` (inside `ensureStarted`), which is
+	 * too late for the route handler to reject the request before it's
+	 * already committed to a 202 — see routes/sessions.ts. Checking the
+	 * in-memory flag here is synchronous-fast for the common case (session
+	 * already active) and lets the route surface the conflict as a real HTTP
+	 * error instead of silently dropping the message while the client shows
+	 * an optimistic bubble for it.
+	 */
+	isChatInProgress(id: string): boolean {
+		return this.active.get(id)?.chatInProgress ?? false;
+	}
+
 	async getMessages(id: string): Promise<Message[]> {
 		const db = getDb();
 		const rows = db
@@ -676,11 +701,17 @@ class SessionManager {
 		active.handle.listeners.add(crashHandler);
 
 		let expectedClaudeMessageId: string | undefined;
+		let timedOut = false;
 		try {
-			expectedClaudeMessageId = await chatClaude(handle, {
-				message: text,
-				onEvent,
-			});
+			expectedClaudeMessageId = await Promise.race([
+				chatClaude(handle, { message: text, onEvent }),
+				setTimeoutAsync(TURN_TIMEOUT_MS).then((): never => {
+					throw new TurnTimeoutError();
+				}),
+			]);
+		} catch (err) {
+			if (!(err instanceof TurnTimeoutError)) throw err;
+			timedOut = true;
 		} finally {
 			active.handle.listeners.delete(crashHandler);
 			active.chatInProgress = false;
@@ -703,24 +734,46 @@ class SessionManager {
 			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
 
-			// Best-effort: pull fresh account rate limits while the agent
-			// process is still alive (the control request needs a live query).
-			this.refreshRateLimits(handle).catch(() => {});
-
-			// Recompute the "Changed files" panel's diff now that the turn's
-			// worktree edits (committed or not) have settled.
-			try {
-				const files = await this.getChangedFiles(id);
-				this.broadcast(id, { type: "changed_files", files });
-			} catch (err) {
+			if (timedOut) {
+				// The process is stalled, not merely slow — route through the
+				// same crash handling a real `agent_crashed` event gets (see
+				// TURN_TIMEOUT_MS): kills the wedged handle, drops it from
+				// `active` so the next send spawns fresh instead of reusing (and
+				// re-hanging on) this one, and gives the client an explicit,
+				// visible signal instead of leaving it to infer nothing is
+				// happening.
 				console.error(
-					`[sessions] failed to compute changed files for ${id}:`,
-					err,
+					`[sessions] turn for ${id} exceeded ${TURN_TIMEOUT_MS / 1000}s with no response — treating as crashed`,
 				);
-			}
+				this.broadcast(id, {
+					type: "agent_crashed",
+					exitCode: -1,
+					stderrTail: [
+						...handle.stderrTail.slice(-5),
+						`dilna: turn aborted after ${TURN_TIMEOUT_MS / 60000}m with no response from the agent`,
+					],
+				});
+				this.markCrashed(id);
+			} else {
+				// Best-effort: pull fresh account rate limits while the agent
+				// process is still alive (the control request needs a live query).
+				this.refreshRateLimits(handle).catch(() => {});
 
-			await this.setStatus(id, "idle");
-			this.armIdleTimer(id, active);
+				// Recompute the "Changed files" panel's diff now that the turn's
+				// worktree edits (committed or not) have settled.
+				try {
+					const files = await this.getChangedFiles(id);
+					this.broadcast(id, { type: "changed_files", files });
+				} catch (err) {
+					console.error(
+						`[sessions] failed to compute changed files for ${id}:`,
+						err,
+					);
+				}
+
+				await this.setStatus(id, "idle");
+				this.armIdleTimer(id, active);
+			}
 		}
 	}
 
