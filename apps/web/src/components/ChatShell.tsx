@@ -40,6 +40,10 @@ import { cn } from "@/lib/utils";
 type Props = {
 	sessionId: string;
 	session: SessionView;
+	/** Desktop viewports get Enter-to-send (Shift+Enter for a newline);
+	 * mobile keyboards don't reliably expose Shift, so Enter inserts a
+	 * newline there instead and the Send button submits. */
+	isDesktop: boolean;
 };
 
 type LiveMessage = {
@@ -90,7 +94,7 @@ function formatClockTime(epochSeconds: number) {
 	});
 }
 
-export function ChatShell({ sessionId, session }: Props) {
+export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [live, setLive] = useState<Record<string, LiveMessage>>({});
 	const [status, setStatus] = useState<SessionView["status"]>(session.status);
@@ -448,7 +452,10 @@ export function ChatShell({ sessionId, session }: Props) {
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
 						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
+							// On desktop, Enter sends and Shift+Enter inserts a newline.
+							// Mobile keyboards don't reliably expose Shift, so there
+							// Enter just inserts a newline and the Send button submits.
+							if (isDesktop && e.key === "Enter" && !e.shiftKey) {
 								e.preventDefault();
 								void handleSend();
 							}
@@ -488,7 +495,9 @@ export function ChatShell({ sessionId, session }: Props) {
 					)}
 				</div>
 				<p className="mx-auto mt-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
-					Enter to send, Shift+Enter for newline.
+					{isDesktop
+						? "Enter to send, Shift+Enter for newline."
+						: "Enter for newline, tap Send to submit."}
 				</p>
 			</div>
 		</div>
