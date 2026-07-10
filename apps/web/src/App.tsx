@@ -264,7 +264,7 @@ export function App() {
 
 	return (
 		<>
-			<div className="flex h-screen w-screen">
+			<div className="flex h-dvh w-screen">
 				{isDesktop && (
 					<Sidebar {...sidebarProps} onNewRepo={() => setNewRepoOpen(true)} />
 				)}
