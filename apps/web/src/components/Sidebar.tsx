@@ -12,6 +12,7 @@ import {
 	rateLimitBarColor,
 	rateLimitTooltip,
 } from "@/lib/rate-limits";
+import { cn } from "@/lib/utils";
 
 const IS_MAC =
 	typeof navigator !== "undefined" &&
@@ -40,6 +41,12 @@ type Props = {
 	 * GitHub-style language icons in the repo list. Missing/undefined values
 	 * fall back to the generic folder icon. */
 	primaryLanguageByRepoId: Record<string, string | undefined>;
+	/** "panel" (default) is the desktop always-visible aside. "sheet" strips
+	 * the outer width/border/brand chrome for use inside the mobile bottom
+	 * sheet (issue #12) and pins the rate-limit footer below a scrollable
+	 * region instead of via the desktop flex-spacer trick, since the sheet's
+	 * height is bounded rather than always matching the full viewport. */
+	variant?: "panel" | "sheet";
 };
 
 export function Sidebar({
@@ -57,55 +64,75 @@ export function Sidebar({
 	onSelectBackgroundSession,
 	rateLimitWindows,
 	primaryLanguageByRepoId,
+	variant = "panel",
 }: Props) {
+	const isSheet = variant === "sheet";
 	return (
-		<aside className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
-			<div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
-				<FolderGit2 className="size-5 text-muted-foreground" />
-				<span className="font-semibold tracking-tight">dilna</span>
-				<ThemeToggle className="ml-auto" />
+		<aside
+			className={cn(
+				"flex flex-col",
+				isSheet
+					? "min-h-0 flex-1"
+					: "w-64 shrink-0 border-r border-sidebar-border bg-sidebar",
+			)}
+		>
+			{!isSheet && (
+				<div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
+					<FolderGit2 className="size-5 text-muted-foreground" />
+					<span className="font-semibold tracking-tight">dilna</span>
+					<ThemeToggle className="ml-auto" />
+				</div>
+			)}
+
+			<div
+				className={cn(
+					"flex flex-1 flex-col",
+					isSheet && "min-h-0 overflow-y-auto",
+				)}
+			>
+				<div className="border-b border-sidebar-border p-2">
+					<button
+						type="button"
+						onClick={onNewSession}
+						disabled={!selectedRepoId || creatingSession}
+						title={
+							selectedRepoId
+								? "New session"
+								: "Select a repository to start a session"
+						}
+						className="flex w-full items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						<Plus className="size-3.5" />
+						{creatingSession ? "Creating…" : "New session"}
+						<span className="ml-auto text-xs font-normal text-primary-foreground/60">
+							{NEW_SESSION_SHORTCUT}
+						</span>
+					</button>
+				</div>
+
+				<ReposSection
+					repos={repos}
+					loading={loadingRepos}
+					error={error}
+					selectedRepoId={selectedRepoId}
+					onSelectRepo={onSelectRepo}
+					onRefresh={onRefreshRepos}
+					onNew={onNewRepo}
+					primaryLanguageByRepoId={primaryLanguageByRepoId}
+				/>
+
+				{/* Spacer keeps the Background Agents card pinned just above the
+				    footer, matching the draft's floating-card placement. Only
+				    meaningful on desktop, where this column always spans the full
+				    viewport height; the sheet variant scrolls instead. */}
+				{!isSheet && <div className="flex-1" />}
+
+				<BackgroundAgentsSection
+					sessions={backgroundSessions}
+					repoSlugById={repoSlugById}
+					onSelect={onSelectBackgroundSession}
+				/>
 			</div>
-
-			<div className="border-b border-sidebar-border p-2">
-				<button
-					type="button"
-					onClick={onNewSession}
-					disabled={!selectedRepoId || creatingSession}
-					title={
-						selectedRepoId
-							? "New session"
-							: "Select a repository to start a session"
-					}
-					className="flex w-full items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					<Plus className="size-3.5" />
-					{creatingSession ? "Creating…" : "New session"}
-					<span className="ml-auto text-xs font-normal text-primary-foreground/60">
-						{NEW_SESSION_SHORTCUT}
-					</span>
-				</button>
-			</div>
-
-			<ReposSection
-				repos={repos}
-				loading={loadingRepos}
-				error={error}
-				selectedRepoId={selectedRepoId}
-				onSelectRepo={onSelectRepo}
-				onRefresh={onRefreshRepos}
-				onNew={onNewRepo}
-				primaryLanguageByRepoId={primaryLanguageByRepoId}
-			/>
-
-			{/* Spacer keeps the Background Agents card pinned just above the
-			    footer, matching the draft's floating-card placement. */}
-			<div className="flex-1" />
-
-			<BackgroundAgentsSection
-				sessions={backgroundSessions}
-				repoSlugById={repoSlugById}
-				onSelect={onSelectBackgroundSession}
-			/>
 
 			<RateLimitFooter windows={rateLimitWindows} />
 		</aside>

@@ -1,9 +1,10 @@
+import { useMediaQuery } from "@base-ui/react/unstable-use-media-query";
 import type {
 	RateLimitWindow,
 	RepoStats,
 	SessionListEvent,
 } from "@dilna/shared";
-import { FolderGit2 } from "lucide-react";
+import { FolderGit2, Menu } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
 import { ChatHeader } from "@/components/ChatHeader";
@@ -11,6 +12,13 @@ import { ChatShell } from "@/components/ChatShell";
 import { ContextPanel } from "@/components/ContextPanel";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { Sidebar } from "@/components/Sidebar";
+import { Drawer, DrawerContent } from "@/components/ui/drawer";
+import { useMobileSheet } from "@/hooks/useMobileSheet";
+
+// Tailwind's default `md` breakpoint (no `--breakpoint-md` override in
+// index.css), matching the `md:hidden`/`md:flex` classes used throughout —
+// see issue #12.
+const DESKTOP_QUERY = "(min-width: 768px)";
 
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
@@ -31,6 +39,18 @@ export function App() {
 	const [statsByRepoId, setStatsByRepoId] = useState<Record<string, RepoStats>>(
 		{},
 	);
+	// Below 768px the desktop Sidebar/ContextPanel aren't rendered at all
+	// (rather than just hidden via CSS) so their SSE subscriptions don't run
+	// twice alongside the mobile sheet's own instances — see issue #12.
+	const isDesktop = useMediaQuery(DESKTOP_QUERY, { noSsr: true });
+	const mobileSheet = useMobileSheet();
+
+	// Crossing back over the breakpoint (window resize, tablet rotation) while
+	// the sheet is open would otherwise leave it floating over the now-visible
+	// desktop Sidebar/ContextPanel.
+	useEffect(() => {
+		if (isDesktop) mobileSheet.close();
+	}, [isDesktop, mobileSheet.close]);
 
 	const reloadRepos = useCallback(async () => {
 		setLoadingRepos(true);
@@ -143,19 +163,28 @@ export function App() {
 				.filter((s) => s.repoId === id)
 				.sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
 			setSelectedSessionId(latest?.id ?? null);
+			mobileSheet.close();
 		},
-		[sessionsById],
+		[sessionsById, mobileSheet.close],
 	);
 
-	const handleSelectSession = useCallback((session: SessionView) => {
-		setSelectedRepoId(session.repoId);
-		setSelectedSessionId(session.id);
-	}, []);
+	const handleSelectSession = useCallback(
+		(session: SessionView) => {
+			setSelectedRepoId(session.repoId);
+			setSelectedSessionId(session.id);
+			mobileSheet.close();
+		},
+		[mobileSheet.close],
+	);
 
-	const handleSessionCreated = useCallback((session: SessionView) => {
-		setSessionsById((prev) => ({ ...prev, [session.id]: session }));
-		setSelectedSessionId(session.id);
-	}, []);
+	const handleSessionCreated = useCallback(
+		(session: SessionView) => {
+			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
+			setSelectedSessionId(session.id);
+			mobileSheet.close();
+		},
+		[mobileSheet.close],
+	);
 
 	// No agent picker to confirm (Claude is the only backend), so "New
 	// session" creates immediately rather than opening a dialog.
@@ -204,32 +233,34 @@ export function App() {
 		[selectedSessionId],
 	);
 
+	const repoSlugById = Object.fromEntries(
+		repos.map((r) => [r.id, r.slug] as const),
+	);
+	const primaryLanguageByRepoId = Object.fromEntries(
+		Object.entries(statsByRepoId).map(([id, s]) => [id, s.languages[0]?.name]),
+	);
+
 	return (
 		<>
 			<div className="flex h-screen w-screen">
-				<Sidebar
-					repos={repos}
-					loadingRepos={loadingRepos}
-					error={repoError}
-					selectedRepoId={selectedRepoId}
-					onSelectRepo={handleSelectRepo}
-					onRefreshRepos={pullRepos}
-					onNewRepo={() => setNewRepoOpen(true)}
-					onNewSession={handleNewSession}
-					creatingSession={creatingSession}
-					backgroundSessions={backgroundSessions}
-					repoSlugById={Object.fromEntries(
-						repos.map((r) => [r.id, r.slug] as const),
-					)}
-					onSelectBackgroundSession={handleSelectSession}
-					rateLimitWindows={rateLimitWindows}
-					primaryLanguageByRepoId={Object.fromEntries(
-						Object.entries(statsByRepoId).map(([id, s]) => [
-							id,
-							s.languages[0]?.name,
-						]),
-					)}
-				/>
+				{isDesktop && (
+					<Sidebar
+						repos={repos}
+						loadingRepos={loadingRepos}
+						error={repoError}
+						selectedRepoId={selectedRepoId}
+						onSelectRepo={handleSelectRepo}
+						onRefreshRepos={pullRepos}
+						onNewRepo={() => setNewRepoOpen(true)}
+						onNewSession={handleNewSession}
+						creatingSession={creatingSession}
+						backgroundSessions={backgroundSessions}
+						repoSlugById={repoSlugById}
+						onSelectBackgroundSession={handleSelectSession}
+						rateLimitWindows={rateLimitWindows}
+						primaryLanguageByRepoId={primaryLanguageByRepoId}
+					/>
+				)}
 				<main className="flex flex-1 flex-col overflow-hidden">
 					{selectedRepo ? (
 						<ChatHeader
@@ -238,9 +269,25 @@ export function App() {
 							selectedSession={selectedSession}
 							onSelectSession={handleSelectSession}
 							onDeleteSession={handleDeleteSession}
+							menuTriggerRef={mobileSheet.menuTriggerRef}
+							mobileMenuOpen={mobileSheet.active === "menu"}
+							onToggleMobileMenu={mobileSheet.toggleMenu}
+							filesTriggerRef={mobileSheet.filesTriggerRef}
+							mobileFilesOpen={mobileSheet.active === "files"}
+							onToggleMobileFiles={mobileSheet.toggleFiles}
 						/>
 					) : (
-						<header className="flex h-14 items-center gap-2 border-b border-border px-4">
+						<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
+							<button
+								ref={mobileSheet.menuTriggerRef}
+								type="button"
+								onClick={mobileSheet.toggleMenu}
+								aria-label="Toggle menu"
+								aria-pressed={mobileSheet.active === "menu"}
+								className="-ml-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+							>
+								<Menu className="size-4" />
+							</button>
 							<span className="text-muted-foreground">dilna</span>
 						</header>
 					)}
@@ -252,7 +299,7 @@ export function App() {
 									session={selectedSession}
 								/>
 							</div>
-							{selectedRepo && (
+							{selectedRepo && isDesktop && (
 								<ContextPanel
 									session={selectedSession}
 									repo={selectedRepo}
@@ -276,6 +323,47 @@ export function App() {
 				onOpenChange={setNewRepoOpen}
 				onCloned={reloadRepos}
 			/>
+			<Drawer
+				open={mobileSheet.active !== null}
+				onOpenChange={(open) => {
+					if (!open) mobileSheet.close();
+				}}
+			>
+				<DrawerContent finalFocus={mobileSheet.finalFocusRef}>
+					{mobileSheet.active === "menu" && (
+						<Sidebar
+							variant="sheet"
+							repos={repos}
+							loadingRepos={loadingRepos}
+							error={repoError}
+							selectedRepoId={selectedRepoId}
+							onSelectRepo={handleSelectRepo}
+							onRefreshRepos={pullRepos}
+							onNewRepo={() => {
+								mobileSheet.close();
+								setNewRepoOpen(true);
+							}}
+							onNewSession={handleNewSession}
+							creatingSession={creatingSession}
+							backgroundSessions={backgroundSessions}
+							repoSlugById={repoSlugById}
+							onSelectBackgroundSession={handleSelectSession}
+							rateLimitWindows={rateLimitWindows}
+							primaryLanguageByRepoId={primaryLanguageByRepoId}
+						/>
+					)}
+					{mobileSheet.active === "files" &&
+						selectedSession &&
+						selectedRepo && (
+							<ContextPanel
+								variant="sheet"
+								session={selectedSession}
+								repo={selectedRepo}
+								stats={statsByRepoId[selectedRepo.id]}
+							/>
+						)}
+				</DrawerContent>
+			</Drawer>
 		</>
 	);
 }

@@ -1,6 +1,6 @@
 import type { Repo, SessionView } from "@dilna/shared";
-import { ChevronDown, FolderGit2, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, FileDiff, FolderGit2, Menu, Trash2 } from "lucide-react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
 import { UsageBadge } from "@/components/UsageBadge";
 import { AGENT_LABELS } from "@/lib/agent-labels";
@@ -12,6 +12,16 @@ type Props = {
 	selectedSession: SessionView | null;
 	onSelectSession: (session: SessionView) => void;
 	onDeleteSession: (id: string) => void;
+	/** Below the 768px breakpoint (issue #12) these drive the shared mobile
+	 * bottom sheet in place of the desktop Sidebar/ContextPanel; hidden via
+	 * `md:hidden` above the breakpoint, where the desktop panels are always
+	 * visible instead. */
+	menuTriggerRef: RefObject<HTMLButtonElement | null>;
+	mobileMenuOpen: boolean;
+	onToggleMobileMenu: () => void;
+	filesTriggerRef: RefObject<HTMLButtonElement | null>;
+	mobileFilesOpen: boolean;
+	onToggleMobileFiles: () => void;
 };
 
 export function ChatHeader({
@@ -20,9 +30,25 @@ export function ChatHeader({
 	selectedSession,
 	onSelectSession,
 	onDeleteSession,
+	menuTriggerRef,
+	mobileMenuOpen,
+	onToggleMobileMenu,
+	filesTriggerRef,
+	mobileFilesOpen,
+	onToggleMobileFiles,
 }: Props) {
 	return (
-		<header className="flex h-14 items-center gap-2 border-b border-border px-4">
+		<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
+			<button
+				ref={menuTriggerRef}
+				type="button"
+				onClick={onToggleMobileMenu}
+				aria-label="Toggle menu"
+				aria-pressed={mobileMenuOpen}
+				className="-ml-1.5 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+			>
+				<Menu className="size-4" />
+			</button>
 			<FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
 			<span className="font-medium">{repo.slug}</span>
 			<span className="text-muted-foreground">/</span>
@@ -34,7 +60,17 @@ export function ChatHeader({
 			{selectedSession && (
 				<div className="ml-auto flex shrink-0 items-center gap-2">
 					<UsageBadge key={selectedSession.id} sessionId={selectedSession.id} />
-					<span className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground">
+					<button
+						ref={filesTriggerRef}
+						type="button"
+						onClick={onToggleMobileFiles}
+						aria-label="Toggle changed files"
+						aria-pressed={mobileFilesOpen}
+						className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+					>
+						<FileDiff className="size-4" />
+					</button>
+					<span className="hidden rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground md:inline">
 						Agent · {AGENT_LABELS[selectedSession.agentType]}
 					</span>
 					<button

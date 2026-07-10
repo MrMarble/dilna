@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/api/client";
 import { LanguageIcon, languageColor } from "@/lib/languages";
+import { cn } from "@/lib/utils";
 
 type Props = {
 	session: SessionView;
@@ -23,6 +24,10 @@ type Props = {
 	 * loading or if the stats request failed — the section degrades to just
 	 * the branch row. */
 	stats: RepoStats | undefined;
+	/** "panel" (default) is the desktop always-visible aside. "sheet" strips
+	 * the outer width/border/header chrome for use inside the mobile bottom
+	 * sheet (issue #12) — the sheet itself supplies the surrounding chrome. */
+	variant?: "panel" | "sheet";
 };
 
 function formatDateTime(epochSeconds: number) {
@@ -49,7 +54,13 @@ function timeAgo(epochSeconds: number) {
  * `changed_files` event, since both only change at end of turn (see
  * SessionManager.sendMessage).
  */
-export function ContextPanel({ session, repo, stats }: Props) {
+export function ContextPanel({
+	session,
+	repo,
+	stats,
+	variant = "panel",
+}: Props) {
+	const isSheet = variant === "sheet";
 	const [files, setFiles] = useState<ChangedFile[]>([]);
 	const [commits, setCommits] = useState<CommitInfo[]>([]);
 	const [error, setError] = useState<string | null>(null);
@@ -95,13 +106,22 @@ export function ContextPanel({ session, repo, stats }: Props) {
 	}, [session.id, loadCommits]);
 
 	return (
-		<aside className="flex w-80 shrink-0 flex-col border-l border-sidebar-border bg-sidebar">
-			<div className="flex h-14 shrink-0 items-center border-b border-sidebar-border px-4">
-				<span className="text-xs font-medium text-muted-foreground">
-					Context
-				</span>
-			</div>
-			<div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3">
+		<aside
+			className={cn(
+				"flex flex-col",
+				isSheet
+					? "min-h-0 flex-1"
+					: "w-80 shrink-0 border-l border-sidebar-border bg-sidebar",
+			)}
+		>
+			{!isSheet && (
+				<div className="flex h-14 shrink-0 items-center border-b border-sidebar-border px-4">
+					<span className="text-xs font-medium text-muted-foreground">
+						Context
+					</span>
+				</div>
+			)}
+			<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
 				<RepositorySection repo={repo} stats={stats} />
 				<SessionSection session={session} />
 				<ChangedFilesSection files={files} error={error} />
