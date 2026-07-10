@@ -1,6 +1,7 @@
 import type {
 	AgentType,
 	ChangedFile,
+	CommitInfo,
 	Message,
 	SessionView,
 } from "@dilna/shared";
@@ -79,6 +80,18 @@ sessionsRoute.get("/:id/changed-files", async (c) => {
 	if (!session) throw new HTTPException(404, { message: "session not found" });
 	const files = await sessionManager.getChangedFiles(id);
 	const body: { files: ChangedFile[] } = { files };
+	return c.json(body);
+});
+
+// Recent commits reachable from the Session's Worktree HEAD, for the context
+// panel. Fetched on mount and refetched by the client after each turn (keyed
+// off the `changed_files` SSE event) rather than streamed.
+sessionsRoute.get("/:id/commits", async (c) => {
+	const id = c.req.param("id");
+	const session = await sessionManager.get(id);
+	if (!session) throw new HTTPException(404, { message: "session not found" });
+	const commits = await sessionManager.getRecentCommits(id);
+	const body: { commits: CommitInfo[] } = { commits };
 	return c.json(body);
 });
 

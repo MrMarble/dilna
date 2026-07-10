@@ -2,11 +2,12 @@ import { execFile } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Repo } from "@dilna/shared";
+import type { Repo, RepoStats } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getDataDir, getDb } from "../db";
 import { repos as reposTable } from "../db/schema";
+import { languagesFromFiles, type TreeFile } from "./languages";
 
 const execFileAsync = promisify(execFile);
 
@@ -171,6 +172,34 @@ export class RepoManager {
 				`git fetch failed for ${repo.slug}: ${e.stderr?.trim() || e.message}`,
 			);
 		}
+	}
+
+	/**
+	 * File count and language breakdown for the Repo's default branch,
+	 * computed from the bare clone's HEAD tree (`git ls-tree -r --long`) —
+	 * no worktree involved, so it works for repos with no Sessions yet.
+	 * Computed on demand rather than persisted: a few ms even on large trees,
+	 * and it can never go stale after a pull.
+	 */
+	async stats(repo: Repo): Promise<RepoStats> {
+		const { stdout } = await git(["ls-tree", "-r", "--long", "HEAD"], {
+			cwd: repo.path,
+		});
+		// Format per line: <mode> <type> <hash> <size>\t<path>
+		const files: TreeFile[] = [];
+		for (const line of stdout.split("\n")) {
+			if (!line) continue;
+			const tab = line.indexOf("\t");
+			if (tab === -1) continue;
+			const meta = line.slice(0, tab).trim().split(/\s+/);
+			if (meta[1] !== "blob") continue;
+			const size = Number.parseInt(meta[3] ?? "", 10);
+			files.push({
+				path: line.slice(tab + 1),
+				size: Number.isNaN(size) ? 0 : size,
+			});
+		}
+		return { fileCount: files.length, languages: languagesFromFiles(files) };
 	}
 
 	async delete(id: string): Promise<void> {

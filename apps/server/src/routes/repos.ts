@@ -1,4 +1,4 @@
-import type { Repo } from "@dilna/shared";
+import type { Repo, RepoStats } from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { repoManager } from "../repos/manager";
@@ -21,6 +21,20 @@ reposRoute.get("/:id", async (c) => {
 	if (!repo) throw new HTTPException(404, { message: "repo not found" });
 	const body: OneResponse = { repo };
 	return c.json(body);
+});
+
+reposRoute.get("/:id/stats", async (c) => {
+	const id = c.req.param("id");
+	const repo = await repoManager.get(id);
+	if (!repo) throw new HTTPException(404, { message: "repo not found" });
+	try {
+		const stats = await repoManager.stats(repo);
+		const body: { stats: RepoStats } = { stats };
+		return c.json(body);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : "stats failed";
+		throw new HTTPException(500, { message: msg });
+	}
 });
 
 reposRoute.post("/", async (c) => {

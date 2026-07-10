@@ -1,10 +1,14 @@
-import type { RateLimitWindow, SessionListEvent } from "@dilna/shared";
+import type {
+	RateLimitWindow,
+	RepoStats,
+	SessionListEvent,
+} from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
-import { ChangedFilesPanel } from "@/components/ChangedFilesPanel";
 import { ChatHeader } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
+import { ContextPanel } from "@/components/ContextPanel";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { Sidebar } from "@/components/Sidebar";
 
@@ -23,6 +27,9 @@ export function App() {
 	const [creatingSession, setCreatingSession] = useState(false);
 	const [rateLimitWindows, setRateLimitWindows] = useState<RateLimitWindow[]>(
 		[],
+	);
+	const [statsByRepoId, setStatsByRepoId] = useState<Record<string, RepoStats>>(
+		{},
 	);
 
 	const reloadRepos = useCallback(async () => {
@@ -67,6 +74,25 @@ export function App() {
 	useEffect(() => {
 		reloadRepos();
 	}, [reloadRepos]);
+
+	// Language/file stats per repo, for the sidebar icons and the context
+	// panel. Refetched whenever the repo list changes (initial load, clone,
+	// pull) — a failed repo just keeps its generic icon.
+	useEffect(() => {
+		let cancelled = false;
+		for (const repo of repos) {
+			api.repos
+				.stats(repo.id)
+				.then(({ stats }) => {
+					if (cancelled) return;
+					setStatsByRepoId((prev) => ({ ...prev, [repo.id]: stats }));
+				})
+				.catch(() => {});
+		}
+		return () => {
+			cancelled = true;
+		};
+	}, [repos]);
 
 	// Single cross-session status subscription (per ADR-0008) — the source
 	// of truth for every session's live state, across every repo. Powers the
@@ -197,6 +223,12 @@ export function App() {
 					)}
 					onSelectBackgroundSession={handleSelectSession}
 					rateLimitWindows={rateLimitWindows}
+					primaryLanguageByRepoId={Object.fromEntries(
+						Object.entries(statsByRepoId).map(([id, s]) => [
+							id,
+							s.languages[0]?.name,
+						]),
+					)}
 				/>
 				<main className="flex flex-1 flex-col overflow-hidden">
 					{selectedRepo ? (
@@ -208,7 +240,7 @@ export function App() {
 							onDeleteSession={handleDeleteSession}
 						/>
 					) : (
-						<header className="flex h-14 items-center gap-2 border-b border-zinc-200 px-4 dark:border-zinc-800">
+						<header className="flex h-14 items-center gap-2 border-b border-border px-4">
 							<span className="text-muted-foreground">dilna</span>
 						</header>
 					)}
@@ -220,7 +252,13 @@ export function App() {
 									session={selectedSession}
 								/>
 							</div>
-							<ChangedFilesPanel sessionId={selectedSession.id} />
+							{selectedRepo && (
+								<ContextPanel
+									session={selectedSession}
+									repo={selectedRepo}
+									stats={statsByRepoId[selectedRepo.id]}
+								/>
+							)}
 						</div>
 					) : (
 						<div className="flex flex-1 items-center justify-center p-6">

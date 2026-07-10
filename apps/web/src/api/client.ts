@@ -2,9 +2,11 @@ import type {
 	AgentStreamEvent,
 	AgentType,
 	ChangedFile,
+	CommitInfo,
 	Message,
 	RateLimitWindow,
 	Repo,
+	RepoStats,
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
@@ -13,9 +15,11 @@ export type {
 	AgentStreamEvent,
 	AgentType,
 	ChangedFile,
+	CommitInfo,
 	Message,
 	RateLimitWindow,
 	Repo,
+	RepoStats,
 	SessionListEvent,
 	SessionView,
 };
@@ -73,6 +77,8 @@ export const api = {
 			}),
 		pull: (id: string) =>
 			request<{ repo: Repo }>(`/api/repos/${id}/pull`, { method: "POST" }),
+		stats: (id: string) =>
+			request<{ stats: RepoStats }>(`/api/repos/${id}/stats`),
 		delete: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/repos/${id}`, {
 				method: "DELETE",
@@ -98,6 +104,8 @@ export const api = {
 			request<{ messages: Message[] }>(`/api/sessions/${id}/messages`),
 		changedFiles: (id: string) =>
 			request<{ files: ChangedFile[] }>(`/api/sessions/${id}/changed-files`),
+		commits: (id: string) =>
+			request<{ commits: CommitInfo[] }>(`/api/sessions/${id}/commits`),
 		send: (id: string, text: string) =>
 			request<{ ok: boolean }>(`/api/sessions/${id}/messages`, {
 				method: "POST",

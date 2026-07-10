@@ -3,6 +3,7 @@ import { FolderGit2, Plus, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { StatusDot } from "@/components/StatusDot";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LanguageIcon } from "@/lib/languages";
 import {
 	formatTimeToReset,
 	isRateLimitWindowFresh,
@@ -35,6 +36,10 @@ type Props = {
 	 * unavailable — e.g. API-key auth, or no live Session has reported yet —
 	 * in which case the footer renders nothing at all. */
 	rateLimitWindows: RateLimitWindow[];
+	/** Repo id → primary language name (from the repo stats fetch), for
+	 * GitHub-style language icons in the repo list. Missing/undefined values
+	 * fall back to the generic folder icon. */
+	primaryLanguageByRepoId: Record<string, string | undefined>;
 };
 
 export function Sidebar({
@@ -51,16 +56,17 @@ export function Sidebar({
 	repoSlugById,
 	onSelectBackgroundSession,
 	rateLimitWindows,
+	primaryLanguageByRepoId,
 }: Props) {
 	return (
-		<aside className="flex w-64 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
-			<div className="flex h-14 items-center gap-2 border-b border-zinc-200 px-4 dark:border-zinc-800">
-				<FolderGit2 className="size-5 text-zinc-500" />
+		<aside className="flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar">
+			<div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
+				<FolderGit2 className="size-5 text-muted-foreground" />
 				<span className="font-semibold tracking-tight">dilna</span>
 				<ThemeToggle className="ml-auto" />
 			</div>
 
-			<div className="border-b border-zinc-200 p-2 dark:border-zinc-800">
+			<div className="border-b border-sidebar-border p-2">
 				<button
 					type="button"
 					onClick={onNewSession}
@@ -70,11 +76,11 @@ export function Sidebar({
 							? "New session"
 							: "Select a repository to start a session"
 					}
-					className="flex w-full items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+					className="flex w-full items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
 				>
 					<Plus className="size-3.5" />
 					{creatingSession ? "Creating…" : "New session"}
-					<span className="ml-auto text-xs font-normal text-zinc-400 dark:text-zinc-500">
+					<span className="ml-auto text-xs font-normal text-primary-foreground/60">
 						{NEW_SESSION_SHORTCUT}
 					</span>
 				</button>
@@ -88,7 +94,12 @@ export function Sidebar({
 				onSelectRepo={onSelectRepo}
 				onRefresh={onRefreshRepos}
 				onNew={onNewRepo}
+				primaryLanguageByRepoId={primaryLanguageByRepoId}
 			/>
+
+			{/* Spacer keeps the Background Agents card pinned just above the
+			    footer, matching the draft's floating-card placement. */}
+			<div className="flex-1" />
 
 			<BackgroundAgentsSection
 				sessions={backgroundSessions}
@@ -109,6 +120,7 @@ function ReposSection({
 	onSelectRepo,
 	onRefresh,
 	onNew,
+	primaryLanguageByRepoId,
 }: {
 	repos: Repo[];
 	loading: boolean;
@@ -117,9 +129,10 @@ function ReposSection({
 	onSelectRepo: (id: string) => void;
 	onRefresh: () => void;
 	onNew: () => void;
+	primaryLanguageByRepoId: Record<string, string | undefined>;
 }) {
 	return (
-		<div className="flex flex-col border-b border-zinc-200 dark:border-zinc-800">
+		<div className="flex flex-col">
 			<SidebarSectionHeader
 				title="Repositories"
 				newTitle="New repository"
@@ -146,11 +159,14 @@ function ReposSection({
 									className={
 										"flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors " +
 										(repo.id === selectedRepoId
-											? "bg-zinc-200 font-medium dark:bg-zinc-800"
-											: "hover:bg-zinc-200/50 dark:hover:bg-zinc-800/50")
+											? "bg-sidebar-accent font-medium"
+											: "hover:bg-sidebar-accent/50")
 									}
 								>
-									<FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+									<LanguageIcon
+										language={primaryLanguageByRepoId[repo.id]}
+										className="size-4 shrink-0 text-muted-foreground"
+									/>
 									<span className="truncate">{repo.slug}</span>
 								</button>
 							</li>
@@ -162,6 +178,11 @@ function ReposSection({
 	);
 }
 
+/**
+ * Floating card pinned above the sidebar footer (per the ui_draft mock),
+ * rather than a permanent section: it renders nothing at all when no other
+ * session is active, instead of an empty shell with placeholder text.
+ */
 function BackgroundAgentsSection({
 	sessions,
 	repoSlugById,
@@ -171,44 +192,38 @@ function BackgroundAgentsSection({
 	repoSlugById: Record<string, string>;
 	onSelect: (session: SessionView) => void;
 }) {
+	if (sessions.length === 0) return null;
+
 	return (
-		<div className="flex flex-1 flex-col overflow-hidden">
-			<div className="flex items-center justify-between px-4 py-2">
+		<div className="mx-2 mb-2 flex max-h-64 flex-col overflow-hidden rounded-xl border border-sidebar-border bg-card shadow-sm">
+			<div className="flex items-center justify-between px-3 py-2">
 				<span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
 					Background Agents
 				</span>
-				{sessions.length > 0 && (
-					<span className="rounded-full bg-zinc-200 px-1.5 py-0.5 text-xs font-medium text-muted-foreground dark:bg-zinc-800">
-						{sessions.length}
-					</span>
-				)}
+				<span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+					{sessions.length}
+				</span>
 			</div>
-			<div className="flex-1 overflow-y-auto px-2 pb-2">
-				{sessions.length === 0 ? (
-					<p className="px-2 py-2 text-sm text-muted-foreground">
-						No other sessions running.
-					</p>
-				) : (
-					<ul className="space-y-0.5">
-						{sessions.map((session) => (
-							<li key={session.id}>
-								<button
-									type="button"
-									onClick={() => onSelect(session)}
-									className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-zinc-200/50 dark:hover:bg-zinc-800/50"
-								>
-									<span className="flex items-center gap-1.5 overflow-hidden">
-										<StatusDot status={session.status} />
-										<span className="truncate">{session.title}</span>
-									</span>
-									<span className="truncate pl-3 text-xs text-muted-foreground">
-										{repoSlugById[session.repoId] ?? session.repoId}
-									</span>
-								</button>
-							</li>
-						))}
-					</ul>
-				)}
+			<div className="overflow-y-auto px-1.5 pb-1.5">
+				<ul className="space-y-0.5">
+					{sessions.map((session) => (
+						<li key={session.id}>
+							<button
+								type="button"
+								onClick={() => onSelect(session)}
+								className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent/50"
+							>
+								<span className="flex items-center gap-1.5 overflow-hidden">
+									<StatusDot status={session.status} />
+									<span className="truncate">{session.title}</span>
+								</span>
+								<span className="truncate pl-3 text-xs text-muted-foreground">
+									{repoSlugById[session.repoId] ?? session.repoId}
+								</span>
+							</button>
+						</li>
+					))}
+				</ul>
 			</div>
 		</div>
 	);
@@ -249,7 +264,7 @@ function RateLimitFooter({ windows }: { windows: RateLimitWindow[] }) {
 	if (fresh.length === 0) return null;
 
 	return (
-		<div className="flex gap-3 border-t border-zinc-200 p-3 dark:border-zinc-800">
+		<div className="flex gap-3 border-t border-sidebar-border p-3">
 			{fresh.map((window) => (
 				<RateLimitBar key={window.kind} window={window} nowMs={nowMs} />
 			))}
@@ -273,7 +288,7 @@ function RateLimitBar({
 					{formatTimeToReset(window.resetsAt, nowMs)}
 				</span>
 			</div>
-			<div className="h-1.5 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+			<div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
 				<div
 					className={`h-full rounded-full ${rateLimitBarColor(pct)}`}
 					style={{ width: `${pct}%` }}
@@ -306,7 +321,7 @@ function SidebarSectionHeader({
 					<button
 						type="button"
 						onClick={onRefresh}
-						className="rounded-md p-1 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-800"
+						className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent"
 						title={refreshTitle}
 					>
 						<RefreshCw className="size-3.5" />
@@ -315,7 +330,7 @@ function SidebarSectionHeader({
 				<button
 					type="button"
 					onClick={onNew}
-					className="rounded-md p-1 text-muted-foreground hover:bg-zinc-200 dark:hover:bg-zinc-800"
+					className="rounded-md p-1 text-muted-foreground hover:bg-sidebar-accent"
 					title={newTitle}
 				>
 					<Plus className="size-3.5" />

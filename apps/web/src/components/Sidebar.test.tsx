@@ -58,6 +58,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			repoSlugById={{}}
 			onSelectBackgroundSession={noop}
 			rateLimitWindows={[]}
+			primaryLanguageByRepoId={{}}
 			{...overrides}
 		/>,
 	);
@@ -73,16 +74,24 @@ describe("Sidebar", () => {
 		expect(screen.getByText("dilna")).toBeInTheDocument();
 	});
 
-	it("shows the Repositories and Background Agents section headers", () => {
+	it("shows the Repositories section header", () => {
 		renderSidebar({ selectedRepoId: "repo-1" });
 		expect(screen.getByText("Repositories")).toBeInTheDocument();
+	});
+
+	it("hides the Background Agents card when no background session is active", () => {
+		renderSidebar({ selectedRepoId: "repo-1" });
+		expect(screen.queryByText("Background Agents")).not.toBeInTheDocument();
+	});
+
+	it("shows the Background Agents card once a background session is active", () => {
+		renderSidebar({ backgroundSessions: [makeSession()] });
 		expect(screen.getByText("Background Agents")).toBeInTheDocument();
 	});
 
-	it("renders empty states when repos and background sessions are missing", () => {
+	it("renders the repos empty state when there are no repos", () => {
 		renderSidebar({ selectedRepoId: "repo-1" });
 		expect(screen.getByText(/No repos/i)).toBeInTheDocument();
-		expect(screen.getByText(/No other sessions running/i)).toBeInTheDocument();
 	});
 
 	it("disables New session until a repo is selected", () => {
@@ -109,7 +118,7 @@ describe("Sidebar", () => {
 		renderSidebar({ repos: [repo, other], selectedRepoId: repo.id });
 		const alphaBtn = screen.getByText("alpha").closest("button");
 		const betaBtn = screen.getByText("beta").closest("button");
-		const selectedClass = /(?:^|\s)bg-zinc-200(?:\s|$)/;
+		const selectedClass = /(?:^|\s)bg-sidebar-accent(?:\s|$)/;
 		expect(alphaBtn?.className).toMatch(selectedClass);
 		expect(betaBtn?.className).not.toMatch(selectedClass);
 	});

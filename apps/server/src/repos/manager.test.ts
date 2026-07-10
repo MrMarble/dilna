@@ -65,6 +65,28 @@ describe("RepoManager", () => {
 		await repoManager.delete(second.id);
 	});
 
+	it("computes file count and language breakdown from the bare clone", async () => {
+		writeFileSync(path.join(fixtureRepo, "app.ts"), "const x: number = 1;\n");
+		writeFileSync(path.join(fixtureRepo, "style.css"), "body { margin: 0 }\n");
+		await git(["add", "."], { cwd: fixtureRepo });
+		await git(["commit", "-m", "add code"], { cwd: fixtureRepo });
+
+		const repo = await repoManager.clone(fixtureRepo, `stats-${Date.now()}`);
+		const stats = await repoManager.stats(repo);
+
+		// README.md (from beforeAll) counts as a file but not as a language.
+		expect(stats.fileCount).toBeGreaterThanOrEqual(3);
+		const names = stats.languages.map((l) => l.name);
+		expect(names).toContain("TypeScript");
+		expect(names).toContain("CSS");
+		expect(names).not.toContain("Markdown");
+		const total = stats.languages.reduce((sum, l) => sum + l.pct, 0);
+		expect(total).toBeGreaterThan(99);
+		expect(total).toBeLessThanOrEqual(100.5);
+
+		await repoManager.delete(repo.id);
+	});
+
 	it("deletes a repo and removes the bare clone from disk", async () => {
 		const repo = await repoManager.clone(fixtureRepo, `del-${Date.now()}`);
 		const repoPath = repo.path;

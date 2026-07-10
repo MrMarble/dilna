@@ -13,6 +13,7 @@ import type {
 	AgentStreamEvent,
 	AgentType,
 	ChangedFile,
+	CommitInfo,
 	Message,
 	MessagePart,
 	RateLimitWindow,
@@ -599,6 +600,32 @@ class SessionManager {
 		const repo = await repoManager.get(session.repoId);
 		if (!repo) return [];
 		return computeChangedFiles(session.worktreePath, repo.defaultBranch);
+	}
+
+	/**
+	 * Most recent commits reachable from the Session's Worktree HEAD (its own
+	 * commits first, then inherited default-branch history), for the context
+	 * panel. Read live from git like getChangedFiles — never persisted.
+	 * Soft-fails to [] (e.g. worktree deleted out from under the session).
+	 */
+	async getRecentCommits(id: string, limit = 5): Promise<CommitInfo[]> {
+		const session = await this.get(id);
+		if (!session) return [];
+		try {
+			const { stdout } = await git(
+				["log", `-${limit}`, "--format=%h%x1f%s%x1f%at"],
+				{ cwd: session.worktreePath },
+			);
+			return stdout
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => {
+					const [hash = "", subject = "", at = ""] = line.split("\x1f");
+					return { hash, subject, authoredAt: Number.parseInt(at, 10) || 0 };
+				});
+		} catch {
+			return [];
+		}
 	}
 
 	/**

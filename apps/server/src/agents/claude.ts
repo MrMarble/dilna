@@ -10,6 +10,7 @@ import {
 	type SDKAssistantMessage,
 	type SDKControlGetUsageResponse,
 	type SDKMessage,
+	type SDKPartialAssistantMessage,
 	type SDKRateLimitInfo,
 	type SDKResultMessage,
 	type SDKUserMessage,
@@ -132,6 +133,18 @@ export type NormalizeState = {
 	 * null on `result` (end of turn) so the next turn gets its own id.
 	 */
 	currentTurnMessageId: string | null;
+	/**
+	 * Anthropic API message ids (`msg_…`) whose text already streamed out as
+	 * `token` events via partial-message deltas. With `includePartialMessages`
+	 * the SDK delivers each assistant message twice — first as
+	 * `stream_event` deltas, then as the complete `SDKAssistantMessage` — so
+	 * the complete message's text blocks must be skipped for ids in this set
+	 * or every reply would render doubled. Text-only: tool_use blocks, usage,
+	 * and errors are still taken from the complete message (tool input arrives
+	 * in deltas as partial JSON, unusable until complete). Cleared on `result`
+	 * to keep the set bounded per turn.
+	 */
+	streamedTextApiMessageIds: Set<string>;
 };
 
 // Exported alongside NormalizeState so claude.test.ts can build a fresh
@@ -141,6 +154,7 @@ export function createNormalizeState(): NormalizeState {
 		seenMessageStarts: new Set(),
 		toolMessageIds: new Map(),
 		currentTurnMessageId: null,
+		streamedTextApiMessageIds: new Set(),
 	};
 }
 
@@ -206,6 +220,11 @@ export async function startClaude(
 			resume: opts.existingAgentSessionId,
 			permissionMode: "bypassPermissions",
 			allowDangerouslySkipPermissions: true,
+			// Emit stream_event deltas so replies stream token-by-token instead
+			// of arriving as whole text blocks. The complete assistant message
+			// still follows each delta run — normalizeAssistantMessage dedupes
+			// its text via NormalizeState.streamedTextApiMessageIds.
+			includePartialMessages: true,
 			stderr: (line: string) => {
 				const trimmed = line.trim();
 				if (!trimmed) return;
@@ -545,6 +564,8 @@ export function normalizeMessage(
 	state: NormalizeState,
 ): AgentStreamEvent[] {
 	switch (msg.type) {
+		case "stream_event":
+			return normalizeStreamEvent(msg, state);
 		case "assistant":
 			return normalizeAssistantMessage(msg, state);
 		case "user":
@@ -554,6 +575,53 @@ export function normalizeMessage(
 		default:
 			return [];
 	}
+}
+
+/**
+ * Partial-message deltas (enabled via `includePartialMessages`). Only two of
+ * the raw stream events matter here: `message_start` opens the turn message
+ * (and records the API message id so the complete assistant message that
+ * follows doesn't re-emit its text — see
+ * {@link NormalizeState.streamedTextApiMessageIds}), and text
+ * `content_block_delta`s become `token` events. Everything else —
+ * `input_json_delta` (partial tool input), thinking deltas, block/message
+ * stops — is ignored; tool_use blocks, usage, and errors keep coming from
+ * the complete `SDKAssistantMessage`.
+ */
+function normalizeStreamEvent(
+	msg: SDKPartialAssistantMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	const event = msg.event;
+
+	if (event.type === "message_start") {
+		state.streamedTextApiMessageIds.add(event.message.id);
+		if (!state.currentTurnMessageId) {
+			state.currentTurnMessageId = msg.uuid;
+		}
+		const messageId = state.currentTurnMessageId;
+		if (!state.seenMessageStarts.has(messageId)) {
+			state.seenMessageStarts.add(messageId);
+			return [{ type: "message_start", messageId, role: "assistant" }];
+		}
+		return [];
+	}
+
+	if (
+		event.type === "content_block_delta" &&
+		event.delta.type === "text_delta" &&
+		event.delta.text.length > 0
+	) {
+		return [
+			{
+				type: "token",
+				messageId: state.currentTurnMessageId ?? msg.uuid,
+				chunk: event.delta.text,
+			},
+		];
+	}
+
+	return [];
 }
 
 function normalizeAssistantMessage(
@@ -570,10 +638,18 @@ function normalizeAssistantMessage(
 		events.push({ type: "message_start", messageId, role: "assistant" });
 	}
 
+	// Text already delivered incrementally as stream_event deltas for this
+	// API message — don't emit it a second time.
+	const apiMessageId = (msg.message as { id?: unknown }).id;
+	const textAlreadyStreamed =
+		typeof apiMessageId === "string" &&
+		state.streamedTextApiMessageIds.has(apiMessageId);
+
 	const content = (msg.message as { content?: unknown }).content;
 	const blocks = Array.isArray(content) ? (content as ContentBlock[]) : [];
 	for (const block of blocks) {
 		if (block.type === "text") {
+			if (textAlreadyStreamed) continue;
 			const text = (block.text as string) ?? "";
 			if (text.length > 0) {
 				events.push({ type: "token", messageId, chunk: text });
@@ -662,6 +738,7 @@ function normalizeResultMessage(
 	// still has a messageId even on a turn with no assistant content.
 	const turnMessageId = state.currentTurnMessageId ?? msg.uuid;
 	state.currentTurnMessageId = null;
+	state.streamedTextApiMessageIds.clear();
 
 	const events: AgentStreamEvent[] = [];
 	// This turn's total usage (per-turn, not session-cumulative — see

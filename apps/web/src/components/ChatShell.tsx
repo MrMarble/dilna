@@ -34,6 +34,8 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { AgentIcon } from "@/lib/agent-icons";
 import { AGENT_LABELS } from "@/lib/agent-labels";
+import { getToolMeta } from "@/lib/tool-meta";
+import { cn } from "@/lib/utils";
 
 type Props = {
 	sessionId: string;
@@ -53,6 +55,32 @@ type LiveMessage = {
 
 function nowSeconds() {
 	return Math.floor(Date.now() / 1000);
+}
+
+/** Rotating gerunds shown while the agent works (composer placeholder and
+ * the in-chat thinking marker), instead of a static "Agent is working". */
+const THINKING_WORDS = [
+	"Pondering",
+	"Percolating",
+	"Ruminating",
+	"Marinating",
+	"Cogitating",
+	"Noodling",
+	"Mulling",
+	"Simmering",
+	"Brewing",
+	"Whirring",
+	"Tinkering",
+	"Conjuring",
+	"Scheming",
+	"Puzzling",
+];
+
+function pickThinkingWord(): string {
+	return (
+		THINKING_WORDS[Math.floor(Math.random() * THINKING_WORDS.length)] ??
+		"Thinking"
+	);
 }
 
 function formatClockTime(epochSeconds: number) {
@@ -284,6 +312,12 @@ export function ChatShell({ sessionId, session }: Props) {
 
 	const working = status === "working" || status === "starting";
 
+	// New word each time the agent starts working, stable while it runs.
+	const [thinkingWord, setThinkingWord] = useState(pickThinkingWord);
+	useEffect(() => {
+		if (working) setThinkingWord(pickThinkingWord());
+	}, [working]);
+
 	const handleSend = useCallback(async () => {
 		const text = input.trim();
 		if (!text || sending || working) return;
@@ -384,7 +418,7 @@ export function ChatShell({ sessionId, session }: Props) {
 												/>
 											</MessageScrollerItem>
 										))}
-										{thinking && <ThinkingMarker />}
+										{thinking && <ThinkingMarker word={thinkingWord} />}
 										{error && (
 											<MessageScrollerItem messageId="__error">
 												<Marker
@@ -410,7 +444,7 @@ export function ChatShell({ sessionId, session }: Props) {
 			</div>
 
 			<div className="px-6 py-4">
-				<div className="mx-auto flex max-w-3xl items-end gap-2 rounded-2xl border border-zinc-200 bg-white px-3 py-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+				<div className="mx-auto flex max-w-3xl items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm">
 					<textarea
 						ref={textareaRef}
 						value={input}
@@ -424,17 +458,17 @@ export function ChatShell({ sessionId, session }: Props) {
 						disabled={working && !input}
 						placeholder={
 							working
-								? "Agent is working…"
+								? `${thinkingWord}…`
 								: `Message ${AGENT_LABELS[session.agentType]}…`
 						}
 						rows={2}
-						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-sm outline-none"
+						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-[0.9375rem] outline-none"
 					/>
 					{working ? (
 						<button
 							type="button"
 							onClick={handleStop}
-							className="flex size-8 shrink-0 items-center justify-center rounded-full border border-zinc-300 hover:bg-zinc-200 dark:border-zinc-700 dark:hover:bg-zinc-800"
+							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg border border-border hover:bg-accent"
 							title="Stop"
 						>
 							<Square className="size-3.5" />
@@ -444,7 +478,7 @@ export function ChatShell({ sessionId, session }: Props) {
 							type="button"
 							onClick={handleSend}
 							disabled={!input.trim() || sending}
-							className="flex size-8 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-zinc-50 hover:bg-zinc-700 disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40"
 							title="Send"
 						>
 							{sending ? (
@@ -472,14 +506,14 @@ function EmptyHint() {
 	);
 }
 
-function ThinkingMarker() {
+function ThinkingMarker({ word }: { word: string }) {
 	return (
 		<MessageScrollerItem messageId="__thinking">
 			<Marker role="status">
 				<MarkerIcon>
 					<Spinner />
 				</MarkerIcon>
-				<MarkerContent className="shimmer">Thinking...</MarkerContent>
+				<MarkerContent className="shimmer">{word}…</MarkerContent>
 			</Marker>
 		</MessageScrollerItem>
 	);
@@ -515,11 +549,11 @@ function ChatMessageRow({
 		if (p.type === "text") {
 			flushTools();
 			rows.push(
-				<div key={`t-${i}`} className="text-sm">
+				<div key={`t-${i}`} className="text-[0.9375rem] leading-relaxed">
 					{role === "assistant" ? (
 						<Markdown>{p.text}</Markdown>
 					) : (
-						<pre className="whitespace-pre-wrap break-words font-sans text-sm">
+						<pre className="whitespace-pre-wrap break-words font-sans">
 							{p.text}
 						</pre>
 					)}
@@ -572,12 +606,17 @@ function ToolCallGroup({
 }: {
 	parts: Extract<MessagePart, { type: "tool_call" }>[];
 }) {
-	const [expanded, setExpanded] = useState(false);
 	const running = parts.some((p) => p.output == null && p.error == null);
+	// Live-streaming groups mount open so the user sees tools as they run;
+	// history (mounted after the fact) starts collapsed.
+	const [expanded, setExpanded] = useState(running);
 	const count = parts.length;
+	const labels = [
+		...new Set(parts.map((p) => getToolMeta(p.tool, p.input).label)),
+	];
 
 	return (
-		<Marker className="rounded-lg border border-zinc-200 bg-zinc-50/60 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-900/40">
+		<Marker className="rounded-lg border border-border bg-muted/30 px-3 py-2">
 			<MarkerIcon>
 				{running ? <Spinner /> : <Wrench className="size-4" />}
 			</MarkerIcon>
@@ -585,7 +624,7 @@ function ToolCallGroup({
 				<button
 					type="button"
 					onClick={() => setExpanded((v) => !v)}
-					className="flex cursor-pointer items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+					className="flex w-full cursor-pointer items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
 				>
 					{expanded ? (
 						<ChevronDown className="size-3" />
@@ -594,9 +633,12 @@ function ToolCallGroup({
 					)}
 					{count} tool call{count > 1 ? "s" : ""}
 					{running ? "…" : ""}
+					{!expanded && (
+						<span className="truncate font-normal">— {labels.join(", ")}</span>
+					)}
 				</button>
 				{expanded && (
-					<div className="mt-2 flex flex-col gap-2">
+					<div className="mt-2 flex flex-col gap-1.5">
 						{parts.map((p) => (
 							<ToolCallMarker key={p.callId} part={p} />
 						))}
@@ -612,31 +654,82 @@ function ToolCallMarker({
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
 }) {
+	const [open, setOpen] = useState(false);
 	const running = part.output == null && part.error == null;
+	const failed = part.error != null;
+	const meta = getToolMeta(part.tool, part.input);
+	const Icon = meta.icon;
 	const output =
 		part.error != null
 			? String(part.error)
 			: part.output != null && part.output !== ""
 				? String(part.output)
 				: "";
+
+	const input = (
+		part.input !== null && typeof part.input === "object" ? part.input : {}
+	) as Record<string, unknown>;
+	const isEdit =
+		(part.tool === "Edit" || part.tool === "MultiEdit") &&
+		typeof input.old_string === "string" &&
+		typeof input.new_string === "string";
+	// Unknown tools get no detail line, so the raw input is the only context.
+	const showRawInput =
+		meta.detail === undefined && Object.keys(input).length > 0;
+	const hasDetails = isEdit || showRawInput || output.length > 0;
+
 	return (
-		<Marker className="rounded-md border border-zinc-200 bg-white px-2.5 py-1.5 dark:border-zinc-800 dark:bg-zinc-950">
-			<MarkerIcon>
-				{running ? <Spinner /> : <Wrench className="size-4" />}
-			</MarkerIcon>
-			<MarkerContent>
-				<div className="flex flex-col gap-1">
-					<div className="flex items-center gap-1.5 font-mono text-xs">
-						<span className="font-medium text-muted-foreground">
-							{part.tool}
-						</span>
-						<span className="text-muted-foreground">
-							{running ? "running…" : "done"}
-						</span>
-					</div>
-					{typeof part.input === "object" && part.input !== null && (
+		<div className="rounded-md border border-border bg-card">
+			<button
+				type="button"
+				onClick={() => hasDetails && setOpen((v) => !v)}
+				className={cn(
+					"flex w-full items-center gap-2 px-2.5 py-1.5 text-left",
+					hasDetails && "cursor-pointer hover:bg-accent/30",
+				)}
+			>
+				{running ? (
+					<Spinner className="size-3.5 shrink-0" />
+				) : (
+					<Icon className="size-3.5 shrink-0 text-muted-foreground" />
+				)}
+				<span className="shrink-0 text-xs font-medium">{meta.label}</span>
+				{meta.detail && (
+					<span
+						className="truncate font-mono text-xs text-muted-foreground"
+						title={meta.detail}
+					>
+						{meta.detail}
+					</span>
+				)}
+				<span className="ml-auto flex shrink-0 items-center text-xs text-muted-foreground">
+					{failed ? (
+						<span className="text-red-500 dark:text-red-400">failed</span>
+					) : (
+						hasDetails &&
+						(open ? (
+							<ChevronDown className="size-3" />
+						) : (
+							<ChevronRight className="size-3" />
+						))
+					)}
+				</span>
+			</button>
+			{open && hasDetails && (
+				<div className="flex flex-col gap-1 border-t border-border px-2.5 py-1.5">
+					{isEdit && (
+						<>
+							<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+								{String(input.old_string)}
+							</pre>
+							<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300">
+								{String(input.new_string)}
+							</pre>
+						</>
+					)}
+					{showRawInput && (
 						<pre className="overflow-x-auto rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
-							{JSON.stringify(part.input)}
+							{JSON.stringify(input)}
 						</pre>
 					)}
 					{output && (
@@ -645,7 +738,7 @@ function ToolCallMarker({
 						</pre>
 					)}
 				</div>
-			</MarkerContent>
-		</Marker>
+			)}
+		</div>
 	);
 }
