@@ -771,7 +771,9 @@ class SessionManager {
 			} else {
 				// Best-effort: pull fresh account rate limits while the agent
 				// process is still alive (the control request needs a live query).
-				this.refreshRateLimits(handle).catch(() => {});
+				this.refreshRateLimits(handle).catch((err) => {
+					console.error(`[sessions] rate-limit refresh failed for ${id}:`, err);
+				});
 
 				// Recompute the "Changed files" panel's diff now that the turn's
 				// worktree edits (committed or not) have settled.
