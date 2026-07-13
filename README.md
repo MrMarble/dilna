@@ -28,7 +28,7 @@ Coding agents are great until you close the lid. dilna moves the agent, the work
 docker compose up
 ```
 
-Set `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) in your environment or a `.env` file, mount your SSH keys, and you're driving agents from a browser tab.
+Set `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) in your environment or a `.env` file, mount your SSH keys, and you're driving agents from a browser tab. Set `GH_TOKEN` too if you want agents to open PRs or read/comment on issues via the `gh` CLI — generate one with `gh auth login` then `gh auth token` on a machine where you already have `gh` set up, or create a classic PAT at https://github.com/settings/tokens with `repo` scope (add `workflow` if agents need to edit workflow files, `read:org` for org-owned repos).
 
 ## Local development
 

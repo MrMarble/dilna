@@ -103,6 +103,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
 		>> /etc/ssh/ssh_known_hosts 2>/dev/null
 
+# gh (GitHub CLI, ADR-0013): lets sessions open PRs, read/comment on issues,
+# etc. against whatever repo they're pointed at. Installed from GitHub's own
+# apt repo rather than Debian bookworm's package — the Debian build lags and
+# was flagged by GitHub for depending on deprecated API behavior. Auth is a
+# straight extension of ADR-0005's host-passthrough model (same shape as
+# CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY): gh reads GH_TOKEN directly from
+# the process environment on every invocation, with no `gh auth login` and
+# nothing persisted to disk beforehand — setting GH_TOKEN in
+# docker-compose.yml is the entire auth story, since claude.ts already
+# spreads process.env into every session's subprocess env.
+RUN mkdir -p -m 755 /etc/apt/keyrings \
+	&& curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+		-o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+		> /etc/apt/sources.list.d/github-cli.list \
+	&& apt-get update && apt-get install -y --no-install-recommends gh \
+	&& rm -rf /var/lib/apt/lists/*
+
 # mise (ADR-0012): the static binary built in the build stage, copied rather
 # than re-running the installer here. Compiling a language from source (e.g.
 # mise's core `python` backend) still has no toolchain at runtime —
