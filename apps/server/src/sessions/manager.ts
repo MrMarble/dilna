@@ -771,8 +771,15 @@ class SessionManager {
 			} else {
 				// Best-effort: pull fresh account rate limits while the agent
 				// process is still alive (the control request needs a live query).
+				// fetchClaudeRateLimits already logs its own soft-failures; this
+				// catch only guards unexpected errors from parsing/persisting the
+				// result (applyRateLimitWindows), so a bad response can't take
+				// down the turn.
 				this.refreshRateLimits(handle).catch((err) => {
-					console.error(`[sessions] rate-limit refresh failed for ${id}:`, err);
+					console.error(
+						`[sessions] failed to apply refreshed rate limits for ${id}:`,
+						err,
+					);
 				});
 
 				// Recompute the "Changed files" panel's diff now that the turn's

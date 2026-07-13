@@ -599,6 +599,18 @@ export async function chatClaude(
  * The upstream method name is a deliberate warning that the API is unstable,
  * so per the research doc's caveat this soft-fails to `null` on any error —
  * the footer degrades to absent rather than a shape change crashing turns.
+ * The error is still logged (not swallowed silently): a soft-fail that never
+ * surfaces anywhere makes a persistent failure indistinguishable from the
+ * footer's normal "nothing fresh to show" state — exactly what made an
+ * earlier stuck-stale-since-a-known-timestamp footer un-diagnosable from the
+ * DB alone.
+ *
+ * A *thrown* error isn't the only silent path, though: the SDK can also
+ * resolve normally with `rate_limits: null` (or `rate_limits_available:
+ * false`) whenever the account/auth profile just doesn't have plan limits —
+ * no exception, so the catch below never fires. That's logged too (once per
+ * call, not per window) so "no error line" can't be misread as "the pull
+ * succeeded" the way it was before this and `apiKeySource` existed to check.
  */
 export async function fetchClaudeRateLimits(
 	handle: ClaudeHandle,
@@ -607,10 +619,15 @@ export async function fetchClaudeRateLimits(
 	try {
 		const usage =
 			await handle.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+		if (!usage.rate_limits) {
+			console.error(
+				`[claude-agent] rate-limit usage pull returned no data (rate_limits_available=${usage.rate_limits_available}, apiKeySource=${handle.apiKeySource})`,
+			);
+		}
 		return usage.rate_limits ?? null;
 	} catch (err) {
 		console.error(
-			`[claude-agent] rate-limit usage pull failed: ${err instanceof Error ? err.message : String(err)}`,
+			`[claude-agent] rate-limit usage pull failed (apiKeySource=${handle.apiKeySource}): ${err instanceof Error ? err.message : String(err)}`,
 		);
 		return null;
 	}
