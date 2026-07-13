@@ -21,4 +21,23 @@ if [ "$(id -u)" = "0" ]; then
 	exec gosu node "$0" "$@"
 fi
 
+# git commit identity: derive from the authenticated gh account (ADR-0013)
+# instead of asking the operator for a redundant user/email — GH_TOKEN is
+# already required for gh to work at all, and nothing else sets a git
+# identity here (only ~/.ssh is host-mounted, not ~/.gitconfig, per
+# ADR-0005). Written once per container start into the shared $HOME, not
+# per-session, since every session already shares one GH_TOKEN/gh identity.
+# Best-effort: skipped (not fatal) if GH_TOKEN is unset, the API call fails,
+# or user.email is already set (e.g. an operator-mounted .gitconfig).
+if [ -n "$GH_TOKEN" ] && ! git config --global user.email >/dev/null 2>&1; then
+	gh_user_json="$(gh api user 2>/dev/null)" || gh_user_json=""
+	if [ -n "$gh_user_json" ]; then
+		gh_login="$(echo "$gh_user_json" | jq -r '.login')"
+		gh_id="$(echo "$gh_user_json" | jq -r '.id')"
+		gh_name="$(echo "$gh_user_json" | jq -r '.name // .login')"
+		git config --global user.name "$gh_name"
+		git config --global user.email "${gh_id}+${gh_login}@users.noreply.github.com"
+	fi
+fi
+
 exec "$@"
