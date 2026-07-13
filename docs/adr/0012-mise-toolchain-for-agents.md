@@ -93,7 +93,8 @@ than an oversight:
 - **`gh` (GitHub CLI)**: useful for PR/issue workflows, but has no
   credential story yet — ADR-0005's host-passthrough only covers git SSH and
   the Claude token, not a `gh auth` flow. Adding it without auth wired up
-  would just be a binary that fails on first use.
+  would just be a binary that fails on first use. Resolved in ADR-0013 —
+  `gh` reads a `GH_TOKEN` env var directly, needing no login flow at all.
 
 ### Config trust
 

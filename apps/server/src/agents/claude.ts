@@ -224,6 +224,20 @@ const DILNA_AGENT_CONTEXT = `You are running headless inside dilna, a self-hoste
 - Nothing runtime-specific is pre-installed for the repo you're in. Use mise (already on PATH) to get whatever toolchain it needs: \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. This covers node, pnpm (via corepack once node is installed), go, python, rust, ruby, and more.`;
 
 /**
+ * gh (GitHub CLI, ADR-0013): authenticates purely from the GH_TOKEN env var
+ * (no `gh auth login`, no host-mounted config — see the Dockerfile's gh
+ * install comment), but it may still write a small config/cache under $HOME
+ * the first time it runs (e.g. its default config.yml, extension list
+ * cache). Granted defensively, same reasoning as MISE_WRITABLE_PATHS above:
+ * without this every such write fails "read-only file system" under the
+ * native sandbox.
+ */
+const GH_WRITABLE_PATHS = [
+	path.join(os.homedir(), ".config", "gh"),
+	path.join(os.homedir(), ".cache", "gh"),
+];
+
+/**
  * Spawn a `claude-agent-sdk` query for the given worktree in streaming-input
  * mode, so a single underlying Claude Code subprocess stays resident across
  * multiple user turns (one process per worktree, per ADR-0003). Tool
@@ -335,6 +349,7 @@ export async function startClaude(
 					allowWrite: [
 						...CLAUDE_SCRATCH_WRITABLE_PATHS,
 						...MISE_WRITABLE_PATHS,
+						...GH_WRITABLE_PATHS,
 						...(gitCommonDir ? [gitCommonDir] : []),
 					],
 					...(nestedInCheckout

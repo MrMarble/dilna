@@ -10,6 +10,16 @@ services:
       - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
       # Alternative to CLAUDE_CODE_OAUTH_TOKEN: a metered API key.
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # GitHub CLI auth (ADR-0013, extends ADR-0005 host-passthrough):
+      # generate with `gh auth login` then `gh auth token` on a machine
+      # where you already have `gh` set up, or create a classic PAT at
+      # https://github.com/settings/tokens with `repo` scope (add `workflow`
+      # if sessions need to edit workflow files, `read:org` for org-owned
+      # repos). gh reads this directly on every invocation — no
+      # `gh auth login` inside the container, no mount needed. Shared by
+      # every session/repo, same single-tenant model as the SSH key and
+      # Claude token above.
+      - GH_TOKEN=${GH_TOKEN:-}
       # Set these to your host user's `id -u`/`id -g` if the SSH mount below
       # fails to authenticate — the container runs as an unprivileged user
       # (uid 1000 by default) and needs matching ownership to read a
