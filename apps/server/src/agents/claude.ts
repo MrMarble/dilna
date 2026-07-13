@@ -208,6 +208,22 @@ const MISE_WRITABLE_PATHS = [
 ];
 
 /**
+ * Appended to the SDK's `claude_code` system-prompt preset (see `systemPrompt`
+ * in {@link startClaude}'s `query()` options) so every session — not just
+ * ones where the user happens to explain it — knows the ground truth about
+ * where it's actually running. Without an explicit `systemPrompt`, the SDK
+ * defaults to an *empty* prompt (confirmed against the installed SDK
+ * bundle), not Claude Code's own default one; `preset: 'claude_code'` opts
+ * back into that default (tool-use guidance, etc.), and this string is
+ * additive context on top of it, not a replacement.
+ */
+const DILNA_AGENT_CONTEXT = `You are running headless inside dilna, a self-hosted workspace that drives coding agents against locally-cloned repos.
+
+- Your cwd is a git worktree checked out to its own branch, created solely for this session — not the repo's main checkout. Other sessions on the same repo run in sibling worktrees; you won't see their uncommitted work and they won't see yours.
+- Bash commands run inside a sandbox confined to this worktree (plus the shared git object store, so git history/commit/branch commands work). Writes outside that boundary fail with a read-only-filesystem error — that's the sandbox, not a bug. Tool calls are auto-approved (no human is present to answer permission prompts), so act autonomously rather than pausing to ask.
+- Nothing runtime-specific is pre-installed for the repo you're in. Use mise (already on PATH) to get whatever toolchain it needs: \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. This covers node, pnpm (via corepack once node is installed), go, python, rust, ruby, and more.`;
+
+/**
  * Spawn a `claude-agent-sdk` query for the given worktree in streaming-input
  * mode, so a single underlying Claude Code subprocess stays resident across
  * multiple user turns (one process per worktree, per ADR-0003). Tool
@@ -247,6 +263,11 @@ export async function startClaude(
 		options: {
 			cwd: opts.worktreePath,
 			resume: opts.existingAgentSessionId,
+			systemPrompt: {
+				type: "preset",
+				preset: "claude_code",
+				append: DILNA_AGENT_CONTEXT,
+			},
 			permissionMode: "bypassPermissions",
 			allowDangerouslySkipPermissions: true,
 			// mise (ADR-0012) refuses to parse any mise.toml with an [env]/
