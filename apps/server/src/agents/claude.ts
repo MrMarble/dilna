@@ -249,6 +249,29 @@ export async function startClaude(
 			resume: opts.existingAgentSessionId,
 			permissionMode: "bypassPermissions",
 			allowDangerouslySkipPermissions: true,
+			// mise (ADR-0012) refuses to parse any mise.toml with an [env]/
+			// templated-[tasks]/tool-options block until it's explicitly
+			// trusted — its own defense against a cloned repo smuggling
+			// arbitrary code into a config file nobody reviewed. Without this,
+			// every shimmed tool invocation (not just `mise` itself) fails
+			// outright the first time a session's worktree contains such a
+			// config, until something runs `mise trust` interactively — which
+			// nothing in dilna's headless flow ever does. Pre-trusting the
+			// whole worktree here matches ADR-0003's existing model (the
+			// worktree is already the session's full blast radius, so mise's
+			// separate trust gate over the same tree adds friction, not
+			// safety). `options.env` replaces the subprocess environment
+			// entirely rather than merging with `process.env` (see the SDK's
+			// own doc comment on this field), hence the explicit spread.
+			env: {
+				...process.env,
+				MISE_TRUSTED_CONFIG_PATHS: [
+					process.env.MISE_TRUSTED_CONFIG_PATHS,
+					opts.worktreePath,
+				]
+					.filter(Boolean)
+					.join(":"),
+			},
 			// Emit stream_event deltas so replies stream token-by-token instead
 			// of arriving as whole text blocks. The complete assistant message
 			// still follows each delta run — normalizeAssistantMessage dedupes

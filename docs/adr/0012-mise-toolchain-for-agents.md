@@ -95,6 +95,36 @@ than an oversight:
   the Claude token, not a `gh auth` flow. Adding it without auth wired up
   would just be a binary that fails on first use.
 
+### Config trust
+
+Verified live against a real deployed image (a `mise use node@22` in a
+scratch dir did a real download, checksum, and extract, then resolved via
+the shim — the feature works end to end) — but that same verification
+surfaced a real gap: mise refuses to parse any `mise.toml` with an `[env]`
+block, a templated `[tasks]` entry, or tool options until it's explicitly
+trusted (its own defense against a cloned repo smuggling arbitrary
+env/code into a config file nobody reviewed — plain `[tools]` version
+pins and template-free `[tasks]` load fine either way). Hitting an
+untrusted one doesn't just make `mise` itself fail — it breaks *every*
+shimmed command in that directory tree outright, since each shim's own
+resolution logic re-parses the config on every invocation. Nothing in
+dilna's headless flow ever runs `mise trust` interactively, so the first
+session whose worktree contains such a config would silently lose every
+shimmed tool, not just mise-specific ones — directly contradicting
+ADR-0003's "sessions act autonomously" model with a second, independent
+trust gate nobody asked for.
+
+Fixed in `startClaude` by setting `MISE_TRUSTED_CONFIG_PATHS` (appended to
+any existing value) to `opts.worktreePath` via the query's `options.env` —
+confirmed live that this is a prefix match (a `mise.toml` nested anywhere
+under the worktree, not just at its root, is covered) and doesn't require
+also trusting `workspaceRoot` or any path outside the worktree. Since
+`options.env` replaces the subprocess environment entirely rather than
+merging with `process.env` (documented on the SDK's own `env` field), the
+fix spreads `process.env` itself before adding the override — every other
+env var a session's subprocess already relied on stays exactly as it was
+before this change.
+
 ## Why not the alternatives
 
 - **asdf**: same per-language-plugin model mise was built to replace, but
