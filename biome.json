@@ -13,7 +13,8 @@
 			"!!**/dist",
 			"!!**/build",
 			"!!**/node_modules",
-			"!apps/web/src/components/ui"
+			"!apps/web/src/components/ui",
+			"!seccomp-bubblewrap.json"
 		]
 	},
 	"formatter": {
