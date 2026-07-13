@@ -593,7 +593,10 @@ export async function fetchClaudeRateLimits(
 		const usage =
 			await handle.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
 		return usage.rate_limits ?? null;
-	} catch {
+	} catch (err) {
+		console.error(
+			`[claude-agent] rate-limit usage pull failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return null;
 	}
 }
