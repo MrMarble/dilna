@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Repo, RepoStats } from "@dilna/shared";
@@ -111,6 +111,7 @@ export class RepoManager {
 				`git clone failed for ${url}: ${e.stderr?.trim() || e.message}`,
 			);
 		}
+		await this.ensureGitDefaults(repoPath);
 
 		let defaultBranch: string;
 		try {
@@ -145,15 +146,81 @@ export class RepoManager {
 	}
 
 	/**
+	 * Make the bare repo's shared git state behave like a normal clone's for
+	 * every Session worktree hanging off it. Idempotent; run at clone and at
+	 * boot (see index.ts) to backfill repos cloned before these fixes.
+	 *
+	 * 1. Fetch refspec: `git clone --bare` leaves `remote.origin.fetch`
+	 *    unset (a normal clone sets `+refs/heads/*:refs/remotes/origin/*`),
+	 *    and every worktree shares the bare repo's config. Without the
+	 *    refspec, git inside a worktree misbehaves in cascading ways:
+	 *    `git fetch origin <branch>` updates only `FETCH_HEAD` (never
+	 *    `refs/remotes/origin/*`, so a stale tracking ref looks like
+	 *    divergence), `@{u}` can never resolve — even when a same-named
+	 *    tracking ref exists on disk, because upstream resolution maps
+	 *    `branch.<name>.merge` *through* the refspec — and `gh pr create`
+	 *    falsely reports the branch as never pushed.
+	 *
+	 * 2. Exclude `.gitmodules`: Claude Code's sandbox hardening pre-creates
+	 *    an empty `.gitmodules` at the agent's cwd (a bind-mount target it
+	 *    read-denies inside the sandbox, so a repo can't smuggle submodule
+	 *    config into an auto-approved session) and hides it by appending to
+	 *    `<cwd>/.git/info/exclude` — but in a linked worktree `.git` is a
+	 *    file, so that append silently fails and the stray file shows up
+	 *    untracked in every Session's `git status`. `info/exclude` follows
+	 *    the common-dir rule (linked worktrees read the *bare repo's* copy,
+	 *    not a per-worktree one), so writing it here covers all Sessions.
+	 *    Only `.gitmodules` — the other files the sandbox touches
+	 *    (package.json, lockfiles, …) are ones an agent may legitimately
+	 *    create, and excluding those would hide real work from `git status`.
+	 */
+	private async ensureGitDefaults(repoPath: string): Promise<void> {
+		await git(
+			[
+				"config",
+				"--replace-all",
+				"remote.origin.fetch",
+				"+refs/heads/*:refs/remotes/origin/*",
+			],
+			{ cwd: repoPath },
+		);
+
+		const excludePath = path.join(repoPath, "info", "exclude");
+		let existing = "";
+		try {
+			existing = readFileSync(excludePath, "utf8");
+		} catch {
+			// missing info/exclude — created below
+		}
+		if (!existing.split("\n").includes(".gitmodules")) {
+			mkdirSync(path.dirname(excludePath), { recursive: true });
+			appendFileSync(excludePath, ".gitmodules\n");
+		}
+	}
+
+	/** Backfill `ensureGitDefaults` across all existing Repos. */
+	async ensureAllGitDefaults(): Promise<void> {
+		for (const repo of await this.list()) {
+			try {
+				await this.ensureGitDefaults(repo.path);
+			} catch (err) {
+				console.warn(
+					`[repos] failed to apply git defaults for ${repo.slug}:`,
+					err,
+				);
+			}
+		}
+	}
+
+	/**
 	 * Fetch the Repo's default branch from its `origin` remote into the bare
 	 * clone, so new Sessions (which branch off `defaultBranch` — see
-	 * `SessionManager.create`) start from up-to-date history. A bare clone
-	 * doesn't configure a fetch refspec by default the way a normal clone's
-	 * `origin/HEAD`-tracking does (verified directly: `git clone --bare`
-	 * leaves `remote.origin.fetch` unset, so a plain `git fetch` updates
-	 * `FETCH_HEAD` only, not any local ref), so this fetches `defaultBranch`
-	 * explicitly into the same-named local ref — scoped to that one branch
-	 * so Sessions' own `dilna/<id>` branches living in the same bare repo are
+	 * `SessionManager.create`) start from up-to-date history. The configured
+	 * fetch refspec (see `ensureFetchRefspec`) only maintains
+	 * `refs/remotes/origin/*`, while worktree creation branches off the
+	 * *local* `refs/heads/<defaultBranch>` — so this fetches `defaultBranch`
+	 * explicitly into the same-named local ref, scoped to that one branch so
+	 * Sessions' own `dilna/<id>` branches living in the same bare repo are
 	 * never touched by this call.
 	 */
 	async pull(repo: Repo): Promise<void> {

@@ -1,5 +1,11 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -53,6 +59,38 @@ describe("RepoManager", () => {
 		// list now contains the repo
 		const repos = await repoManager.list();
 		expect(repos.find((r) => r.id === repo.id)).toBeTruthy();
+	});
+
+	it("clone configures the standard origin fetch refspec (bare clones omit it)", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `refspec-${Date.now()}`);
+		const { stdout } = await git(
+			["config", "--get-all", "remote.origin.fetch"],
+			{ cwd: repo.path },
+		);
+		expect(stdout.trim()).toBe("+refs/heads/*:refs/remotes/origin/*");
+
+		await repoManager.delete(repo.id);
+	});
+
+	it("ensureAllGitDefaults backfills a repo cloned without them", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `backfill-${Date.now()}`);
+		await git(["config", "--unset-all", "remote.origin.fetch"], {
+			cwd: repo.path,
+		});
+		rmSync(path.join(repo.path, "info", "exclude"), { force: true });
+
+		await repoManager.ensureAllGitDefaults();
+
+		const { stdout } = await git(
+			["config", "--get-all", "remote.origin.fetch"],
+			{ cwd: repo.path },
+		);
+		expect(stdout.trim()).toBe("+refs/heads/*:refs/remotes/origin/*");
+		expect(
+			readFileSync(path.join(repo.path, "info", "exclude"), "utf8"),
+		).toContain(".gitmodules");
+
+		await repoManager.delete(repo.id);
 	});
 
 	it("derives a unique slug when a slug collides", async () => {

@@ -78,6 +78,50 @@ describe("SessionManager", () => {
 		expect(view).not.toHaveProperty("agentSessionId");
 	});
 
+	it("hides the sandbox-injected .gitmodules from the worktree's git status", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `exclude-${Date.now()}`);
+		const session = await sessionManager.create(repo.id);
+		const worktreePath = path.join(dataDir, "worktrees", repo.slug, session.id);
+
+		// Simulate Claude Code's sandbox hardening touching an empty
+		// .gitmodules at the worktree root (see the exclude write in create()).
+		writeFileSync(path.join(worktreePath, ".gitmodules"), "");
+
+		const { stdout } = await git(["status", "--porcelain"], {
+			cwd: worktreePath,
+		});
+		expect(stdout).not.toContain(".gitmodules");
+	});
+
+	it("gives worktree git working tracking refs and @{u} (fetch refspec on the bare repo)", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `upstream-${Date.now()}`);
+		const session = await sessionManager.create(repo.id);
+		const worktreePath = path.join(dataDir, "worktrees", repo.slug, session.id);
+		const branch = `dilna/${session.id}`;
+
+		// Symptom #1 of the missing refspec: `git fetch origin <branch>`
+		// updated only FETCH_HEAD, leaving refs/remotes/origin/* stale/absent.
+		await git(["fetch", "origin", "main"], { cwd: worktreePath });
+		const { stdout: trackingMain } = await git(
+			["rev-parse", "refs/remotes/origin/main"],
+			{ cwd: worktreePath },
+		);
+		const { stdout: fixtureMain } = await git(["rev-parse", "main"], {
+			cwd: fixtureRepo,
+		});
+		expect(trackingMain.trim()).toBe(fixtureMain.trim());
+
+		// Symptom #2: after `push -u`, @{u} failed with "upstream branch not
+		// stored as a remote-tracking branch" because upstream resolution maps
+		// branch.<name>.merge through the (missing) fetch refspec.
+		await git(["push", "-u", "origin", branch], { cwd: worktreePath });
+		const { stdout: upstream } = await git(
+			["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+			{ cwd: worktreePath },
+		);
+		expect(upstream.trim()).toBe(`origin/${branch}`);
+	});
+
 	it("deletes a session and removes its worktree + branch", async () => {
 		const repo = await repoManager.clone(fixtureRepo, `clone-${Date.now()}`);
 		const session = await sessionManager.create(repo.id);
