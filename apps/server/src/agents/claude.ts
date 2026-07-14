@@ -93,6 +93,15 @@ export type Listener = (event: AgentStreamEvent) => void;
  */
 export type ClaudeStartOptions = AgentStartOptions & {
 	onRateLimit?: (info: SDKRateLimitInfo) => void;
+	/**
+	 * Fired when the first turn's `system init` message reports the Claude-side
+	 * session id — the only key back into the transcript. SessionManager
+	 * persists it here rather than at turn end so a turn interrupted mid-way
+	 * (server restart, crash) still leaves a resumable id behind (ADR-0014);
+	 * waiting for turn end permanently orphaned the transcript of any session
+	 * whose *first* turn was interrupted.
+	 */
+	onInit?: (agentSessionId: string) => void;
 };
 
 export type ClaudeHandle = {
@@ -114,6 +123,17 @@ export type ClaudeHandle = {
 	 * silently dropped legitimate rate-limit data.
 	 */
 	readonly apiKeySource: ApiKeySource | null;
+	/**
+	 * Transcript uuid of the most recent complete SDKAssistantMessage seen on
+	 * this handle. This — not the normalized live `messageId` — is what shows
+	 * up as an entry uuid in `getSessionMessages` output: with
+	 * `includePartialMessages` the live turn id is the first *stream event's*
+	 * uuid, which never appears in the transcript at all, so gating the
+	 * post-turn transcript sync on it spun through the whole retry ladder on
+	 * every turn (observed live: expected `114fb9fc…` while the transcript
+	 * held `aba59dda…`). See SessionManager.fetchClaudeMessagesWithRetry.
+	 */
+	readonly lastAssistantTranscriptUuid: string | undefined;
 	worktreePath: string;
 	listeners: Set<Listener>;
 	stop: () => Promise<void>;
@@ -383,6 +403,7 @@ export async function startClaude(
 	let alive = true;
 	let agentSessionId = opts.existingAgentSessionId ?? "";
 	let apiKeySource: ApiKeySource | null = null;
+	let lastAssistantTranscriptUuid: string | undefined;
 
 	const loopPromise = (async () => {
 		try {
@@ -390,6 +411,7 @@ export async function startClaude(
 				if (msg.type === "system" && msg.subtype === "init") {
 					agentSessionId = msg.session_id;
 					apiKeySource = msg.apiKeySource;
+					opts.onInit?.(msg.session_id);
 					continue;
 				}
 				if (msg.type === "rate_limit_event") {
@@ -403,6 +425,12 @@ export async function startClaude(
 					// genuine rate-limit data.
 					opts.onRateLimit?.(msg.rate_limit_info);
 					continue;
+				}
+				// Complete assistant messages carry the uuid the transcript will
+				// hold for this round — recorded for the post-turn sync gate (see
+				// lastAssistantTranscriptUuid's doc comment on ClaudeHandle).
+				if (msg.type === "assistant") {
+					lastAssistantTranscriptUuid = msg.uuid;
 				}
 				const events = normalizeMessage(msg, state);
 				for (const ev of events) {
@@ -460,6 +488,23 @@ export async function startClaude(
 	const stop = async () => {
 		if (killed) return;
 		killed = true;
+		// A turn may still be in flight: clearing `listeners` unhooks chatClaude's
+		// completion listener, so without a final event its promise would never
+		// settle and the caller's sendMessage would sit wedged until the turn
+		// timeout fired, then spuriously mark the deliberately-stopped session
+		// crashed. Emit one terminal idle so in-flight chatClaude calls resolve
+		// and run their normal end-of-turn persistence over the partial turn.
+		const idleEvent: AgentStreamEvent = {
+			type: "session_status",
+			status: "idle",
+		};
+		for (const listener of listeners) {
+			try {
+				listener(idleEvent);
+			} catch {
+				// listener errors during teardown are non-fatal
+			}
+		}
 		listeners.clear();
 		inputQueue.close();
 		try {
@@ -488,6 +533,9 @@ export async function startClaude(
 		get apiKeySource() {
 			return apiKeySource;
 		},
+		get lastAssistantTranscriptUuid() {
+			return lastAssistantTranscriptUuid;
+		},
 		worktreePath: opts.worktreePath,
 		listeners,
 		stop,
@@ -504,12 +552,14 @@ export async function startClaude(
  * dilna's {@link AgentStreamEvent} union and forwarded to
  * {@link opts.onEvent}.
  *
- * Returns the messageId of the last assistant message_start seen during
- * this turn (or undefined if none arrived, e.g. an aborted/errored turn).
- * Claude's own transcript file can lag behind this turn's `result` event by
- * a beat, so callers that re-sync persisted history from
- * `getSessionMessages` need this id to know specifically what to wait for
- * — see `SessionManager.fetchClaudeMessagesWithRetry`.
+ * Returns the transcript uuid of the last complete assistant message this
+ * turn produced (or undefined if none arrived, e.g. an aborted/errored
+ * turn). Claude's own transcript file can lag behind this turn's `result`
+ * event by a beat, so callers that re-sync persisted history from
+ * `getSessionMessages` need this uuid to know specifically what to wait
+ * for — see `SessionManager.fetchClaudeMessagesWithRetry`. It must be a
+ * transcript uuid, not the normalized live messageId — see
+ * {@link ClaudeHandle.lastAssistantTranscriptUuid}.
  */
 export async function chatClaude(
 	handle: ClaudeHandle,
@@ -524,11 +574,10 @@ export async function chatClaude(
 		);
 	}
 
-	let lastAssistantMessageId: string | undefined;
+	// Snapshot so the return value only reflects assistant messages produced
+	// by *this* turn — an unchanged value means the turn produced none.
+	const transcriptUuidAtStart = handle.lastAssistantTranscriptUuid;
 	const chatListener: Listener = (ev) => {
-		if (ev.type === "message_start" && ev.role === "assistant") {
-			lastAssistantMessageId = ev.messageId;
-		}
 		onEvent(ev);
 	};
 	listeners.add(chatListener);
@@ -572,7 +621,8 @@ export async function chatClaude(
 	try {
 		handle.sendUserMessage(message);
 		await chatDone;
-		return lastAssistantMessageId;
+		const latest = handle.lastAssistantTranscriptUuid;
+		return latest !== transcriptUuidAtStart ? latest : undefined;
 	} finally {
 		listeners.delete(chatListener);
 		listeners.delete(completionListener);

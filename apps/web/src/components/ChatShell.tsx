@@ -105,8 +105,10 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	 * 'Thinking...' marker once content starts streaming. */
 	const [thinking, setThinking] = useState(false);
 
-	// True once a turn has run on this subscription — gates the idle-time
-	// history reconcile so the subscribe-time idle snapshot doesn't refetch.
+	// True once turn activity (a status flip to working, or any mid-turn
+	// content event — which is all a tab joining mid-turn ever sees) has hit
+	// this subscription — gates the idle-time history reconcile so the
+	// subscribe-time idle snapshot doesn't refetch.
 	const sawTurnRef = useRef(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -166,11 +168,14 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					setStatus(ev.status);
 					if (ev.status === "working" || ev.status === "starting") {
 						sawTurnRef.current = true;
-					}
-					if (ev.status === "crashed") {
-						setThinking(false);
+						// Covers the mid-turn (re)connect: the server replays a
+						// working status on subscribe, and until the snapshot or the
+						// next token arrives the thinking marker is the only signal
+						// the agent is alive. The local send path sets this too.
+						setThinking(true);
 					}
 					if (ev.status === "idle" || ev.status === "crashed") {
+						setThinking(false);
 						// Flush live entries into the local list so nothing flickers,
 						// then reconcile against the DB — the source of truth (ADR-0004):
 						// authoritative rows replace the flushed copies' provisional
@@ -203,6 +208,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					// Always a new assistant turn message (claude.ts never emits
 					// user-role starts); the optimistic temp user entry stays in
 					// place until the idle-time reconcile swaps in the DB rows.
+					sawTurnRef.current = true;
 					setLive((prev) => {
 						if (prev[ev.messageId]) return prev;
 						return {
@@ -218,6 +224,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					break;
 				case "token":
 					setThinking(false);
+					sawTurnRef.current = true;
 					setLive((prev) => {
 						const m = prev[ev.messageId];
 						if (m) {
@@ -247,9 +254,17 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					break;
 				case "tool_call_start":
 					setThinking(false);
+					sawTurnRef.current = true;
 					setLive((prev) => {
-						const m = prev[ev.messageId];
-						if (!m) return prev;
+						// A tab that connected mid-turn may not have this message yet
+						// (it missed message_start) — create it rather than dropping
+						// the event, or a tool-heavy turn renders nothing at all.
+						const m = prev[ev.messageId] ?? {
+							id: ev.messageId,
+							role: "assistant" as const,
+							parts: [],
+							startedAt: nowSeconds(),
+						};
 						return {
 							...prev,
 							[ev.messageId]: {
