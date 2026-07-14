@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
+import { repoManager } from "./repos/manager";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
 import { streamRoute } from "./routes/stream";
@@ -53,6 +54,11 @@ serve({ fetch: app.fetch, port }, async (info) => {
 	// On boot, flip any non-idle sessions back to idle — their agent
 	// processes died when the previous server exited (ADR-0003).
 	await sessionManager.resetAllToIdle();
+	// Backfill git defaults (origin fetch refspec, .gitmodules exclude) on
+	// repos cloned before RepoManager.ensureGitDefaults existed — the bare
+	// repo's config is shared by all of its worktrees, so this repairs
+	// existing Sessions too.
+	await repoManager.ensureAllGitDefaults();
 });
 
 async function shutdown() {
