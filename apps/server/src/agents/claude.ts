@@ -8,7 +8,6 @@ import {
 	type Query,
 	query,
 	type SDKAssistantMessage,
-	type SDKControlGetUsageResponse,
 	type SDKMessage,
 	type SDKPartialAssistantMessage,
 	type SDKRateLimitInfo,
@@ -201,7 +200,7 @@ export function createNormalizeState(): NormalizeState {
  * worktree path plus a random suffix it picks itself — ungrantable at the
  * exact leaf, so the whole per-uid parent is granted instead.
  */
-const CLAUDE_HOME =
+export const CLAUDE_HOME =
 	process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 const CLAUDE_SCRATCH_WRITABLE_PATHS = [
 	path.join(os.homedir(), ".cache", "claude"),
@@ -629,57 +628,6 @@ export async function chatClaude(
 		if (abortSignal) {
 			abortSignal.removeEventListener("abort", abortHandler);
 		}
-	}
-}
-
-/**
- * Pull the account's plan rate-limit windows from the SDK's usage control
- * request. This — not the push `rate_limit_event` — is where real utilization
- * percentages come from: the push event omits `utilization` entirely on
- * ordinary `allowed` turns and never fires for the seven-day window at all
- * (both observed against a live subscription account; see
- * docs/research/claude-agent-sdk-usage-limits.md §2).
- *
- * Must be called while the agent process is still alive — the control
- * request has nothing to talk to once the query closes (a single-shot query
- * rejects with "Query closed before response received" right after its
- * result message). SessionManager calls this after each completed turn,
- * inside the window before the idle-timeout kill.
- *
- * The upstream method name is a deliberate warning that the API is unstable,
- * so per the research doc's caveat this soft-fails to `null` on any error —
- * the footer degrades to absent rather than a shape change crashing turns.
- * The error is still logged (not swallowed silently): a soft-fail that never
- * surfaces anywhere makes a persistent failure indistinguishable from the
- * footer's normal "nothing fresh to show" state — exactly what made an
- * earlier stuck-stale-since-a-known-timestamp footer un-diagnosable from the
- * DB alone.
- *
- * A *thrown* error isn't the only silent path, though: the SDK can also
- * resolve normally with `rate_limits: null` (or `rate_limits_available:
- * false`) whenever the account/auth profile just doesn't have plan limits —
- * no exception, so the catch below never fires. That's logged too (once per
- * call, not per window) so "no error line" can't be misread as "the pull
- * succeeded" the way it was before this and `apiKeySource` existed to check.
- */
-export async function fetchClaudeRateLimits(
-	handle: ClaudeHandle,
-): Promise<SDKControlGetUsageResponse["rate_limits"] | null> {
-	if (!handle.isAlive()) return null;
-	try {
-		const usage =
-			await handle.query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
-		if (!usage.rate_limits) {
-			console.error(
-				`[claude-agent] rate-limit usage pull returned no data (rate_limits_available=${usage.rate_limits_available}, apiKeySource=${handle.apiKeySource})`,
-			);
-		}
-		return usage.rate_limits ?? null;
-	} catch (err) {
-		console.error(
-			`[claude-agent] rate-limit usage pull failed (apiKeySource=${handle.apiKeySource}): ${err instanceof Error ? err.message : String(err)}`,
-		);
-		return null;
 	}
 }
 

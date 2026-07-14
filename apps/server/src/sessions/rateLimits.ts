@@ -1,8 +1,19 @@
-import type {
-	SDKControlGetUsageResponse,
-	SDKRateLimitInfo,
-} from "@anthropic-ai/claude-agent-sdk";
+import type { SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
 import type { RateLimitWindow, RateLimitWindowKind } from "@dilna/shared";
+
+/**
+ * The subset of the claude.ai OAuth usage endpoint's response body
+ * (`GET /api/oauth/usage`, see agents/claudeUsage.ts) that the two-bar
+ * footer reads. The real response carries much more (per-model windows, a
+ * `limits` array, extra-usage credit state); structural typing lets the
+ * extra fields pass through ignored. Field spellings are the endpoint's
+ * own (`resets_at` ISO-8601 string), which is also exactly what the old
+ * Agent SDK pull returned — the SDK was proxying this endpoint.
+ */
+export type PulledRateLimits = {
+	five_hour?: { utilization: number | null; resets_at: string | null } | null;
+	seven_day?: { utilization: number | null; resets_at: string | null } | null;
+} | null;
 
 /** Last-known reading for one rate-limit window, as held by SessionManager. */
 export type RateLimitSnapshot = {
@@ -60,21 +71,19 @@ export function toRateLimitWindow(
 }
 
 /**
- * Parse the `rate_limits` object returned by the SDK's pull API
- * (`Query.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`) into
- * dilna's window shape. This is the primary source of utilization numbers —
- * unlike the push `rate_limit_event`, it always carries real percentages for
- * both windows (see toRateLimitWindow's doc comment), sourced from the
- * claude.ai usage endpoint.
+ * Parse the usage endpoint's window objects (see {@link PulledRateLimits})
+ * into dilna's window shape. This is the primary source of utilization
+ * numbers — unlike the push `rate_limit_event`, it always carries real
+ * percentages for both windows (see toRateLimitWindow's doc comment).
  *
- * The method is explicitly experimental upstream, so this parses defensively:
- * `null`/absent windows, null fields, or an unparseable `resets_at` (an ISO
- * 8601 string here, unlike the push event's epoch number) just drop that
- * window rather than throwing — worst case the footer degrades to absent, it
- * never crashes a session.
+ * The endpoint is undocumented (replicated from the CLI's own /usage fetch,
+ * ADR-0015), so this parses defensively: `null`/absent windows, null fields,
+ * or an unparseable `resets_at` (an ISO 8601 string here, unlike the push
+ * event's epoch number) just drop that window rather than throwing — worst
+ * case the footer degrades to absent, it never crashes a session.
  */
 export function pullRateLimitsToWindows(
-	rateLimits: SDKControlGetUsageResponse["rate_limits"] | null,
+	rateLimits: PulledRateLimits,
 ): { kind: RateLimitWindowKind; snapshot: RateLimitSnapshot }[] {
 	if (!rateLimits) return [];
 	const out: { kind: RateLimitWindowKind; snapshot: RateLimitSnapshot }[] = [];

@@ -104,6 +104,8 @@ This is the closest thing to "the real limit of the account/plan" the ticket ask
 
 **Caveat to flag on the map/spec:** the method name (`usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`) and its doc comment ("EXPERIMENTAL: this API is unstable and may change or be removed in any release without notice — do not rely on it yet. The method name will change when the API is stabilized.") are explicit upstream warnings. Building a shipped feature on it means accepting breakage risk on SDK upgrades, or treating its absence/shape-change as a soft-fail (feature degrades gracefully rather than crashing the session).
 
+> **Superseded 2026-07 (ADR-0015):** the accepted risk materialized — the pull stopped returning data — and dilna no longer uses this method. The `rate_limits` object it returned was a proxy for `GET https://api.anthropic.com/api/oauth/usage` (the Claude Code CLI's own `/usage` data path: bearer-authorized with the claude.ai OAuth access token, `anthropic-beta: oauth-2025-04-20`; confirmed by inspecting CLI 2.1.209 and probing the endpoint live). `agents/claudeUsage.ts` now calls that endpoint directly, which also lifts §2b's live-process constraint. The §2a push event remains wired as a secondary source, and everything in this doc's §1 (per-turn usage) is unaffected.
+
 ## 3. Does this differ between direct API key auth and Claude Pro/Max subscription login?
 
 **Yes, explicitly gated in the SDK's own types and doc comments:**
