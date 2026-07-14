@@ -47,6 +47,14 @@ streamRoute.get("/", (c) => {
 			}
 		});
 
+		// 2b. Kick a background account-usage pull (throttled inside the
+		//     manager) so a tab opened after the server sat idle gets real
+		//     windows shortly after connect instead of waiting for the next
+		//     turn to finish. Placed after subscribeAll so the resulting
+		//     `rate_limits` broadcast can't fall between snapshot and
+		//     subscription.
+		sessionManager.pokeRateLimitRefresh();
+
 		// 3. Pump queue to the SSE stream until the client disconnects.
 		const abort = c.req.raw.signal;
 		try {

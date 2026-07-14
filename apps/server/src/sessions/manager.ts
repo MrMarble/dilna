@@ -28,9 +28,9 @@ import {
 	type ClaudeHandle,
 	type ClaudeStartOptions,
 	chatClaude,
-	fetchClaudeRateLimits,
 	startClaude,
 } from "../agents/claude";
+import { fetchClaudeOauthUsage } from "../agents/claudeUsage";
 import { IDLE_TIMEOUT_MS, TURN_TIMEOUT_MS } from "../agents/types";
 import { getDb } from "../db";
 import {
@@ -48,6 +48,11 @@ import {
 } from "./rateLimits";
 
 const execFileAsync = promisify(execFile);
+
+/** Floor between account-usage pulls (see `refreshRateLimits`). Matches the
+ * fact that the windows move on the scale of turns, not seconds — and keeps
+ * a burst of reconnecting tabs from hammering the claude.ai endpoint. */
+const RATE_LIMIT_PULL_MIN_INTERVAL_MS = 60_000;
 
 async function git(args: string[], opts: { cwd?: string } = {}) {
 	return execFileAsync("git", args, { ...opts, maxBuffer: 50 * 1024 * 1024 });
@@ -735,13 +740,31 @@ class SessionManager {
 		this.applyRateLimitWindows([parsed]);
 	}
 
-	/** Best-effort post-turn refresh from the SDK's pull API — the only
+	/** Best-effort refresh from the claude.ai usage endpoint — the only
 	 * source that reliably carries utilization for both windows (see
-	 * `fetchClaudeRateLimits`). Fire-and-forget from `sendMessage` so turn
-	 * completion latency doesn't wait on the extra control round-trip. */
-	private async refreshRateLimits(handle: ClaudeHandle): Promise<void> {
-		const raw = await fetchClaudeRateLimits(handle);
+	 * `fetchClaudeOauthUsage`, ADR-0015). Unlike the old SDK control-request
+	 * pull this needs no live agent process, so it runs both post-turn and
+	 * when a cross-session stream client connects. Throttled because those
+	 * triggers can cluster (several tabs reconnecting, turns finishing
+	 * back-to-back) and the numbers move slowly. */
+	private lastRateLimitPullMs = 0;
+	private async refreshRateLimits(): Promise<void> {
+		const now = Date.now();
+		if (now - this.lastRateLimitPullMs < RATE_LIMIT_PULL_MIN_INTERVAL_MS) {
+			return;
+		}
+		this.lastRateLimitPullMs = now;
+		const raw = await fetchClaudeOauthUsage();
 		this.applyRateLimitWindows(pullRateLimitsToWindows(raw));
+	}
+
+	/** Fire-and-forget wrapper for callers outside the turn loop
+	 * (routes/stream.ts on client connect). Fresh data arrives as a
+	 * `rate_limits` broadcast, not a return value. */
+	pokeRateLimitRefresh(): void {
+		this.refreshRateLimits().catch((err) => {
+			console.error("[sessions] failed to refresh rate limits:", err);
+		});
 	}
 
 	// ---- Agent lifecycle ----------------------------------------------------
@@ -980,13 +1003,12 @@ class SessionManager {
 				});
 				this.markCrashed(id);
 			} else {
-				// Best-effort: pull fresh account rate limits while the agent
-				// process is still alive (the control request needs a live query).
-				// fetchClaudeRateLimits already logs its own soft-failures; this
-				// catch only guards unexpected errors from parsing/persisting the
-				// result (applyRateLimitWindows), so a bad response can't take
-				// down the turn.
-				this.refreshRateLimits(handle).catch((err) => {
+				// Best-effort: pull fresh account rate limits now that the turn
+				// consumed quota. fetchClaudeOauthUsage already logs its own
+				// soft-failures; this catch only guards unexpected errors from
+				// parsing/persisting the result (applyRateLimitWindows), so a bad
+				// response can't take down the turn.
+				this.refreshRateLimits().catch((err) => {
 					console.error(
 						`[sessions] failed to apply refreshed rate limits for ${id}:`,
 						err,
