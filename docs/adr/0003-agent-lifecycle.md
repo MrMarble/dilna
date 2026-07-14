@@ -32,6 +32,6 @@ The user wants agents to run only while actively in use: spawn on first interact
 
 - N concurrent active sessions = N resident node processes. Fine for single-tenant personal use; would need session multiplexing or container-per-session later for multi-tenant.
 - dilna caches message history in its own SQLite (per ADR-0004) so the chat UI keeps working after the agent process dies — the user can read prior messages and the resume-on-next-send is invisible.
-- Server restart kills any resident agents. Their sessions are parked (opencode db intact), resume on next user message. No work-in-progress is preserved mid-tool-call — if the agent was mid-write when the server died, that work is lost. Acceptable for MVP.
+- Server restart kills any resident agents. Their sessions are parked (opencode db intact), resume on next user message. ~~No work-in-progress is preserved mid-tool-call — if the agent was mid-write when the server died, that work is lost. Acceptable for MVP.~~ Superseded by ADR-0014: interrupted turns are backfilled from the agent's own transcript on boot, and the in-flight turn is replayed to subscribers that connect mid-turn.
 - Permission UX is "trust + manual stop button." A future permissions-relay-to-UI flow is a separate feature, not a refactor of this lifecycle.
 - Port allocation: SessionManager must pick a free port per spawn. Use 0 to let the OS assign, read back the assigned port, pass to the SDK client.

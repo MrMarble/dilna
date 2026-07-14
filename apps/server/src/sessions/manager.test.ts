@@ -7,7 +7,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../db";
 import { rateLimits as rateLimitsTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
-import { claudeMessagesToDilna, sessionManager } from "./manager";
+import {
+	applyEventToLiveTurn,
+	claudeMessagesToDilna,
+	type LiveTurn,
+	liveTurnReplayEvents,
+	sessionManager,
+} from "./manager";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -125,6 +131,108 @@ describe("SessionManager", () => {
 		expect(sessionManager.getRateLimits()).toEqual([
 			{ kind: "five_hour", utilizationPct: 32, resetsAt: future },
 		]);
+	});
+});
+
+/**
+ * The live-turn snapshot that lets a subscriber joining mid-turn (page
+ * reload, second device) catch up on the in-flight assistant message — see
+ * SessionManager.subscribe and ADR-0014.
+ */
+describe("live turn snapshot", () => {
+	const fold = (events: Parameters<typeof applyEventToLiveTurn>[1][]) =>
+		events.reduce<LiveTurn | null>(applyEventToLiveTurn, null);
+
+	it("accumulates interleaved text and tool calls in stream order", () => {
+		const turn = fold([
+			{ type: "message_start", messageId: "m1", role: "assistant" },
+			{ type: "token", messageId: "m1", chunk: "Hel" },
+			{ type: "token", messageId: "m1", chunk: "lo" },
+			{
+				type: "tool_call_start",
+				messageId: "m1",
+				callId: "c1",
+				tool: "Bash",
+				input: { command: "ls" },
+			},
+			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
+			{ type: "token", messageId: "m1", chunk: "done" },
+			// Non-content events must pass the snapshot through untouched.
+			{ type: "session_status", status: "working" },
+		]);
+
+		expect(turn).toEqual({
+			messageId: "m1",
+			parts: [
+				{ type: "text", text: "Hello" },
+				{
+					type: "tool_call",
+					callId: "c1",
+					tool: "Bash",
+					input: { command: "ls" },
+					output: "ok",
+					error: undefined,
+				},
+				{ type: "text", text: "done" },
+			],
+		});
+	});
+
+	it("opens a snapshot from a tool_call_start alone (missed message_start)", () => {
+		const turn = fold([
+			{
+				type: "tool_call_start",
+				messageId: "m1",
+				callId: "c1",
+				tool: "Read",
+				input: {},
+			},
+		]);
+		expect(turn?.messageId).toBe("m1");
+		expect(turn?.parts).toHaveLength(1);
+	});
+
+	it("replays to the same snapshot a live-from-the-start subscriber built", () => {
+		const turn = fold([
+			{ type: "message_start", messageId: "m1", role: "assistant" },
+			{ type: "token", messageId: "m1", chunk: "working…" },
+			{
+				type: "tool_call_start",
+				messageId: "m1",
+				callId: "c1",
+				tool: "Bash",
+				input: { command: "pwd" },
+			},
+			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "/w" },
+			{
+				type: "tool_call_start",
+				messageId: "m1",
+				callId: "c2",
+				tool: "Edit",
+				input: {},
+			},
+		]);
+		if (!turn) throw new Error("unreachable");
+
+		const replayed = fold(liveTurnReplayEvents(turn));
+		expect(replayed).toEqual(turn);
+	});
+
+	it("does not emit a tool_call_end for a still-running tool call", () => {
+		const turn: LiveTurn = {
+			messageId: "m1",
+			parts: [
+				{
+					type: "tool_call",
+					callId: "c1",
+					tool: "Bash",
+					input: {},
+					output: null,
+				},
+			],
+		};
+		const types = liveTurnReplayEvents(turn).map((e) => e.type);
+		expect(types).toEqual(["message_start", "tool_call_start"]);
 	});
 });
 

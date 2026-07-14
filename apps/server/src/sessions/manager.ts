@@ -22,7 +22,7 @@ import type {
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
 	type ClaudeHandle,
@@ -109,9 +109,11 @@ function claudeContentToText(content: unknown): string {
  * real user message and the next are merged into a single Message row here —
  * id'd by the *first* assistant entry's uuid — so persisted history has the
  * same one-row-per-turn granularity as the live view (see the matching
- * `currentTurnMessageId` merge in `agents/claude.ts`'s event normalizer;
- * `fetchClaudeMessagesWithRetry`'s `expectedMessageId` gate depends on both
- * sides picking the same id for a turn).
+ * `currentTurnMessageId` merge in `agents/claude.ts`'s event normalizer).
+ * Same granularity, but not the same id: with partial-message streaming the
+ * live turn id is a stream event's uuid, which never appears in the
+ * transcript — which is why `fetchClaudeMessagesWithRetry` gates on a raw
+ * transcript uuid (`ClaudeHandle.lastAssistantTranscriptUuid`) instead.
  *
  * Tool results arrive as separate synthetic user-role transcript entries;
  * they're merged back into the owning tool_call part rather than persisted
@@ -210,6 +212,119 @@ export function claudeMessagesToDilna(
 	return messages;
 }
 
+/**
+ * The in-flight turn's assistant message accumulated so far, mirrored
+ * server-side from the same events broadcast to subscribers (same merging
+ * rules as ChatShell's live state: streamed chunks join the trailing text
+ * part, tool results fill their tool_call part in place). Kept in memory on
+ * the ActiveAgent — never persisted; the DB stays the sole durable record
+ * (ADR-0004/0014). Its purpose is the mid-turn subscribe gap: `message_start`
+ * and earlier tool/token events are emitted once, so a subscriber that
+ * connects mid-turn (page reload, second device) would otherwise render
+ * nothing until the turn's next text token.
+ */
+export type LiveTurn = { messageId: string; parts: MessagePart[] };
+
+/** Fold one broadcast event into the session's live-turn snapshot. Events
+ * that don't carry message content (status, usage, diff, crash) pass the
+ * snapshot through untouched. */
+export function applyEventToLiveTurn(
+	turn: LiveTurn | null,
+	ev: AgentStreamEvent,
+): LiveTurn | null {
+	switch (ev.type) {
+		case "message_start":
+			// One assistant messageId per turn (see NormalizeState in
+			// agents/claude.ts), so a start simply opens a fresh snapshot.
+			return ev.role === "assistant"
+				? { messageId: ev.messageId, parts: [] }
+				: turn;
+		case "token": {
+			const t = turn ?? { messageId: ev.messageId, parts: [] };
+			const last = t.parts[t.parts.length - 1];
+			const parts: MessagePart[] =
+				last?.type === "text"
+					? [
+							...t.parts.slice(0, -1),
+							{ type: "text", text: last.text + ev.chunk },
+						]
+					: [...t.parts, { type: "text", text: ev.chunk }];
+			return { messageId: t.messageId, parts };
+		}
+		case "tool_call_start": {
+			const t = turn ?? { messageId: ev.messageId, parts: [] };
+			return {
+				messageId: t.messageId,
+				parts: [
+					...t.parts,
+					{
+						type: "tool_call",
+						callId: ev.callId,
+						tool: ev.tool,
+						input: ev.input,
+						// null = still running, matching the client's convention for
+						// an unresolved tool call (see ChatShell's ToolCallMarker).
+						output: null,
+					},
+				],
+			};
+		}
+		case "tool_call_end":
+			if (!turn) return turn;
+			return {
+				messageId: turn.messageId,
+				parts: turn.parts.map((p) =>
+					p.type === "tool_call" && p.callId === ev.callId
+						? { ...p, output: ev.output, error: ev.error }
+						: p,
+				),
+			};
+		default:
+			return turn;
+	}
+}
+
+/**
+ * Re-express a live-turn snapshot as the minimal event sequence a client
+ * that missed the turn's start needs to catch up: one message_start, then
+ * the parts in stream order (each text part as a single token chunk, each
+ * tool call as start + end-if-resolved). Applying these through
+ * {@link applyEventToLiveTurn} reproduces the same snapshot, so replayed and
+ * live-from-the-start subscribers converge on identical state.
+ */
+export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
+	const events: AgentStreamEvent[] = [
+		{ type: "message_start", messageId: turn.messageId, role: "assistant" },
+	];
+	for (const part of turn.parts) {
+		if (part.type === "text") {
+			events.push({
+				type: "token",
+				messageId: turn.messageId,
+				chunk: part.text,
+			});
+		} else {
+			events.push({
+				type: "tool_call_start",
+				messageId: turn.messageId,
+				callId: part.callId,
+				tool: part.tool,
+				input: part.input,
+			});
+			if (part.output !== null || part.error !== undefined) {
+				events.push({
+					type: "tool_call_end",
+					messageId: turn.messageId,
+					callId: part.callId,
+					output: part.output,
+					error: part.error,
+				});
+			}
+		}
+	}
+	return events;
+}
+
 type Listener = (event: AgentStreamEvent) => void;
 
 /** Thrown by the race in `sendMessage` when a turn exceeds `TURN_TIMEOUT_MS`
@@ -227,6 +342,10 @@ type ActiveAgent = {
 	handle: ClaudeHandle;
 	chatInProgress: boolean;
 	idleTimer: NodeJS.Timeout | null;
+	/** Snapshot of the in-flight turn's assistant message, replayed to
+	 * subscribers that connect mid-turn (see {@link LiveTurn}). Null between
+	 * turns — cleared after the turn's rows are persisted. */
+	liveTurn: LiveTurn | null;
 	/** One-shot: set by `ensureStarted` when it had to start a fresh Claude
 	 * session instead of resuming (the prior one was unresumable — see
 	 * `buildContextPrimer`), consumed and cleared by the next `sendMessage`
@@ -442,24 +561,74 @@ class SessionManager {
 		if (view) this.broadcastGlobal({ type: "session_status", session: view });
 	}
 
+	/**
+	 * Boot-time recovery (ADR-0014). Any session still marked
+	 * working/starting/stopping had a turn in flight when the previous server
+	 * process died — its end-of-turn persistence never ran. The agent's own
+	 * transcript is the durable record of that turn, so backfill whatever it
+	 * captured into dilna's messages table, then resolve the pending-user
+	 * placeholder: dropped when the transcript carried the user's message
+	 * (an authoritative row now exists), promoted to a permanent row when it
+	 * didn't — a restart must never delete the user's message.
+	 */
 	async resetAllToIdle(): Promise<void> {
 		const db = getDb();
-		for (const s of ["working", "starting", "stopping"] as const) {
-			const rows = db
-				.select({ id: sessionsTable.id })
-				.from(sessionsTable)
-				.where(eq(sessionsTable.status, s))
-				.all();
-			for (const { id } of rows) {
-				// Drop any pending-user placeholder left behind by a turn that
-				// was interrupted by the server restart (see sendMessage).
-				this.deleteMessage(id, this.pendingUserMessageId(id));
+		const interrupted = ["working", "starting", "stopping"];
+		const rows = db
+			.select()
+			.from(sessionsTable)
+			.where(inArray(sessionsTable.status, interrupted))
+			.all();
+		for (const row of rows) {
+			const session = rowToSession(row);
+			let persistedUserMessage = false;
+			try {
+				({ persistedUserMessage } = await this.backfillFromTranscript(session));
+			} catch (err) {
+				console.error(
+					`[sessions] boot backfill failed for ${session.id}:`,
+					err,
+				);
 			}
-			db.update(sessionsTable)
-				.set({ status: "idle" })
-				.where(eq(sessionsTable.status, s))
-				.run();
+			if (persistedUserMessage) {
+				this.deleteMessage(session.id, this.pendingUserMessageId(session.id));
+			} else {
+				this.promotePendingUserMessage(session.id);
+			}
 		}
+		db.update(sessionsTable)
+			.set({ status: "idle" })
+			.where(inArray(sessionsTable.status, interrupted))
+			.run();
+	}
+
+	/**
+	 * Recover a session's history straight from the Claude-native transcript —
+	 * a JSONL file `getSessionMessages` can read with no live agent process —
+	 * persisting any rows dilna doesn't already have. No-op when the session
+	 * never got an agentSessionId (the turn died before the init handshake
+	 * reported one): there is no transcript to read in that case.
+	 */
+	private async backfillFromTranscript(
+		session: Session,
+	): Promise<{ persistedUserMessage: boolean }> {
+		if (!session.agentSessionId) return { persistedUserMessage: false };
+		let raw: SessionMessage[];
+		try {
+			raw = await getSessionMessages(session.agentSessionId, {
+				dir: session.worktreePath,
+			});
+		} catch (err) {
+			console.error(
+				`[sessions] could not read transcript ${session.agentSessionId} for ${session.id}:`,
+				err,
+			);
+			return { persistedUserMessage: false };
+		}
+		return this.persistConverted(
+			session.id,
+			claudeMessagesToDilna(session.id, raw),
+		);
 	}
 
 	/**
@@ -585,9 +754,22 @@ class SessionManager {
 	subscribe(id: string, listener: Listener): () => void {
 		if (!this.subscribers.has(id)) this.subscribers.set(id, new Set());
 		this.subscribers.get(id)?.add(listener);
-		// No active agent → emit one idle status so the UI can settle.
-		if (!this.active.has(id)) {
+		const active = this.active.get(id);
+		if (!active) {
+			// No active agent → emit one idle status so the UI can settle.
 			listener({ type: "session_status", status: "idle" });
+		} else if (active.chatInProgress) {
+			// Joined mid-turn (page reload, another device): the working status
+			// and the turn's message_start/tool events were broadcast before this
+			// subscriber existed, so re-emit the status and replay the turn's
+			// snapshot — without this the pane stays blank until the turn's next
+			// text token, which on a tool-heavy turn can be minutes away.
+			listener({ type: "session_status", status: "working" });
+			if (active.liveTurn) {
+				for (const ev of liveTurnReplayEvents(active.liveTurn)) {
+					listener(ev);
+				}
+			}
 		}
 		return () => {
 			this.subscribers.get(id)?.delete(listener);
@@ -695,8 +877,13 @@ class SessionManager {
 		});
 
 		const handle = active.handle;
-		const onEvent = (ev: AgentStreamEvent) =>
+		const onEvent = (ev: AgentStreamEvent) => {
+			// Mirror the turn's content into the live-turn snapshot before
+			// broadcasting, so a subscriber connecting between events can be
+			// replayed the turn-so-far (see subscribe).
+			active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
 			this.broadcast(id, this.accumulateSessionUsage(id, ev));
+		};
 
 		const crashHandler: Listener = (ev) => {
 			if (ev.type === "agent_crashed") {
@@ -740,10 +927,34 @@ class SessionManager {
 					.run();
 			}
 
-			// Persist everything we don't already have from the agent backend,
-			// then drop the placeholder now that the authoritative row exists.
-			await this.persistMessagesFromAgent(id, handle, expectedClaudeMessageId);
-			this.deleteMessage(id, this.pendingUserMessageId(id));
+			// Persist everything we don't already have from the agent backend.
+			// The placeholder is only dropped once the turn's real user row
+			// landed; if the transcript never recorded the turn (crash before
+			// the init handshake, transcript unreadable) it's promoted to a
+			// permanent row instead — the user's message must survive every
+			// failure mode (ADR-0014).
+			let persistedUserMessage = false;
+			try {
+				({ persistedUserMessage } = await this.persistMessagesFromAgent(
+					id,
+					handle,
+					expectedClaudeMessageId,
+				));
+			} catch (err) {
+				console.error(
+					`[sessions] failed to persist turn messages for ${id}:`,
+					err,
+				);
+			}
+			if (persistedUserMessage) {
+				this.deleteMessage(id, this.pendingUserMessageId(id));
+			} else {
+				this.promotePendingUserMessage(id);
+			}
+			// The turn's rows are now in the DB (or promoted) — the in-memory
+			// snapshot has served its purpose. Cleared only after persisting so
+			// a subscriber connecting in between never sees neither.
+			active.liveTurn = null;
 
 			// Best-effort: if the agent auto-generated a title, sync it.
 			this.maybeSyncTitle(id, handle).catch(() => {});
@@ -848,23 +1059,38 @@ class SessionManager {
 	/**
 	 * Fetch the current message list from the agent backend and persist any
 	 * messages dilna doesn't already have. Maps each backend's native
-	 * transcript shape into dilna's normalized MessagePart shape.
+	 * transcript shape into dilna's normalized MessagePart shape. Returns
+	 * whether a user-role row was among the freshly persisted ones — the
+	 * caller uses that to decide the pending-user placeholder's fate (drop vs
+	 * promote, see sendMessage).
 	 */
 	private async persistMessagesFromAgent(
 		sessionId: string,
 		handle: ClaudeHandle,
 		expectedClaudeMessageId?: string,
-	): Promise<void> {
-		if (!handle.agentSessionId) return;
-		const persisted = await this.getMessages(sessionId);
-		const existing = new Set(persisted.map((m) => m.id));
+	): Promise<{ persistedUserMessage: boolean }> {
+		if (!handle.agentSessionId) return { persistedUserMessage: false };
 		const converted = await this.fetchClaudeMessagesWithRetry(
 			sessionId,
 			handle,
 			expectedClaudeMessageId,
 		);
+		return this.persistConverted(sessionId, converted);
+	}
+
+	/**
+	 * Persist every converted transcript row dilna doesn't already have.
+	 * Shared tail of the two recovery-aware persistence paths (end-of-turn
+	 * via persistMessagesFromAgent, boot backfill via backfillFromTranscript).
+	 */
+	private async persistConverted(
+		sessionId: string,
+		converted: Message[],
+	): Promise<{ persistedUserMessage: boolean }> {
+		const persisted = await this.getMessages(sessionId);
+		const existing = new Set(persisted.map((m) => m.id));
 		const fresh = converted.filter((msg) => !existing.has(msg.id));
-		if (fresh.length === 0) return;
+		if (fresh.length === 0) return { persistedUserMessage: false };
 
 		// Rows persisted before the past-stamping fix can carry timestamps
 		// minutes in the future; shift this batch above them so createdAt
@@ -902,6 +1128,7 @@ class SessionManager {
 		for (const msg of fresh) {
 			this.persistMessage(sessionId, msg);
 		}
+		return { persistedUserMessage: fresh.some((m) => m.role === "user") };
 	}
 
 	/**
@@ -910,15 +1137,13 @@ class SessionManager {
 	 * {@link chatClaude} doesn't guarantee the transcript write for that same
 	 * turn has landed on disk yet.
 	 *
-	 * Gating the retry on "does the expected message id merely appear" is
-	 * not enough on its own: because `claudeMessagesToDilna` merges every
-	 * assistant round of a turn into one row keyed by the *first* round's
-	 * uuid (see that function's doc comment), that id can show up in the
-	 * very first fetch — right after the first tool call round is written —
-	 * long before later rounds (including the turn's final text reply) have
-	 * been flushed. So this also requires the *raw* transcript to be stable
-	 * (same length and same last entry) across two consecutive polls before
-	 * accepting it, on top of the expected id being present at all.
+	 * `expectedMessageId` is the transcript uuid of the turn's *last*
+	 * complete assistant message (see chatClaude's return value) — its
+	 * presence means the final round has been flushed. On top of that this
+	 * requires the *raw* transcript to be stable (same length and same last
+	 * entry) across two consecutive polls before accepting it, so trailing
+	 * writes (the final round's tool results, the result entry) have settled
+	 * too.
 	 *
 	 * `expectedMessageId` is undefined for turns that produced no assistant
 	 * message (aborted/errored) — in that case there's nothing turn-specific
@@ -1024,21 +1249,38 @@ class SessionManager {
 			worktreePath: session.worktreePath,
 			existingAgentSessionId: resumeId,
 			onRateLimit: (info) => this.handleRateLimitEvent(info),
+			// Persist the Claude-side session id the moment the init handshake
+			// reports it (ADR-0014). It used to be persisted only at turn end,
+			// so a session whose *first* turn was interrupted kept a null
+			// agentSessionId forever — its transcript (and all the agent's
+			// work) was permanently orphaned even though the file survived.
+			onInit: (agentSessionId) => {
+				getDb()
+					.update(sessionsTable)
+					.set({ agentSessionId })
+					.where(eq(sessionsTable.id, id))
+					.run();
+			},
 		};
 		const handle: ClaudeHandle = await startClaude(startOpts);
 
-		// Persist the agent's own session id so a later resume reconnects to
-		// the same backend session (cold-resume path per ADR-0003).
-		const db = getDb();
-		db.update(sessionsTable)
-			.set({ agentSessionId: handle.agentSessionId })
-			.where(eq(sessionsTable.id, id))
-			.run();
+		// Cold-resume path (ADR-0003): re-persist the resumed id right away.
+		// A fresh session has no id yet at this point (the getter is empty
+		// until init) — writing that would clobber nothing, but skip it so
+		// the row never holds an empty string; onInit above fills it in.
+		if (handle.agentSessionId) {
+			const db = getDb();
+			db.update(sessionsTable)
+				.set({ agentSessionId: handle.agentSessionId })
+				.where(eq(sessionsTable.id, id))
+				.run();
+		}
 
 		const active: ActiveAgent = {
 			handle,
 			chatInProgress: false,
 			idleTimer: null,
+			liveTurn: null,
 			contextPrimer,
 		};
 		this.active.set(id, active);
@@ -1172,6 +1414,28 @@ class SessionManager {
 	 * this id never needs to be unique per-turn. */
 	private pendingUserMessageId(sessionId: string): string {
 		return `pending-user-${sessionId}`;
+	}
+
+	/**
+	 * Rename the pending-user placeholder into a permanent row (fresh unique
+	 * id, content and timestamp untouched) instead of deleting it. Used when
+	 * a turn ended without the transcript recording the user's message —
+	 * crash before the init handshake, interrupted first turn, unreadable
+	 * transcript — so the message is never lost, and the stable per-session
+	 * placeholder id is freed for the next turn. No-op when no placeholder
+	 * row exists.
+	 */
+	private promotePendingUserMessage(sessionId: string): void {
+		const db = getDb();
+		db.update(messagesTable)
+			.set({ id: nanoid() })
+			.where(
+				and(
+					eq(messagesTable.sessionId, sessionId),
+					eq(messagesTable.id, this.pendingUserMessageId(sessionId)),
+				),
+			)
+			.run();
 	}
 
 	private deleteMessage(sessionId: string, messageId: string): void {
