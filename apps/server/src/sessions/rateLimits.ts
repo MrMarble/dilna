@@ -81,6 +81,13 @@ export function toRateLimitWindow(
  * or an unparseable `resets_at` (an ISO 8601 string here, unlike the push
  * event's epoch number) just drop that window rather than throwing — worst
  * case the footer degrades to absent, it never crashes a session.
+ *
+ * `utilization` here is a 0–1 fraction, not the 0–100 percentage the SDK's
+ * *documented* `usage_EXPERIMENTAL...()` counterpart uses (confirmed live:
+ * a real 88% weekly window came back as `0.87..0.88`) — this REST endpoint
+ * is a different, separately reverse-engineered surface from that SDK
+ * method and doesn't share its scale, easy as that was to assume since both
+ * describe "percentage of the window used."
  */
 export function pullRateLimitsToWindows(
 	rateLimits: PulledRateLimits,
@@ -96,7 +103,7 @@ export function pullRateLimitsToWindows(
 		out.push({
 			kind,
 			snapshot: {
-				utilizationPct: window.utilization,
+				utilizationPct: window.utilization * 100,
 				resetsAt: Math.floor(resetsAtMs / 1000),
 			},
 		});

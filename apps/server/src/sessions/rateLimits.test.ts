@@ -75,17 +75,19 @@ describe("toRateLimitWindow", () => {
 });
 
 describe("pullRateLimitsToWindows", () => {
-	// Mirrors a real response from the SDK's usage pull API (probed against a
-	// live subscription account): resets_at is an ISO 8601 string here, not
-	// the push event's epoch number, and both windows carry real percentages.
-	it("parses both windows from a real-shaped pull response", () => {
+	// Mirrors a real response from the claude.ai OAuth usage endpoint
+	// (probed against a live subscription account): resets_at is an ISO 8601
+	// string here, not the push event's epoch number, and `utilization` is a
+	// 0–1 fraction — a real 88% weekly window came back as 0.87..0.88, not
+	// 87..88 — so this asserts the *100 conversion to a percentage.
+	it("parses both windows from a real-shaped pull response, converting the 0-1 fraction to a percentage", () => {
 		const windows = pullRateLimitsToWindows({
 			five_hour: {
-				utilization: 32,
+				utilization: 0.32,
 				resets_at: "2026-07-09T21:20:00.235531+00:00",
 			},
 			seven_day: {
-				utilization: 4,
+				utilization: 0.04,
 				resets_at: "2026-07-16T16:00:00.235555+00:00",
 			},
 		});
@@ -118,7 +120,7 @@ describe("pullRateLimitsToWindows", () => {
 	it("skips a window with null fields without dropping the other one", () => {
 		const windows = pullRateLimitsToWindows({
 			five_hour: { utilization: null, resets_at: null },
-			seven_day: { utilization: 12, resets_at: "2026-07-16T16:00:00Z" },
+			seven_day: { utilization: 0.12, resets_at: "2026-07-16T16:00:00Z" },
 		});
 		expect(windows).toHaveLength(1);
 		expect(windows[0]?.kind).toBe("seven_day");
