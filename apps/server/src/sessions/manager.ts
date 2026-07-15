@@ -810,8 +810,19 @@ class SessionManager {
 	/** Callback passed to `startClaude` (see `ensureStarted`). Only events
 	 * that carry a real utilization number make it through
 	 * `toRateLimitWindow` — the common `allowed` event omits the field and is
-	 * dropped so it can't overwrite a pulled reading with a placeholder. */
+	 * dropped so it can't overwrite a pulled reading with a placeholder.
+	 *
+	 * Logged unconditionally (not just on drop): this push path still writes
+	 * `utilizationPct` unconverted, on the SDK-documented assumption that
+	 * `SDKRateLimitInfo.utilization` is 0-100 — the same assumption that
+	 * turned out wrong for the pull endpoint's `utilization` (a 0-1 fraction,
+	 * see pullRateLimitsToWindows). If this ever fires with a value that
+	 * looks like a 0-1 fraction too, it's overwriting the pull's correctly
+	 * scaled reading with an unconverted one, and needs the same fix. */
 	private handleRateLimitEvent(info: SDKRateLimitInfo): void {
+		console.error(
+			`[sessions] rate_limit_event: type=${info.rateLimitType} status=${info.status} utilization=${info.utilization}`,
+		);
 		const parsed = toRateLimitWindow(info);
 		if (!parsed) return;
 		this.applyRateLimitWindows([parsed]);
