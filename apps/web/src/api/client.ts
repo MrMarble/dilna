@@ -29,7 +29,118 @@ export type CloneRepoInput = {
 	slug?: string;
 };
 
-class ApiError extends Error {
+const SESSION_EVENT_TYPES: AgentStreamEvent["type"][] = [
+	"session_status",
+	"changed_files",
+	"user_message",
+	"message_start",
+	"token",
+	"thinking",
+	"tool_call_start",
+	"tool_call_end",
+	"message_end",
+	"turn_failed",
+	"notice",
+	"turn_activity",
+	"resync",
+	"usage_update",
+];
+
+const SESSION_LIST_EVENT_TYPES: SessionListEvent["type"][] = [
+	"session_status",
+	"session_deleted",
+	"rate_limits",
+];
+
+/** ~2x the server's ~15s ping (routes/sse.ts's PING_INTERVAL_MS) — silence
+ * past this means the connection is open but not actually alive (ADR-0016
+ * §4). Checked on a plain interval rather than a single timer that's reset
+ * per-event, which is simpler and only 5s coarser. */
+const STALE_AFTER_MS = 30_000;
+const STALE_CHECK_INTERVAL_MS = 5_000;
+const RECONNECT_BACKOFF_MIN_MS = 1_000;
+const RECONNECT_BACKOFF_MAX_MS = 30_000;
+
+/**
+ * Own an `EventSource` with reconnect-on-silence (ADR-0016 §4), for both the
+ * per-session stream and the cross-session `/api/stream`: native
+ * `EventSource` retry already covers an actual connection drop, but not one
+ * that stays open while the server (or something between client and server)
+ * has gone quiet — this is the "open but not alive" case the `ping` event
+ * exists to detect. `onOpen` is the single resync point, firing on the first
+ * connect, every native retry, and every reconnect this function forces —
+ * callers reset their live-turn state and refetch history there rather than
+ * trying to patch in whatever was missed.
+ */
+function openEventStream<T>(
+	url: string,
+	eventTypes: readonly string[],
+	onEvent: (event: T) => void,
+	onOpen?: () => void,
+	onConnectionChange?: (connected: boolean) => void,
+): () => void {
+	let es: EventSource | null = null;
+	let closed = false;
+	let lastEventAt = Date.now();
+	let backoffMs = RECONNECT_BACKOFF_MIN_MS;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const connect = () => {
+		if (closed) return;
+		const source = new EventSource(url);
+		es = source;
+		lastEventAt = Date.now();
+
+		source.addEventListener("open", () => {
+			backoffMs = RECONNECT_BACKOFF_MIN_MS;
+			lastEventAt = Date.now();
+			onConnectionChange?.(true);
+			onOpen?.();
+		});
+		source.addEventListener("ping", () => {
+			lastEventAt = Date.now();
+		});
+		for (const t of eventTypes) {
+			source.addEventListener(t, (e: MessageEvent) => {
+				lastEventAt = Date.now();
+				try {
+					const ev = JSON.parse(e.data as string) as T;
+					onEvent(ev);
+				} catch {
+					// ignore malformed payloads
+				}
+			});
+		}
+		source.addEventListener("error", () => {
+			// Native retry handles the reconnect itself; this only flags the
+			// connection as degraded for the UI. The staleness check below is
+			// what forces a reconnect for a silent-but-open connection.
+			onConnectionChange?.(false);
+		});
+	};
+
+	connect();
+
+	const staleTimer = setInterval(() => {
+		if (closed || !es) return;
+		if (Date.now() - lastEventAt > STALE_AFTER_MS) {
+			onConnectionChange?.(false);
+			es.close();
+			const delay = backoffMs;
+			backoffMs = Math.min(backoffMs * 2, RECONNECT_BACKOFF_MAX_MS);
+			reconnectTimer = setTimeout(connect, delay);
+		}
+	}, STALE_CHECK_INTERVAL_MS);
+
+	return () => {
+		closed = true;
+		clearInterval(staleTimer);
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		es?.close();
+	};
+}
+
+export class ApiError extends Error {
 	constructor(
 		public status: number,
 		public body: unknown,
@@ -107,63 +218,54 @@ export const api = {
 		commits: (id: string) =>
 			request<{ commits: CommitInfo[] }>(`/api/sessions/${id}/commits`),
 		send: (id: string, text: string) =>
-			request<{ ok: boolean }>(`/api/sessions/${id}/messages`, {
-				method: "POST",
-				body: JSON.stringify({ text }),
-			}),
+			request<{ ok: boolean; message: Message }>(
+				`/api/sessions/${id}/messages`,
+				{
+					method: "POST",
+					body: JSON.stringify({ text }),
+				},
+			),
 		stop: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}/stop`, {
 				method: "POST",
 			}),
-		/** Subscribe to a session's live SSE stream. Returns an unsubscribe. */
+		/** Subscribe to a session's live SSE stream. `onOpen` runs on first
+		 * connect and every reconnect (native retry or this function's own
+		 * liveness-driven one) — the single resync point (ADR-0016 §4): the
+		 * caller resets its live-turn state and refetches history there.
+		 * `onConnectionChange` reports degraded/recovered for a "reconnecting…"
+		 * indicator. Returns an unsubscribe. */
 		stream: (
 			id: string,
 			onEvent: (event: AgentStreamEvent) => void,
-		): (() => void) => {
-			const es = new EventSource(`/api/sessions/${id}/stream`);
-			const eventTypes = [
-				"session_status",
-				"message_start",
-				"token",
-				"tool_call_start",
-				"tool_call_end",
-				"message_end",
-				"error",
-				"agent_crashed",
-				"changed_files",
-				"usage_update",
-			];
-			for (const t of eventTypes) {
-				es.addEventListener(t, (e: MessageEvent) => {
-					try {
-						const ev = JSON.parse(e.data as string) as AgentStreamEvent;
-						onEvent(ev);
-					} catch {
-						// ignore malformed payloads
-					}
-				});
-			}
-			return () => es.close();
-		},
+			onOpen?: () => void,
+			onConnectionChange?: (connected: boolean) => void,
+		): (() => void) =>
+			openEventStream(
+				`/api/sessions/${id}/stream`,
+				SESSION_EVENT_TYPES,
+				onEvent,
+				onOpen,
+				onConnectionChange,
+			),
 	},
 	/** Cross-session status stream (per ADR-0008): one subscription per app
 	 * load, notified whenever any session's status changes. Powers the
 	 * sidebar's Background Agents panel and the chat header's session
-	 * dropdown. Returns an unsubscribe. */
+	 * dropdown. Same reconnect-on-silence handling as `sessions.stream`
+	 * (ADR-0016 §4 applies to both streams). Returns an unsubscribe. */
 	sessionList: {
-		stream: (onEvent: (event: SessionListEvent) => void): (() => void) => {
-			const es = new EventSource("/api/stream");
-			for (const t of ["session_status", "session_deleted", "rate_limits"]) {
-				es.addEventListener(t, (e: MessageEvent) => {
-					try {
-						const ev = JSON.parse(e.data as string) as SessionListEvent;
-						onEvent(ev);
-					} catch {
-						// ignore malformed payloads
-					}
-				});
-			}
-			return () => es.close();
-		},
+		stream: (
+			onEvent: (event: SessionListEvent) => void,
+			onOpen?: () => void,
+			onConnectionChange?: (connected: boolean) => void,
+		): (() => void) =>
+			openEventStream(
+				"/api/stream",
+				SESSION_LIST_EVENT_TYPES,
+				onEvent,
+				onOpen,
+				onConnectionChange,
+			),
 	},
 };

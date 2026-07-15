@@ -8,7 +8,8 @@ import type {
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
-import { sessionManager } from "../sessions/manager";
+import { SessionNotFoundError, sessionManager } from "../sessions/manager";
+import { runSseLoop } from "./sse";
 
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["claude"];
 
@@ -101,76 +102,51 @@ sessionsRoute.post("/:id/messages", async (c) => {
 	if (!body?.text) {
 		throw new HTTPException(400, { message: "text is required" });
 	}
-	// Reject a duplicate send up front rather than letting it silently lose
-	// the race inside sendMessage: that failure surfaces only after an
-	// `await`, by which point this handler would already have returned 202,
-	// leaving the client's optimistic bubble dangling forever with nothing
-	// to roll it back (see the incident this guarded against).
-	if (sessionManager.isChatInProgress(id)) {
-		throw new HTTPException(409, {
-			message: "session already has a chat in progress",
-		});
+	// beginTurn claims the turn slot and persists the user's message
+	// synchronously — no `await` between the 409 check and the claim (see its
+	// doc comment; ADR-0016 §2). This is what makes the pre-202 409 the only
+	// duplicate-send surface: a fast second POST can no longer land its own
+	// 202 by racing the claim through an `await`.
+	let message: Message;
+	try {
+		message = sessionManager.beginTurn(id, body.text);
+	} catch (err) {
+		if (err instanceof SessionNotFoundError) {
+			throw new HTTPException(404, { message: err.message });
+		}
+		const msg = err instanceof Error ? err.message : "send failed";
+		throw new HTTPException(409, { message: msg });
 	}
-	// Fire the chat asynchronously. The HTTP response is sent immediately
+	// Fire the turn asynchronously. The HTTP response is sent immediately
 	// (202 Accepted) and the actual stream of events arrives on the SSE
 	// endpoint. This decouples the prompt from the long-lived stream so
-	// the chat can keep streaming even if this request times out.
-	sessionManager.sendMessage(id, body.text).catch((err) => {
-		console.error(`[sessions] sendMessage failed for ${id}:`, err);
+	// the chat can keep streaming even if this request times out. The 202
+	// body echoes the same persisted row already broadcast as `user_message`
+	// (ADR-0016 §6), so every client converges on one message id.
+	sessionManager.runTurn(id, body.text).catch((err) => {
+		console.error(`[sessions] runTurn failed for ${id}:`, err);
 	});
-	return c.json({ ok: true }, 202);
+	return c.json({ ok: true, message }, 202);
 });
 
 sessionsRoute.post("/:id/stop", async (c) => {
 	const id = c.req.param("id");
-	await sessionManager.stopSession(id);
+	await sessionManager.requestStop(id);
 	return c.json({ ok: true, id });
 });
 
 sessionsRoute.get("/:id/stream", (c) => {
 	const id = c.req.param("id");
 	return streamSSE(c, async (stream) => {
-		// 1. Replay cached messages so the UI can render history even if the
-		//    agent process is dead.
-		const messages = await sessionManager.getMessages(id);
-		for (const m of messages) {
-			await stream.writeSSE({
-				event: "message_replay",
-				data: JSON.stringify(m),
-			});
-		}
-
-		// 2. Subscribe to live events.
-		const queue: { event: string; data: string }[] = [];
-		let resolveFlush: (() => void) | null = null;
-		const unsubscribe = sessionManager.subscribe(id, (ev) => {
-			queue.push({ event: ev.type, data: JSON.stringify(ev) });
-			if (resolveFlush) {
-				resolveFlush();
-				resolveFlush = null;
-			}
-		});
-
-		// 3. Pump queue to the SSE stream until the client disconnects.
-		const abort = c.req.raw.signal;
-		try {
-			while (!abort.aborted) {
-				if (queue.length === 0) {
-					await new Promise<void>((resolve) => {
-						resolveFlush = resolve;
-						abort.addEventListener("abort", () => resolve(), { once: true });
-					});
-				}
-				while (queue.length > 0) {
-					const item = queue.shift();
-					if (item) {
-						await stream.writeSSE({ event: item.event, data: item.data });
-					}
-				}
-				await stream.sleep(0);
-			}
-		} finally {
-			unsubscribe();
-		}
+		// History travels exclusively via REST refetch (`GET /:id/messages`) —
+		// per ADR-0016 §4 there is no `message_replay` on this stream (deleted:
+		// no client ever listened for it) and no event ids/replay-based resync;
+		// the client's on-open routine (reset live state → refetch → apply the
+		// opening snapshot) is what makes a plain subscribe below sufficient.
+		await runSseLoop(stream, c.req.raw.signal, (push) =>
+			sessionManager.subscribe(id, (ev) =>
+				push({ event: ev.type, data: JSON.stringify(ev) }),
+			),
+		);
 	});
 });

@@ -1,4 +1,5 @@
 import type {
+	AgentStreamEvent,
 	AgentType,
 	Message as ChatMessage,
 	MessagePart,
@@ -8,6 +9,8 @@ import {
 	AlertCircle,
 	ChevronDown,
 	ChevronRight,
+	Info,
+	ListTree,
 	LoaderCircle,
 	Send,
 	Square,
@@ -15,7 +18,7 @@ import {
 	Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "@/api/client";
+import { ApiError, api } from "@/api/client";
 import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import {
@@ -57,6 +60,10 @@ type LiveMessage = {
 	startedAt: number;
 };
 
+/** The in-turn feedback snapshot (ADR-0016 §5) — level-based, valid only
+ * inside a turn: cleared on any terminal status, never re-derived from it. */
+type TurnActivity = Extract<AgentStreamEvent, { type: "turn_activity" }>;
+
 function nowSeconds() {
 	return Math.floor(Date.now() / 1000);
 }
@@ -94,6 +101,20 @@ function formatClockTime(epochSeconds: number) {
 	});
 }
 
+/** Elapsed seconds since `startedAt` (ms), corrected for clock skew against
+ * `turn_activity`'s `serverTime` (ADR-0016 §5) rather than the client's own
+ * clock, which may be off from the server's. */
+function elapsedSeconds(startedAt: number, serverTime: number): number {
+	const skew = Date.now() - serverTime;
+	return Math.max(0, Math.round((Date.now() - skew - startedAt) / 1000));
+}
+
+const PHASE_LABEL: Record<string, string> = {
+	requesting: "Requesting…",
+	compacting: "Compacting context…",
+	retrying: "Retrying…",
+};
+
 export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [live, setLive] = useState<Record<string, LiveMessage>>({});
@@ -101,9 +122,23 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const [input, setInput] = useState("");
 	const [sending, setSending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	/** Transient degraded-not-failed line (ADR-0016 §2's `notice`) — separate
+	 * from `error` so it renders as an unobtrusive line, not a destructive one. */
+	const [notice, setNotice] = useState<string | null>(null);
 	/** True from send → first assistant token/tool_call; suppresses the
 	 * 'Thinking...' marker once content starts streaming. */
 	const [thinking, setThinking] = useState(false);
+	/** In-turn feedback snapshot (ADR-0016 §5) — replaced wholesale on every
+	 * `turn_activity`, cleared on any terminal status. */
+	const [turnActivity, setTurnActivity] = useState<TurnActivity | null>(null);
+	/** Per-message `thinking` chunk buffers — transient, mirrors `token`'s
+	 * buffering but never persisted; cleared at that message's `message_end`. */
+	const [thinkingBuffers, setThinkingBuffers] = useState<
+		Record<string, string>
+	>({});
+	/** ~3s-debounced "reconnecting…" pill (ADR-0016 §4) — nothing shows while
+	 * healthy, and recovery clears it instantly. */
+	const [degraded, setDegraded] = useState(false);
 
 	// True once turn activity (a status flip to working, or any mid-turn
 	// content event — which is all a tab joining mid-turn ever sees) has hit
@@ -149,179 +184,255 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		}
 	}, [sessionId]);
 
+	// The one on-open routine (ADR-0016 §4): reset live-turn state → refetch
+	// history → apply the opening snapshot (the server replays it via the
+	// stream's own subscribe-time events, handled below). Runs on the first
+	// connect, every native EventSource retry, and every reconnect forced by
+	// the client's own staleness check — and also on an explicit `resync`
+	// directive mid-turn (refusal-fallback retraction).
+	const resync = useCallback(() => {
+		setLive({});
+		setTurnActivity(null);
+		setThinkingBuffers({});
+		sawTurnRef.current = false;
+		loadHistory();
+	}, [loadHistory]);
+
 	// Keyed on sessionId only — deliberately NOT session.status: re-running
 	// this effect mid-turn (as a status flip used to) wipes the live entries
 	// and re-fetches history while the turn's rows are still provisional,
 	// which is how messages briefly rendered out of order.
 	useEffect(() => {
-		setLive({});
 		setMessages([]);
 		setError(null);
+		setNotice(null);
 		setThinking(false);
-		sawTurnRef.current = false;
-		// Fetch history once on mount; live events keep us up-to-date after
-		// that, and the idle-time reconcile re-syncs after each turn.
-		loadHistory();
-		const unsubscribe = api.sessions.stream(sessionId, (ev) => {
-			switch (ev.type) {
-				case "session_status":
-					setStatus(ev.status);
-					if (ev.status === "working" || ev.status === "starting") {
-						sawTurnRef.current = true;
-						// Covers the mid-turn (re)connect: the server replays a
-						// working status on subscribe, and until the snapshot or the
-						// next token arrives the thinking marker is the only signal
-						// the agent is alive. The local send path sets this too.
-						setThinking(true);
-					}
-					if (ev.status === "idle" || ev.status === "crashed") {
-						setThinking(false);
-						// Flush live entries into the local list so nothing flickers,
-						// then reconcile against the DB — the source of truth (ADR-0004):
-						// authoritative rows replace the flushed copies' provisional
-						// ids/timestamps, and the optimistic temp user entry (whose
-						// content the server persisted at send time) drops out.
-						setLive((currentLive) => {
-							const entries = Object.entries(currentLive);
-							if (entries.length === 0) return currentLive;
-							const liveIds = new Set(entries.map(([k]) => k));
-							setMessages((prev) => {
-								const kept = prev.filter((m) => !liveIds.has(m.id));
-								const newMsgs = entries.map(([, m]) => ({
-									id: m.id,
-									sessionId,
-									role: m.role,
-									parts: m.parts,
-									createdAt: m.startedAt,
-								}));
-								return [...kept, ...newMsgs];
-							});
-							return {};
-						});
-						if (sawTurnRef.current) {
-							sawTurnRef.current = false;
-							loadHistory();
+		setDegraded(false);
+		let degradedTimer: ReturnType<typeof setTimeout> | null = null;
+		const unsubscribe = api.sessions.stream(
+			sessionId,
+			(ev) => {
+				switch (ev.type) {
+					case "session_status":
+						setStatus(ev.status);
+						if (ev.status === "working" || ev.status === "starting") {
+							sawTurnRef.current = true;
+							// Covers the mid-turn (re)connect: the server replays a
+							// working status on subscribe, and until the snapshot or the
+							// next token arrives the thinking marker is the only signal
+							// the agent is alive. The local send path sets this too.
+							setThinking(true);
 						}
-					}
-					break;
-				case "message_start":
-					// Always a new assistant turn message (claude.ts never emits
-					// user-role starts); the optimistic temp user entry stays in
-					// place until the idle-time reconcile swaps in the DB rows.
-					sawTurnRef.current = true;
-					setLive((prev) => {
-						if (prev[ev.messageId]) return prev;
-						return {
-							...prev,
-							[ev.messageId]: {
+						if (ev.status === "idle" || ev.status === "crashed") {
+							setThinking(false);
+							// turn_activity/thinking are valid only inside a turn
+							// (ADR-0016 §5) — clear the client's own copy at any terminal
+							// rather than waiting for an explicit clearing event.
+							setTurnActivity(null);
+							setThinkingBuffers({});
+							// Flush live entries into the local list so nothing flickers,
+							// then reconcile against the DB — the source of truth (ADR-0004):
+							// authoritative rows replace the flushed copies' provisional
+							// ids/timestamps, and the optimistic temp user entry (whose
+							// content the server persisted at send time) drops out.
+							setLive((currentLive) => {
+								const entries = Object.entries(currentLive);
+								if (entries.length === 0) return currentLive;
+								const liveIds = new Set(entries.map(([k]) => k));
+								setMessages((prev) => {
+									const kept = prev.filter((m) => !liveIds.has(m.id));
+									const newMsgs = entries.map(([, m]) => ({
+										id: m.id,
+										sessionId,
+										role: m.role,
+										parts: m.parts,
+										createdAt: m.startedAt,
+									}));
+									return [...kept, ...newMsgs];
+								});
+								return {};
+							});
+							if (sawTurnRef.current) {
+								sawTurnRef.current = false;
+								loadHistory();
+							}
+						}
+						break;
+					case "user_message":
+						// Broadcast at accept time (ADR-0016 §6) — every subscriber
+						// converges on this id. The sender's own tab may already have
+						// swapped its optimistic tempId bubble for this same id via
+						// handleSend's response (a benign race either way settles on
+						// the same entry); non-sender tabs see this as the only signal
+						// the turn started until the next content event.
+						sawTurnRef.current = true;
+						setLive((prev) => {
+							if (prev[ev.message.id]) return prev;
+							return {
+								...prev,
+								[ev.message.id]: {
+									id: ev.message.id,
+									role: "user",
+									parts: ev.message.parts,
+									startedAt: ev.message.createdAt,
+								},
+							};
+						});
+						break;
+					case "message_start":
+						// Always a new assistant turn message (claude.ts never emits
+						// user-role starts); the optimistic temp user entry stays in
+						// place until the idle-time reconcile swaps in the DB rows.
+						sawTurnRef.current = true;
+						setLive((prev) => {
+							if (prev[ev.messageId]) return prev;
+							return {
+								...prev,
+								[ev.messageId]: {
+									id: ev.messageId,
+									role: ev.role,
+									parts: [],
+									startedAt: nowSeconds(),
+								},
+							};
+						});
+						break;
+					case "token":
+						setThinking(false);
+						sawTurnRef.current = true;
+						setLive((prev) => {
+							const m = prev[ev.messageId];
+							if (m) {
+								// Append to the trailing text part so streamed chunks join up;
+								// start a new part if the turn just returned from a tool call,
+								// preserving the real text/tool_call interleaving order.
+								const last = m.parts[m.parts.length - 1];
+								const parts: MessagePart[] =
+									last?.type === "text"
+										? [
+												...m.parts.slice(0, -1),
+												{ type: "text", text: last.text + ev.chunk },
+											]
+										: [...m.parts, { type: "text", text: ev.chunk }];
+								return { ...prev, [ev.messageId]: { ...m, parts } };
+							}
+							return {
+								...prev,
+								[ev.messageId]: {
+									id: ev.messageId,
+									role: "assistant",
+									parts: [{ type: "text", text: ev.chunk }],
+									startedAt: nowSeconds(),
+								},
+							};
+						});
+						break;
+					case "tool_call_start":
+						setThinking(false);
+						sawTurnRef.current = true;
+						setLive((prev) => {
+							// A tab that connected mid-turn may not have this message yet
+							// (it missed message_start) — create it rather than dropping
+							// the event, or a tool-heavy turn renders nothing at all.
+							const m = prev[ev.messageId] ?? {
 								id: ev.messageId,
-								role: ev.role,
+								role: "assistant" as const,
 								parts: [],
 								startedAt: nowSeconds(),
-							},
-						};
-					});
-					break;
-				case "token":
-					setThinking(false);
-					sawTurnRef.current = true;
-					setLive((prev) => {
-						const m = prev[ev.messageId];
-						if (m) {
-							// Append to the trailing text part so streamed chunks join up;
-							// start a new part if the turn just returned from a tool call,
-							// preserving the real text/tool_call interleaving order.
-							const last = m.parts[m.parts.length - 1];
-							const parts: MessagePart[] =
-								last?.type === "text"
-									? [
-											...m.parts.slice(0, -1),
-											{ type: "text", text: last.text + ev.chunk },
-										]
-									: [...m.parts, { type: "text", text: ev.chunk }];
-							return { ...prev, [ev.messageId]: { ...m, parts } };
-						}
-						return {
+							};
+							return {
+								...prev,
+								[ev.messageId]: {
+									...m,
+									parts: [
+										...m.parts,
+										{
+											type: "tool_call",
+											callId: ev.callId,
+											tool: ev.tool,
+											input: ev.input,
+											output: null,
+											error: undefined,
+										} as MessagePart,
+									],
+								},
+							};
+						});
+						break;
+					case "tool_call_end":
+						setLive((prev) => {
+							const m = prev[ev.messageId];
+							if (!m) return prev;
+							return {
+								...prev,
+								[ev.messageId]: {
+									...m,
+									parts: m.parts.map((p) =>
+										p.type === "tool_call" && p.callId === ev.callId
+											? { ...p, output: ev.output, error: ev.error }
+											: p,
+									),
+								},
+							};
+						});
+						break;
+					case "message_end":
+						// Discard this message's thinking buffer — it never persists
+						// (ADR-0016 §5's invariant: `token` is exactly what persists,
+						// `thinking` is exactly what doesn't).
+						setThinkingBuffers((prev) => {
+							if (!(ev.messageId in prev)) return prev;
+							const next = { ...prev };
+							delete next[ev.messageId];
+							return next;
+						});
+						break;
+					case "turn_failed":
+						// The one failure event (ADR-0016 §2, replacing `error` +
+						// `agent_crashed`): the terminal status itself (idle/crashed)
+						// arrives as a separate session_status right after, handled
+						// above.
+						setThinking(false);
+						setError(ev.message);
+						break;
+					case "notice":
+						setNotice(ev.message);
+						break;
+					case "thinking":
+						setThinkingBuffers((prev) => ({
 							...prev,
-							[ev.messageId]: {
-								id: ev.messageId,
-								role: "assistant",
-								parts: [{ type: "text", text: ev.chunk }],
-								startedAt: nowSeconds(),
-							},
-						};
-					});
-					break;
-				case "tool_call_start":
-					setThinking(false);
-					sawTurnRef.current = true;
-					setLive((prev) => {
-						// A tab that connected mid-turn may not have this message yet
-						// (it missed message_start) — create it rather than dropping
-						// the event, or a tool-heavy turn renders nothing at all.
-						const m = prev[ev.messageId] ?? {
-							id: ev.messageId,
-							role: "assistant" as const,
-							parts: [],
-							startedAt: nowSeconds(),
-						};
-						return {
-							...prev,
-							[ev.messageId]: {
-								...m,
-								parts: [
-									...m.parts,
-									{
-										type: "tool_call",
-										callId: ev.callId,
-										tool: ev.tool,
-										input: ev.input,
-										output: null,
-										error: undefined,
-									} as MessagePart,
-								],
-							},
-						};
-					});
-					break;
-				case "tool_call_end":
-					setLive((prev) => {
-						const m = prev[ev.messageId];
-						if (!m) return prev;
-						return {
-							...prev,
-							[ev.messageId]: {
-								...m,
-								parts: m.parts.map((p) =>
-									p.type === "tool_call" && p.callId === ev.callId
-										? { ...p, output: ev.output, error: ev.error }
-										: p,
-								),
-							},
-						};
-					});
-					break;
-				case "message_end":
-					break;
-				case "error":
-					setThinking(false);
-					setError(
-						typeof ev.message === "string"
-							? ev.message
-							: JSON.stringify(ev.message),
-					);
-					break;
-				case "agent_crashed":
-					setThinking(false);
-					setError(
-						`agent crashed (code ${ev.exitCode}). ${ev.stderrTail.slice(-3).join("; ")}`,
-					);
-					setStatus("crashed");
-					break;
-			}
-		});
-		return unsubscribe;
-	}, [sessionId, loadHistory]);
+							[ev.messageId]: (prev[ev.messageId] ?? "") + ev.chunk,
+						}));
+						break;
+					case "turn_activity":
+						setTurnActivity(ev);
+						break;
+					case "resync":
+						resync();
+						break;
+				}
+			},
+			resync,
+			(connected) => {
+				if (connected) {
+					if (degradedTimer) {
+						clearTimeout(degradedTimer);
+						degradedTimer = null;
+					}
+					setDegraded(false);
+				} else if (!degradedTimer) {
+					degradedTimer = setTimeout(() => {
+						setDegraded(true);
+						degradedTimer = null;
+					}, 3000);
+				}
+			},
+		);
+		return () => {
+			if (degradedTimer) clearTimeout(degradedTimer);
+			unsubscribe();
+		};
+	}, [sessionId, resync, loadHistory]);
 
 	useEffect(() => {
 		setStatus(session.status);
@@ -338,7 +449,6 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const handleSend = useCallback(async () => {
 		const text = input.trim();
 		if (!text || sending || working) return;
-		setInput("");
 		setError(null);
 		setSending(true);
 		setThinking(true);
@@ -357,9 +467,25 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		}));
 
 		try {
-			await api.sessions.send(sessionId, text);
+			const { message } = await api.sessions.send(sessionId, text);
+			// Only clear the composer once the send is actually accepted.
+			setInput("");
+			// Swap the optimistic tempId bubble for the persisted row's real id
+			// (ADR-0016 §6) — the same row every other subscriber sees via the
+			// `user_message` broadcast, so all clients converge on one id.
+			setLive((prev) => {
+				if (!(tempId in prev)) return prev;
+				const next = { ...prev };
+				delete next[tempId];
+				next[message.id] = {
+					id: message.id,
+					role: "user",
+					parts: message.parts,
+					startedAt: message.createdAt,
+				};
+				return next;
+			});
 		} catch (e) {
-			setError(e instanceof Error ? e.message : "send failed");
 			setThinking(false);
 			// The message never reached the server — withdraw the optimistic
 			// entry instead of leaving a bubble the agent never saw.
@@ -369,6 +495,18 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 				delete next[tempId];
 				return next;
 			});
+			if (e instanceof ApiError && e.status === 409) {
+				// Lost the race to a concurrent send from another tab (ADR-0016
+				// §6): keep the draft (the composer was never cleared above) and
+				// show a quiet notice, not a destructive error — this tab is
+				// already rendering the in-flight turn it lost to, via the same
+				// stream every subscriber shares.
+				setNotice(
+					"Another tab just sent a message — your draft is still here.",
+				);
+			} else {
+				setError(e instanceof Error ? e.message : "send failed");
+			}
 		} finally {
 			setSending(false);
 		}
@@ -435,10 +573,25 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 														i === 0 || rendered[i - 1]?.role !== m.role
 													}
 													agentType={session.agentType}
+													isStreaming={m.id in live}
+													thinkingChunk={thinkingBuffers[m.id]}
+													turnActivity={turnActivity}
 												/>
 											</MessageScrollerItem>
 										))}
 										{thinking && <ThinkingMarker word={thinkingWord} />}
+										{notice && (
+											<MessageScrollerItem messageId="__notice">
+												<Marker className="text-muted-foreground">
+													<MarkerIcon>
+														<Info className="size-4" />
+													</MarkerIcon>
+													<MarkerContent className="text-xs">
+														{notice}
+													</MarkerContent>
+												</Marker>
+											</MessageScrollerItem>
+										)}
 										{error && (
 											<MessageScrollerItem messageId="__error">
 												<Marker variant="border" className="text-destructive">
@@ -461,6 +614,20 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 			</div>
 
 			<div className="px-6 py-4">
+				{degraded && (
+					<p className="mx-auto mb-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
+						Reconnecting…
+					</p>
+				)}
+				{turnActivity?.phase && (
+					<p className="mx-auto mb-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
+						{PHASE_LABEL[turnActivity.phase.kind] ?? "Working…"}
+						{turnActivity.phase.kind === "retrying" &&
+							turnActivity.phase.attempt != null &&
+							turnActivity.phase.maxRetries != null &&
+							` (${turnActivity.phase.attempt}/${turnActivity.phase.maxRetries})`}
+					</p>
+				)}
 				<div className="mx-auto flex max-w-[max(48rem,80%)] items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60">
 					<textarea
 						ref={textareaRef}
@@ -548,6 +715,9 @@ function ChatMessageRow({
 	createdAt,
 	showAttribution,
 	agentType,
+	isStreaming,
+	thinkingChunk,
+	turnActivity,
 }: {
 	id: string;
 	role: "user" | "assistant";
@@ -555,6 +725,9 @@ function ChatMessageRow({
 	createdAt: number;
 	showAttribution: boolean;
 	agentType: AgentType;
+	isStreaming?: boolean;
+	thinkingChunk?: string;
+	turnActivity?: TurnActivity | null;
 }) {
 	const name = role === "user" ? "You" : AGENT_LABELS[agentType];
 
@@ -563,7 +736,13 @@ function ChatMessageRow({
 	let toolBuffer: Extract<MessagePart, { type: "tool_call" }>[] = [];
 	function flushTools() {
 		if (toolBuffer.length > 0) {
-			rows.push(<ToolCallGroup key={`g-${rows.length}`} parts={toolBuffer} />);
+			rows.push(
+				<ToolCallGroup
+					key={`g-${rows.length}`}
+					parts={toolBuffer}
+					turnActivity={turnActivity}
+				/>,
+			);
 			toolBuffer = [];
 		}
 	}
@@ -616,6 +795,12 @@ function ChatMessageRow({
 						<span>{formatClockTime(createdAt)}</span>
 					</MessageHeader>
 				)}
+				{isStreaming && role === "assistant" && (
+					<ThinkingBlock
+						chunk={thinkingChunk}
+						tokens={turnActivity?.thinkingTokens}
+					/>
+				)}
 				{rows.length > 0 ? (
 					rows
 				) : (
@@ -626,10 +811,50 @@ function ChatMessageRow({
 	);
 }
 
+/** Streaming-only, expandable header+preview for `thinking` chunks
+ * (ADR-0016 §5) — degrades to the redacted-phase token counter when no
+ * chunks have arrived, and vanishes entirely (the caller stops rendering
+ * this) once neither is present. */
+function ThinkingBlock({
+	chunk,
+	tokens,
+}: {
+	chunk: string | undefined;
+	tokens: number | undefined;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	if (!chunk && !tokens) return null;
+	return (
+		<div className="mb-1.5 rounded-lg border border-border/60 bg-muted/20 px-2.5 py-1.5 text-xs text-muted-foreground">
+			<button
+				type="button"
+				onClick={() => setExpanded((v) => !v)}
+				disabled={!chunk}
+				className="flex w-full items-center gap-1 font-medium"
+			>
+				{chunk &&
+					(expanded ? (
+						<ChevronDown className="size-3" />
+					) : (
+						<ChevronRight className="size-3" />
+					))}
+				Thinking{chunk ? "" : tokens ? ` (~${tokens} tokens)` : ""}
+			</button>
+			{expanded && chunk && (
+				<pre className="mt-1.5 max-h-40 overflow-y-auto whitespace-pre-wrap font-sans">
+					{chunk}
+				</pre>
+			)}
+		</div>
+	);
+}
+
 function ToolCallGroup({
 	parts,
+	turnActivity,
 }: {
 	parts: Extract<MessagePart, { type: "tool_call" }>[];
+	turnActivity?: TurnActivity | null;
 }) {
 	const running = parts.some((p) => p.output == null && p.error == null);
 	// Live-streaming groups mount open so the user sees tools as they run;
@@ -665,7 +890,11 @@ function ToolCallGroup({
 				{expanded && (
 					<div className="mt-2 flex flex-col gap-1.5">
 						{parts.map((p) => (
-							<ToolCallMarker key={p.callId} part={p} />
+							<ToolCallMarker
+								key={p.callId}
+								part={p}
+								turnActivity={turnActivity}
+							/>
 						))}
 					</div>
 				)}
@@ -676,14 +905,38 @@ function ToolCallGroup({
 
 function ToolCallMarker({
 	part,
+	turnActivity,
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
+	turnActivity?: TurnActivity | null;
 }) {
 	const [open, setOpen] = useState(false);
 	const running = part.output == null && part.error == null;
 	const failed = part.error != null;
 	const meta = getToolMeta(part.tool, part.input);
 	const Icon = meta.icon;
+
+	// Elapsed badge (ADR-0016 §5): ticks off `runningTools`' startedAt, skew
+	// corrected against `serverTime`. Re-render every second only while this
+	// tool call is actually the one running.
+	const runningToolInfo = turnActivity?.runningTools.find(
+		(t) => t.callId === part.callId,
+	);
+	const [, forceTick] = useState(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: keyed on whether a running tool matched at all, not the object itself — turnActivity is replaced wholesale on every broadcast, and re-arming the interval on each one would just jitter the tick offset for no benefit.
+	useEffect(() => {
+		if (!runningToolInfo) return;
+		const t = setInterval(() => forceTick((n) => n + 1), 1000);
+		return () => clearInterval(t);
+	}, [Boolean(runningToolInfo)]);
+	const elapsed =
+		runningToolInfo && turnActivity
+			? elapsedSeconds(runningToolInfo.startedAt, turnActivity.serverTime)
+			: null;
+
+	// Task activity line (ADR-0016 §5): anchored under the Task tool_call that
+	// spawned it, matched by the spawning call's id.
+	const task = turnActivity?.tasks.find((t) => t.toolUseId === part.callId);
 	const output =
 		part.error != null
 			? String(part.error)
@@ -727,7 +980,8 @@ function ToolCallMarker({
 						{meta.detail}
 					</span>
 				)}
-				<span className="ml-auto flex shrink-0 items-center text-xs text-muted-foreground">
+				<span className="ml-auto flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+					{elapsed != null && <span className="tabular-nums">{elapsed}s</span>}
 					{failed ? (
 						<span className="text-destructive">failed</span>
 					) : (
@@ -740,6 +994,16 @@ function ToolCallMarker({
 					)}
 				</span>
 			</button>
+			{task && (
+				<div className="flex items-center gap-1.5 border-t border-border px-2.5 py-1 text-xs text-muted-foreground">
+					<ListTree className="size-3 shrink-0" />
+					<span className="truncate">
+						{task.description} — {task.toolUses} tool call
+						{task.toolUses === 1 ? "" : "s"}
+						{task.lastTool ? ` (${task.lastTool})` : ""}
+					</span>
+				</div>
+			)}
 			{open && hasDetails && (
 				<div className="flex flex-col gap-1 border-t border-border px-2.5 py-1.5">
 					{isEdit && (

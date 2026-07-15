@@ -7,11 +7,20 @@ import {
 	type ApiKeySource,
 	type Query,
 	query,
+	type SDKAPIRetryMessage,
 	type SDKAssistantMessage,
 	type SDKMessage,
+	type SDKModelRefusalFallbackMessage,
 	type SDKPartialAssistantMessage,
 	type SDKRateLimitInfo,
 	type SDKResultMessage,
+	type SDKStatusMessage,
+	type SDKTaskNotificationMessage,
+	type SDKTaskProgressMessage,
+	type SDKTaskStartedMessage,
+	type SDKTaskUpdatedMessage,
+	type SDKThinkingTokensMessage,
+	type SDKToolProgressMessage,
 	type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStreamEvent, UsageTotals } from "@dilna/shared";
@@ -135,6 +144,27 @@ export type ClaudeHandle = {
 	readonly lastAssistantTranscriptUuid: string | undefined;
 	worktreePath: string;
 	listeners: Set<Listener>;
+	/**
+	 * Fired once, internally, when the underlying process exits unexpectedly
+	 * (never on a deliberate `stop()`) — process-crash is not a subscriber-facing
+	 * `AgentStreamEvent` (ADR-0016 deleted `agent_crashed` from that union), so
+	 * this is a separate notification channel rather than a fake event pushed
+	 * through `listeners`. `chatClaude` and `SessionManager`'s crash handler
+	 * both subscribe here instead of pattern-matching on a broadcast event.
+	 */
+	exitListeners: Set<
+		(info: { exitCode: number; stderrTail: string[] }) => void
+	>;
+	/**
+	 * Fired once per turn when it ends (the SDK's `result` message parsed, or
+	 * `stop()`'s synthetic unstick for a deliberately-interrupted turn) —
+	 * whether the turn succeeded or ended in a `turn_failed` broadcast either
+	 * way. Turn completion is not itself a subscriber-facing event (only
+	 * `SessionManager` may emit `session_status`, per ADR-0016 §1), so
+	 * `chatClaude` resolves off this instead of watching for a status event on
+	 * `listeners`.
+	 */
+	turnEndListeners: Set<() => void>;
 	stop: () => Promise<void>;
 	isAlive: () => boolean;
 	stderrTail: string[];
@@ -171,7 +201,35 @@ export type NormalizeState = {
 	 * to keep the set bounded per turn.
 	 */
 	streamedTextApiMessageIds: Set<string>;
+	/**
+	 * The `turn_activity` aggregate this adapter maintains for the in-flight
+	 * turn (ADR-0016 §5), fed by the SDK's `status`/`api_retry`/
+	 * `tool_progress`/`task_*`/`thinking_tokens` messages and re-emitted
+	 * (see `activityEvent`) whenever one of them is processed — each is
+	 * itself a discrete-change trigger, so no separate diffing is needed.
+	 * Reset on `result` (end of turn).
+	 */
+	activity: {
+		phase: TurnActivityPhase;
+		runningTools: Map<string, { tool: string; startedAt: number }>;
+		tasks: Map<
+			string,
+			{
+				description: string;
+				lastTool: string;
+				toolUses: number;
+				startedAt: number;
+				toolUseId?: string;
+			}
+		>;
+		thinkingTokens: number | undefined;
+	};
 };
+
+type TurnActivityPhase = Extract<
+	AgentStreamEvent,
+	{ type: "turn_activity" }
+>["phase"];
 
 // Exported alongside NormalizeState so claude.test.ts can build a fresh
 // state for normalizeMessage without duplicating its shape.
@@ -181,6 +239,12 @@ export function createNormalizeState(): NormalizeState {
 		toolMessageIds: new Map(),
 		currentTurnMessageId: null,
 		streamedTextApiMessageIds: new Set(),
+		activity: {
+			phase: null,
+			runningTools: new Map(),
+			tasks: new Map(),
+			thinkingTokens: undefined,
+		},
 	};
 }
 
@@ -396,6 +460,10 @@ export async function startClaude(
 	});
 
 	const listeners = new Set<Listener>();
+	const exitListeners = new Set<
+		(info: { exitCode: number; stderrTail: string[] }) => void
+	>();
+	const turnEndListeners = new Set<() => void>();
 	const state: NormalizeState = createNormalizeState();
 
 	let killed = false;
@@ -441,6 +509,15 @@ export async function startClaude(
 						}
 					}
 				}
+				if (msg.type === "result") {
+					for (const listener of turnEndListeners) {
+						try {
+							listener();
+						} catch {
+							// listener errors are non-fatal
+						}
+					}
+				}
 			}
 		} catch (err) {
 			if (!killed) {
@@ -454,18 +531,15 @@ export async function startClaude(
 		} finally {
 			alive = false;
 			if (!killed) {
-				const crashed: AgentStreamEvent = {
-					type: "agent_crashed",
-					exitCode: -1,
-					stderrTail,
-				};
-				for (const listener of listeners) {
+				const info = { exitCode: -1, stderrTail };
+				for (const listener of exitListeners) {
 					try {
-						listener(crashed);
+						listener(info);
 					} catch {
 						// listener errors during crash fan-out are non-fatal
 					}
 				}
+				exitListeners.clear();
 				listeners.clear();
 			}
 		}
@@ -487,24 +561,22 @@ export async function startClaude(
 	const stop = async () => {
 		if (killed) return;
 		killed = true;
-		// A turn may still be in flight: clearing `listeners` unhooks chatClaude's
-		// completion listener, so without a final event its promise would never
-		// settle and the caller's sendMessage would sit wedged until the turn
-		// timeout fired, then spuriously mark the deliberately-stopped session
-		// crashed. Emit one terminal idle so in-flight chatClaude calls resolve
-		// and run their normal end-of-turn persistence over the partial turn.
-		const idleEvent: AgentStreamEvent = {
-			type: "session_status",
-			status: "idle",
-		};
-		for (const listener of listeners) {
+		// A turn may still be in flight: clearing `listeners`/`turnEndListeners`
+		// unhooks chatClaude's own completion listener, so without a final
+		// signal its promise would never settle and the caller's sendMessage
+		// would sit wedged until the turn timeout fired, then spuriously mark
+		// the deliberately-stopped session crashed. Fire turn-end once so
+		// in-flight chatClaude calls resolve and run their normal end-of-turn
+		// persistence over the partial turn.
+		for (const listener of turnEndListeners) {
 			try {
-				listener(idleEvent);
+				listener();
 			} catch {
 				// listener errors during teardown are non-fatal
 			}
 		}
 		listeners.clear();
+		turnEndListeners.clear();
 		inputQueue.close();
 		try {
 			q.close();
@@ -537,6 +609,8 @@ export async function startClaude(
 		},
 		worktreePath: opts.worktreePath,
 		listeners,
+		exitListeners,
+		turnEndListeners,
 		stop,
 		isAlive,
 		stderrTail,
@@ -588,18 +662,19 @@ export async function chatClaude(
 		rejectChat = rej;
 	});
 
-	const completionListener: Listener = (ev) => {
-		if (ev.type === "session_status" && ev.status === "idle") {
-			resolveChat();
-		} else if (ev.type === "agent_crashed") {
-			rejectChat(
-				new Error(
-					`claude agent process exited\n${ev.stderrTail.slice(-5).join("\n")}`,
-				),
-			);
-		}
+	const turnEndListener = () => {
+		resolveChat();
 	};
-	listeners.add(completionListener);
+	handle.turnEndListeners.add(turnEndListener);
+
+	const exitListener = (info: { exitCode: number; stderrTail: string[] }) => {
+		rejectChat(
+			new Error(
+				`claude agent process exited\n${info.stderrTail.slice(-5).join("\n")}`,
+			),
+		);
+	};
+	handle.exitListeners.add(exitListener);
 
 	const abortHandler = async () => {
 		try {
@@ -624,7 +699,8 @@ export async function chatClaude(
 		return latest !== transcriptUuidAtStart ? latest : undefined;
 	} finally {
 		listeners.delete(chatListener);
-		listeners.delete(completionListener);
+		handle.turnEndListeners.delete(turnEndListener);
+		handle.exitListeners.delete(exitListener);
 		if (abortSignal) {
 			abortSignal.removeEventListener("abort", abortHandler);
 		}
@@ -686,9 +762,185 @@ export function normalizeMessage(
 			return normalizeUserMessage(msg, state);
 		case "result":
 			return normalizeResultMessage(msg, state);
+		case "tool_progress":
+			return normalizeToolProgress(msg, state);
+		case "system":
+			return normalizeSystemMessage(msg, state);
 		default:
 			return [];
 	}
+}
+
+/**
+ * Build the current `turn_activity` broadcast from the aggregate — called
+ * after every message that touches it (ADR-0016 §5). `serverTime` lets the
+ * client correct clock skew when ticking elapsed time off `startedAt`.
+ */
+function activityEvent(state: NormalizeState): AgentStreamEvent {
+	return {
+		type: "turn_activity",
+		phase: state.activity.phase,
+		runningTools: [...state.activity.runningTools.entries()].map(
+			([callId, t]) => ({ callId, tool: t.tool, startedAt: t.startedAt }),
+		),
+		tasks: [...state.activity.tasks.entries()].map(([taskId, t]) => ({
+			taskId,
+			...t,
+		})),
+		thinkingTokens: state.activity.thinkingTokens,
+		serverTime: Date.now(),
+	};
+}
+
+function normalizeToolProgress(
+	msg: SDKToolProgressMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	if (!state.activity.runningTools.has(msg.tool_use_id)) {
+		state.activity.runningTools.set(msg.tool_use_id, {
+			tool: msg.tool_name,
+			startedAt: Date.now(),
+		});
+	}
+	return [activityEvent(state)];
+}
+
+function normalizeSystemMessage(
+	msg: Extract<SDKMessage, { type: "system" }>,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	switch (msg.subtype) {
+		case "status":
+			return normalizeStatusMessage(msg, state);
+		case "api_retry":
+			return normalizeApiRetryMessage(msg, state);
+		case "task_started":
+			return normalizeTaskStarted(msg, state);
+		case "task_progress":
+			return normalizeTaskProgress(msg, state);
+		case "task_updated":
+			return normalizeTaskUpdated(msg, state);
+		case "task_notification":
+			return normalizeTaskNotification(msg, state);
+		case "thinking_tokens":
+			return normalizeThinkingTokens(msg, state);
+		case "model_refusal_fallback":
+			return normalizeModelRefusalFallback(msg);
+		default:
+			return [];
+	}
+}
+
+function normalizeStatusMessage(
+	msg: SDKStatusMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	state.activity.phase =
+		msg.status === "requesting" || msg.status === "compacting"
+			? { kind: msg.status }
+			: null;
+	return [activityEvent(state)];
+}
+
+function normalizeApiRetryMessage(
+	msg: SDKAPIRetryMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	state.activity.phase = {
+		kind: "retrying",
+		attempt: msg.attempt,
+		maxRetries: msg.max_retries,
+	};
+	return [activityEvent(state)];
+}
+
+function normalizeTaskStarted(
+	msg: SDKTaskStartedMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	state.activity.tasks.set(msg.task_id, {
+		description: msg.description,
+		lastTool: "",
+		toolUses: 0,
+		startedAt: Date.now(),
+		toolUseId: msg.tool_use_id,
+	});
+	return [activityEvent(state)];
+}
+
+function normalizeTaskProgress(
+	msg: SDKTaskProgressMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	const existing = state.activity.tasks.get(msg.task_id);
+	state.activity.tasks.set(msg.task_id, {
+		description: existing?.description ?? "",
+		lastTool: msg.last_tool_name ?? existing?.lastTool ?? "",
+		toolUses: msg.usage.tool_uses,
+		startedAt: existing?.startedAt ?? Date.now(),
+		toolUseId: existing?.toolUseId ?? msg.tool_use_id,
+	});
+	return [activityEvent(state)];
+}
+
+function normalizeTaskUpdated(
+	msg: SDKTaskUpdatedMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	const existing = state.activity.tasks.get(msg.task_id);
+	if (!existing) return [];
+	if (
+		msg.patch.status === "completed" ||
+		msg.patch.status === "failed" ||
+		msg.patch.status === "killed"
+	) {
+		state.activity.tasks.delete(msg.task_id);
+	} else if (msg.patch.description) {
+		state.activity.tasks.set(msg.task_id, {
+			...existing,
+			description: msg.patch.description,
+		});
+	}
+	return [activityEvent(state)];
+}
+
+function normalizeTaskNotification(
+	msg: SDKTaskNotificationMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	state.activity.tasks.delete(msg.task_id);
+	return [activityEvent(state)];
+}
+
+function normalizeThinkingTokens(
+	msg: SDKThinkingTokensMessage,
+	state: NormalizeState,
+): AgentStreamEvent[] {
+	state.activity.thinkingTokens = msg.estimated_tokens;
+	return [activityEvent(state)];
+}
+
+/**
+ * Refusal-fallback retraction (ADR-0016 §5). Rather than surgically evicting
+ * the retracted parts from the manager's `LiveTurn` snapshot — which is
+ * keyed by dilna's own messageId/callId, not the wire uuids this message
+ * carries, with no existing mapping between them — the manager resets the
+ * whole in-flight snapshot on this signal (a conservative superset of
+ * "evict the retracted content") and emits `resync` for every client to
+ * reconcile from. This adapter just surfaces the raw signal as a `notice` +
+ * `resync` pair; `retracted_message_uuids` itself isn't needed downstream
+ * under that simplification.
+ */
+function normalizeModelRefusalFallback(
+	msg: SDKModelRefusalFallbackMessage,
+): AgentStreamEvent[] {
+	return [
+		{
+			type: "notice",
+			message: `${msg.trigger === "refusal" ? "The model declined to continue and" : "The turn"} retried on a fallback model.`,
+		},
+		{ type: "resync" },
+	];
 }
 
 /**
@@ -731,6 +983,20 @@ function normalizeStreamEvent(
 				type: "token",
 				messageId: state.currentTurnMessageId ?? msg.uuid,
 				chunk: event.delta.text,
+			},
+		];
+	}
+
+	if (
+		event.type === "content_block_delta" &&
+		event.delta.type === "thinking_delta" &&
+		event.delta.thinking.length > 0
+	) {
+		return [
+			{
+				type: "thinking",
+				messageId: state.currentTurnMessageId ?? msg.uuid,
+				chunk: event.delta.thinking,
 			},
 		];
 	}
@@ -788,7 +1054,8 @@ function normalizeAssistantMessage(
 
 	if (msg.error) {
 		events.push({
-			type: "error",
+			type: "turn_failed",
+			class: "turn_error",
 			message: `claude agent error: ${msg.error}`,
 		});
 	}
@@ -839,6 +1106,9 @@ function normalizeUserMessage(
 			output,
 			error: isError ? output : undefined,
 		});
+		if (state.activity.runningTools.delete(callId)) {
+			events.push(activityEvent(state));
+		}
 	}
 	return events;
 }
@@ -853,6 +1123,15 @@ function normalizeResultMessage(
 	const turnMessageId = state.currentTurnMessageId ?? msg.uuid;
 	state.currentTurnMessageId = null;
 	state.streamedTextApiMessageIds.clear();
+	// `turn_activity` is valid only inside a turn (ADR-0016 §5) — reset the
+	// aggregate so the next turn starts from a clean slate; no explicit
+	// clearing event is needed, the client clears its own copy on terminal.
+	state.activity = {
+		phase: null,
+		runningTools: new Map(),
+		tasks: new Map(),
+		thinkingTokens: undefined,
+	};
 
 	const events: AgentStreamEvent[] = [];
 	// This turn's total usage (per-turn, not session-cumulative — see
@@ -871,16 +1150,15 @@ function normalizeResultMessage(
 
 	if (msg.subtype !== "success") {
 		const detail = msg.errors?.length ? ` — ${msg.errors.join("; ")}` : "";
-		events.push(
-			{
-				type: "error",
-				message: `claude agent turn ended: ${msg.subtype}${detail}`,
-			},
-			{ type: "session_status", status: "idle" },
-		);
-		return events;
+		events.push({
+			type: "turn_failed",
+			class: "turn_error",
+			message: `claude agent turn ended: ${msg.subtype}${detail}`,
+		});
 	}
-	events.push({ type: "session_status", status: "idle" });
+	// No `session_status` here — only SessionManager may emit that (ADR-0016
+	// §1); turn completion reaches it via ClaudeHandle.turnEndListeners
+	// instead (see the `for await` loop in startClaude).
 	return events;
 }
 

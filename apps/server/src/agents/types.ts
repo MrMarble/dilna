@@ -44,3 +44,13 @@ export const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
  * intervention every time.
  */
 export const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Bound on the `stopping` status (ADR-0016 §3): once a Stop request aborts
+ * the in-flight turn, the process is expected to land `idle` quickly. If it
+ * hasn't within this window the manager treats it as wedged, hard-kills the
+ * process, and routes `turn_failed(turn_timeout)` → `crashed` — the same
+ * escalation the normal turn-timeout path already uses, just on a much
+ * shorter clock since the agent has already been asked to stop.
+ */
+export const STOP_TIMEOUT_MS = 10 * 1000;

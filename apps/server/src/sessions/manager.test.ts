@@ -160,6 +160,62 @@ describe("SessionManager", () => {
 		await repoManager.delete(repo.id);
 	});
 
+	// ADR-0016 §2: beginTurn claims the turn slot synchronously (no `await`
+	// between the check and the claim), so a second concurrent call sees the
+	// claim immediately rather than racing it — this is what makes the pre-202
+	// 409 the only duplicate-send surface.
+	it("rejects a second beginTurn while one is already claimed, and persists the pending user message", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`begin-turn-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+
+		expect(sessionManager.isChatInProgress(session.id)).toBe(false);
+		const message = sessionManager.beginTurn(session.id, "hello there");
+		expect(sessionManager.isChatInProgress(session.id)).toBe(true);
+		expect(message.role).toBe("user");
+		expect(message.parts).toEqual([{ type: "text", text: "hello there" }]);
+
+		expect(() => sessionManager.beginTurn(session.id, "again")).toThrow(
+			"session already has a chat in progress",
+		);
+
+		// The pending placeholder is persisted immediately, not just claimed
+		// in memory.
+		const persisted = await sessionManager.getMessages(session.id);
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0]?.id).toBe(message.id);
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
+	it("beginTurn throws for a session that doesn't exist", () => {
+		expect(() => sessionManager.beginTurn("no-such-session", "hi")).toThrow(
+			"session not found",
+		);
+	});
+
+	// ADR-0016 §1: a crashed session must reopen crashed for a new
+	// subscriber, not silently reset to idle.
+	it("subscribe() opens a crashed session as crashed, not idle", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `crashed-${Date.now()}`);
+		const session = await sessionManager.create(repo.id);
+		await sessionManager.setStatus(session.id, "crashed");
+
+		const received: string[] = [];
+		const unsubscribe = sessionManager.subscribe(session.id, (ev) => {
+			if (ev.type === "session_status") received.push(ev.status);
+		});
+		unsubscribe();
+
+		expect(received).toEqual(["crashed"]);
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
 	// Simulates the restart/reload path: a reading persisted by a previous
 	// server process must be served on the very first getRateLimits() call
 	// (the SSE connect snapshot), without waiting for any agent turn.
