@@ -136,7 +136,29 @@ export async function fetchClaudeOauthUsage(deps?: {
 			);
 			return null;
 		}
-		return (await res.json()) as PulledRateLimits;
+		const body = (await res.json()) as PulledRateLimits;
+		// Diagnostic only: pullRateLimitsToWindows silently drops a window whose
+		// shape doesn't match what we assume (utilization: number, resets_at:
+		// ISO string) — logging that shape here is what makes a
+		// partially-populated footer (e.g. seven_day updates, five_hour never
+		// does) diagnosable instead of a second round of silent data loss.
+		for (const kind of ["five_hour", "seven_day"] as const) {
+			const window = body?.[kind];
+			console.error(
+				`[claude-agent] usage pull window ${kind}: ${
+					window === undefined
+						? "absent"
+						: window === null
+							? "null"
+							: `utilization=${typeof window.utilization} resets_at=${typeof window.resets_at}${
+									typeof window.resets_at === "string"
+										? ` (${window.resets_at})`
+										: ""
+								}`
+				}`,
+			);
+		}
+		return body;
 	} catch (err) {
 		console.error(
 			`[claude-agent] usage pull failed: ${err instanceof Error ? err.message : String(err)}`,
