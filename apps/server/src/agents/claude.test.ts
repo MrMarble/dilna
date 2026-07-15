@@ -137,8 +137,10 @@ describe("normalizeMessage usage_update", () => {
 			usage: { inputTokens: 30, outputTokens: 13 },
 			cumulative: { inputTokens: 30, outputTokens: 13 },
 		});
-		// session_status:idle still fires alongside the reconciliation.
-		expect(events).toContainEqual({ type: "session_status", status: "idle" });
+		// No session_status here — only SessionManager may emit that (ADR-0016
+		// §1); a successful result carries no turn_failed either.
+		expect(events.some((e) => e.type === "session_status")).toBe(false);
+		expect(events.some((e) => e.type === "turn_failed")).toBe(false);
 	});
 
 	it("falls back to the result message's own uuid when no assistant message started the turn", () => {

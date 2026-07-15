@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { sessionManager } from "../sessions/manager";
+import { runSseLoop } from "./sse";
 
 // Cross-session status SSE stream (per ADR-0006 "Q17" / ADR-0008): one
 // subscription per app load, independent of any single session's own
@@ -36,45 +37,19 @@ streamRoute.get("/", (c) => {
 			});
 		}
 
-		// 2. Subscribe to live cross-session status changes.
-		const queue: { event: string; data: string }[] = [];
-		let resolveFlush: (() => void) | null = null;
-		const unsubscribe = sessionManager.subscribeAll((ev) => {
-			queue.push({ event: ev.type, data: JSON.stringify(ev) });
-			if (resolveFlush) {
-				resolveFlush();
-				resolveFlush = null;
-			}
+		// 2. Subscribe to live cross-session status changes, then pump.
+		await runSseLoop(stream, c.req.raw.signal, (push) => {
+			const unsubscribe = sessionManager.subscribeAll((ev) => {
+				push({ event: ev.type, data: JSON.stringify(ev) });
+			});
+			// 2b. Kick a background account-usage pull (throttled inside the
+			//     manager) so a tab opened after the server sat idle gets real
+			//     windows shortly after connect instead of waiting for the next
+			//     turn to finish. Placed after subscribeAll so the resulting
+			//     `rate_limits` broadcast can't fall between snapshot and
+			//     subscription.
+			sessionManager.pokeRateLimitRefresh();
+			return unsubscribe;
 		});
-
-		// 2b. Kick a background account-usage pull (throttled inside the
-		//     manager) so a tab opened after the server sat idle gets real
-		//     windows shortly after connect instead of waiting for the next
-		//     turn to finish. Placed after subscribeAll so the resulting
-		//     `rate_limits` broadcast can't fall between snapshot and
-		//     subscription.
-		sessionManager.pokeRateLimitRefresh();
-
-		// 3. Pump queue to the SSE stream until the client disconnects.
-		const abort = c.req.raw.signal;
-		try {
-			while (!abort.aborted) {
-				if (queue.length === 0) {
-					await new Promise<void>((resolve) => {
-						resolveFlush = resolve;
-						abort.addEventListener("abort", () => resolve(), { once: true });
-					});
-				}
-				while (queue.length > 0) {
-					const item = queue.shift();
-					if (item) {
-						await stream.writeSSE({ event: item.event, data: item.data });
-					}
-				}
-				await stream.sleep(0);
-			}
-		} finally {
-			unsubscribe();
-		}
 	});
 });

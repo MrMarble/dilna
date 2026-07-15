@@ -31,7 +31,11 @@ import {
 	startClaude,
 } from "../agents/claude";
 import { fetchClaudeOauthUsage } from "../agents/claudeUsage";
-import { IDLE_TIMEOUT_MS, TURN_TIMEOUT_MS } from "../agents/types";
+import {
+	IDLE_TIMEOUT_MS,
+	STOP_TIMEOUT_MS,
+	TURN_TIMEOUT_MS,
+} from "../agents/types";
 import { getDb } from "../db";
 import {
 	messages as messagesTable,
@@ -332,9 +336,9 @@ export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
 
 type Listener = (event: AgentStreamEvent) => void;
 
-/** Thrown by the race in `sendMessage` when a turn exceeds `TURN_TIMEOUT_MS`
+/** Thrown by the race in `runTurn` when a turn exceeds `TURN_TIMEOUT_MS`
  * with no `result`/crash from the agent backend. Distinguished from a real
- * agent error so the `catch` in `sendMessage` can tell "the agent stalled"
+ * agent error so the `catch` in `runTurn` can tell "the agent stalled"
  * apart from "the agent actually failed" and re-throw anything else as-is. */
 class TurnTimeoutError extends Error {
 	constructor() {
@@ -343,9 +347,46 @@ class TurnTimeoutError extends Error {
 	}
 }
 
+/** Thrown by `beginTurn` when the session id doesn't exist — distinguished
+ * from the "already in progress" conflict so the route can map each to its
+ * own HTTP status (404 vs 409) without matching on the error's message
+ * string. */
+export class SessionNotFoundError extends Error {
+	constructor() {
+		super("session not found");
+		this.name = "SessionNotFoundError";
+	}
+}
+
+type TurnFailedClass = Extract<
+	AgentStreamEvent,
+	{ type: "turn_failed" }
+>["class"];
+
+/**
+ * Per-turn stop/abort state (ADR-0016 §3), claimed synchronously by
+ * `beginTurn` — before `ensureStarted` even runs — so a Stop request lands
+ * correctly whether the turn is still spawning (`starting`) or already
+ * `working`. Kept independent of `ActiveAgent` (which doesn't exist until a
+ * cold spawn finishes) in `SessionManager.turnsInProgress`, keyed by session
+ * id; the single source of truth for "is a turn in flight" (`isChatInProgress`)
+ * and for the 202-vs-409 accept race.
+ */
+type Turn = {
+	abortController: AbortController;
+	/** Idempotency guard: a repeated Stop call while already stopping is
+	 * absorbed without restarting `escalationTimer`'s clock. */
+	stopRequested: boolean;
+	escalationTimer: NodeJS.Timeout | null;
+	/** Set once a `turn_failed` has already routed this turn to its terminal
+	 * status (stop-timeout escalation, or a crash mid-turn) — `runTurn`'s own
+	 * end-of-turn status transition is then redundant and skipped, since a
+	 * turn may only reach one terminal status. */
+	terminalized: boolean;
+};
+
 type ActiveAgent = {
 	handle: ClaudeHandle;
-	chatInProgress: boolean;
 	idleTimer: NodeJS.Timeout | null;
 	/** Snapshot of the in-flight turn's assistant message, replayed to
 	 * subscribers that connect mid-turn (see {@link LiveTurn}). Null between
@@ -353,7 +394,7 @@ type ActiveAgent = {
 	liveTurn: LiveTurn | null;
 	/** One-shot: set by `ensureStarted` when it had to start a fresh Claude
 	 * session instead of resuming (the prior one was unresumable — see
-	 * `buildContextPrimer`), consumed and cleared by the next `sendMessage`
+	 * `buildContextPrimer`), consumed and cleared by the next `runTurn`
 	 * so the freshly-spawned agent gets dilna's own persisted history as
 	 * context instead of starting completely blind. */
 	contextPrimer?: string;
@@ -380,6 +421,26 @@ class SessionManager {
 	 * (see rateLimits.ts), not stored. */
 	private rateLimits = new Map<RateLimitWindowKind, RateLimitSnapshot>();
 	private rateLimitsHydrated = false;
+	/** Session id -> in-flight turn's stop/abort state (ADR-0016 §2/§3). The
+	 * sole source of truth for "does this session have a turn in flight" —
+	 * claimed synchronously by `beginTurn`, before any spawn, so the pre-202
+	 * check-and-claim can't race a second accept (see `beginTurn`'s doc
+	 * comment). */
+	private turnsInProgress = new Map<string, Turn>();
+	/** Last `turn_failed` broadcast per session, retained until the next
+	 * accepted turn (`beginTurn` clears it) so a client that subscribes after
+	 * the failure — but before anything else happens — still sees why the
+	 * session is `crashed`/`idle` instead of just the bare status (ADR-0016
+	 * §4's snapshot rule). */
+	private lastTurnFailed = new Map<string, AgentStreamEvent>();
+	/** The in-flight turn's current `turn_activity`/`notice`, mirrored here so
+	 * a subscriber joining mid-turn sees them too (ADR-0016 §4/§5: both are
+	 * "present in the opening snapshot only mid-turn") — otherwise a
+	 * reconnecting tab renders nothing until the next discrete change.
+	 * Cleared at accept (`beginTurn`) and at turn end (`runTurn`), same
+	 * lifetime as `ActiveAgent.liveTurn`. */
+	private lastTurnActivity = new Map<string, AgentStreamEvent>();
+	private lastNotice = new Map<string, AgentStreamEvent>();
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
 		const db = getDb();
@@ -564,6 +625,22 @@ class SessionManager {
 			.run();
 		const view = await this.getView(id);
 		if (view) this.broadcastGlobal({ type: "session_status", session: view });
+	}
+
+	/**
+	 * The one function every status transition runs through (ADR-0016 §1): DB
+	 * write → per-session broadcast → global mirror. Callers used to pair
+	 * `setStatus` with their own ad-hoc `broadcast(id, {type:"session_status"...})`
+	 * call, which is how the "working" transition ended up with no per-session
+	 * broadcast at all (see `runTurn`'s predecessor) — subscribers only ever
+	 * learned a turn had started via the replay-on-subscribe path, never live.
+	 */
+	private async transitionStatus(
+		id: string,
+		status: Session["status"],
+	): Promise<void> {
+		await this.setStatus(id, status);
+		this.broadcast(id, { type: "session_status", status });
 	}
 
 	/**
@@ -777,17 +854,50 @@ class SessionManager {
 	subscribe(id: string, listener: Listener): () => void {
 		if (!this.subscribers.has(id)) this.subscribers.set(id, new Set());
 		this.subscribers.get(id)?.add(listener);
+
+		// Snapshot rule (ADR-0016 §4): reproduce what a live viewer of the
+		// current state would have seen. The last `turn_failed` (while still
+		// current — cleared by the next accepted turn) always precedes the
+		// opening status, preserving §2's "failure event precedes terminal
+		// status" ordering for a subscriber who missed the original broadcast.
+		const lastFailed = this.lastTurnFailed.get(id);
+		if (lastFailed) listener(lastFailed);
+
+		// Read the persisted status once (synchronously — no `await` — so this
+		// stays ordered relative to any broadcast racing the same tick) and
+		// share it between both branches below.
+		const row = getDb()
+			.select({ status: sessionsTable.status })
+			.from(sessionsTable)
+			.where(eq(sessionsTable.id, id))
+			.get();
+		const persistedStatus = row?.status as Session["status"] | undefined;
+
 		const active = this.active.get(id);
-		if (!active) {
-			// No active agent → emit one idle status so the UI can settle.
-			listener({ type: "session_status", status: "idle" });
-		} else if (active.chatInProgress) {
-			// Joined mid-turn (page reload, another device): the working status
-			// and the turn's message_start/tool events were broadcast before this
-			// subscriber existed, so re-emit the status and replay the turn's
-			// snapshot — without this the pane stays blank until the turn's next
-			// text token, which on a tool-heavy turn can be minutes away.
-			listener({ type: "session_status", status: "working" });
+		const inProgress = this.turnsInProgress.has(id);
+		if (!active || !inProgress) {
+			// No turn in flight → open with the session's real persisted status
+			// (idle or crashed), not an unconditional idle — a crashed session
+			// must reopen crashed, not silently reset to idle on every new
+			// subscriber (ADR-0016 §1).
+			listener({ type: "session_status", status: persistedStatus ?? "idle" });
+		} else {
+			// Joined mid-turn (page reload, another device): the in-flight
+			// phase's status and the turn's message_start/tool events were
+			// broadcast before this subscriber existed, so re-emit the current
+			// phase and replay the turn's snapshot — without this the pane
+			// stays blank until the turn's next text token, which on a
+			// tool-heavy turn can be minutes away. `notice`/`turn_activity` are
+			// likewise "present in the opening snapshot only mid-turn"
+			// (ADR-0016 §4/§5).
+			listener({
+				type: "session_status",
+				status: persistedStatus ?? "working",
+			});
+			const notice = this.lastNotice.get(id);
+			if (notice) listener(notice);
+			const activity = this.lastTurnActivity.get(id);
+			if (activity) listener(activity);
 			if (active.liveTurn) {
 				for (const ev of liveTurnReplayEvents(active.liveTurn)) {
 					listener(ev);
@@ -800,17 +910,13 @@ class SessionManager {
 	}
 
 	/**
-	 * True if the session currently has a turn in flight. `sendMessage` itself
-	 * only discovers this after an `await` (inside `ensureStarted`), which is
-	 * too late for the route handler to reject the request before it's
-	 * already committed to a 202 — see routes/sessions.ts. Checking the
-	 * in-memory flag here is synchronous-fast for the common case (session
-	 * already active) and lets the route surface the conflict as a real HTTP
-	 * error instead of silently dropping the message while the client shows
-	 * an optimistic bubble for it.
+	 * True if the session currently has a turn in flight. Backed by
+	 * `turnsInProgress`, claimed synchronously by `beginTurn` before any
+	 * `await` — see that method's doc comment for why this is what makes the
+	 * pre-202 409 the only duplicate-send surface (ADR-0016 §2).
 	 */
 	isChatInProgress(id: string): boolean {
-		return this.active.get(id)?.chatInProgress ?? false;
+		return this.turnsInProgress.has(id);
 	}
 
 	async getMessages(id: string): Promise<Message[]> {
@@ -870,167 +976,362 @@ class SessionManager {
 	}
 
 	/**
-	 * Send a user message to the session's agent. Spawns the agent process
-	 * if it isn't running. Returns when the agent goes idle (chat complete).
+	 * Claim the turn slot and persist the user's message — synchronously, with
+	 * no `await` between the 409 check and the claim. This is the fix for
+	 * ADR-0016 §2's post-202 duplicate-send race: the old check (in what is
+	 * now `runTurn`) happened after an `await ensureStarted(...)`, so a fast
+	 * second POST could pass the same check before the first request's claim
+	 * ever landed, and both would get their own 202. `turnsInProgress` is
+	 * claimed here instead — before `runTurn`'s spawn even starts — making the
+	 * pre-202 409 the only duplicate-send surface (post-202 "already busy" is
+	 * now structurally impossible).
 	 *
-	 * Live events are broadcast to subscribers as they arrive. The user's
-	 * message is persisted immediately under a placeholder id (its content
-	 * is already fully known — no reason to wait), so a page reload mid-turn
-	 * still shows it instead of an empty history. The assistant's message is
-	 * still only persisted at turn end (fetched from the agent backend,
-	 * which assigns its own id), at which point the placeholder is dropped.
+	 * Also broadcasts `user_message` (ADR-0016 §6) so every subscriber —
+	 * including the sender's own stream connection — sees the persisted row
+	 * at the same time the 202 response (which echoes the same row) reaches
+	 * the sender.
+	 *
+	 * Throws if a turn is already in progress, or the session doesn't exist —
+	 * routes/sessions.ts turns the former into the 409.
 	 */
-	async sendMessage(id: string, text: string): Promise<void> {
-		const session = await this.get(id);
-		if (!session) throw new Error("session not found");
-
-		const active = await this.ensureStarted(id, session);
-		if (active.chatInProgress) {
+	beginTurn(id: string, text: string): Message {
+		if (this.turnsInProgress.has(id)) {
 			throw new Error("session already has a chat in progress");
 		}
-		active.chatInProgress = true;
-		this.clearIdleTimer(active);
-		await this.setStatus(id, "working");
-		this.persistMessage(id, {
+		const row = getDb()
+			.select({ id: sessionsTable.id })
+			.from(sessionsTable)
+			.where(eq(sessionsTable.id, id))
+			.get();
+		if (!row) throw new SessionNotFoundError();
+
+		this.turnsInProgress.set(id, {
+			abortController: new AbortController(),
+			stopRequested: false,
+			escalationTimer: null,
+			terminalized: false,
+		});
+		// A `turn_failed` is only "current" until the next accepted turn
+		// (ADR-0016 §4's snapshot rule); `turn_activity`/`notice` are valid
+		// only inside the turn that's about to start.
+		this.lastTurnFailed.delete(id);
+		this.lastTurnActivity.delete(id);
+		this.lastNotice.delete(id);
+
+		const message: Message = {
 			id: this.pendingUserMessageId(id),
 			sessionId: id,
 			role: "user",
 			parts: [{ type: "text", text }],
 			createdAt: Math.floor(Date.now() / 1000),
-		});
-
-		const handle = active.handle;
-		const onEvent = (ev: AgentStreamEvent) => {
-			// Mirror the turn's content into the live-turn snapshot before
-			// broadcasting, so a subscriber connecting between events can be
-			// replayed the turn-so-far (see subscribe).
-			active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
-			this.broadcast(id, this.accumulateSessionUsage(id, ev));
 		};
+		this.persistMessage(id, message);
+		this.broadcast(id, { type: "user_message", message });
+		return message;
+	}
 
-		const crashHandler: Listener = (ev) => {
-			if (ev.type === "agent_crashed") {
-				this.broadcast(id, ev);
-				this.markCrashed(id);
-			}
-		};
-		active.handle.listeners.add(crashHandler);
-
-		// One-shot: ensureStarted sets this when it had to start a fresh
-		// session instead of resuming (see buildContextPrimer). Only the
-		// outgoing prompt gets the recap prepended — the persisted user
-		// message keeps the original text so history doesn't show it twice.
-		const primer = active.contextPrimer;
-		active.contextPrimer = undefined;
-		const outgoingText = primer ? `${primer}\n\n${text}` : text;
-
-		let expectedClaudeMessageId: string | undefined;
-		let timedOut = false;
+	/**
+	 * Run a turn already claimed by `beginTurn`: spawn the agent process if
+	 * it isn't running, send the message, and return once the turn reaches a
+	 * terminal status. Live events are broadcast to subscribers as they
+	 * arrive. The assistant's message is only persisted at turn end (fetched
+	 * from the agent backend, which assigns its own id), at which point the
+	 * pending-user placeholder `beginTurn` wrote is dropped or promoted (see
+	 * ADR-0014).
+	 *
+	 * Every exit path funnels through exactly one `failTurn` call (on
+	 * failure) or the normal-completion tail (on success) — never both, and
+	 * never neither — so a turn always ends in exactly one terminal status,
+	 * preceded by exactly one `turn_failed` on failure (ADR-0016 §2).
+	 */
+	async runTurn(id: string, text: string): Promise<void> {
+		const turn = this.turnsInProgress.get(id);
+		if (!turn) {
+			console.error(
+				`[sessions] runTurn invoked for ${id} with no claimed turn — dropping`,
+			);
+			return;
+		}
 		try {
-			expectedClaudeMessageId = await Promise.race([
-				chatClaude(handle, { message: outgoingText, onEvent }),
-				setTimeoutAsync(TURN_TIMEOUT_MS).then((): never => {
-					throw new TurnTimeoutError();
-				}),
-			]);
-		} catch (err) {
-			if (!(err instanceof TurnTimeoutError)) throw err;
-			timedOut = true;
-		} finally {
-			active.handle.listeners.delete(crashHandler);
-			active.chatInProgress = false;
+			const session = await this.get(id);
+			if (!session) return; // beginTurn already checked this exists
 
-			// Claude's agentSessionId is unknown until the first turn's init
-			// message arrives (see claude.ts), so re-sync it post-chat.
-			if (handle.agentSessionId) {
-				const db = getDb();
-				db.update(sessionsTable)
-					.set({ agentSessionId: handle.agentSessionId })
-					.where(eq(sessionsTable.id, id))
-					.run();
-			}
-
-			// Persist everything we don't already have from the agent backend.
-			// The placeholder is only dropped once the turn's real user row
-			// landed; if the transcript never recorded the turn (crash before
-			// the init handshake, transcript unreadable) it's promoted to a
-			// permanent row instead — the user's message must survive every
-			// failure mode (ADR-0014).
-			let persistedUserMessage = false;
+			let active: ActiveAgent;
 			try {
-				({ persistedUserMessage } = await this.persistMessagesFromAgent(
-					id,
-					handle,
-					expectedClaudeMessageId,
-				));
+				active = await this.ensureStarted(id, session);
 			} catch (err) {
-				console.error(
-					`[sessions] failed to persist turn messages for ${id}:`,
-					err,
-				);
-			}
-			if (persistedUserMessage) {
-				this.deleteMessage(id, this.pendingUserMessageId(id));
-			} else {
+				// Nothing spawned — the placeholder can only be promoted, never
+				// resolved from a transcript.
 				this.promotePendingUserMessage(id);
+				this.failTurn(id, turn, {
+					class: "spawn_failure",
+					message: `failed to start agent: ${err instanceof Error ? err.message : String(err)}`,
+				});
+				return;
 			}
-			// The turn's rows are now in the DB (or promoted) — the in-memory
-			// snapshot has served its purpose. Cleared only after persisting so
-			// a subscriber connecting in between never sees neither.
-			active.liveTurn = null;
 
-			// Best-effort: if the agent auto-generated a title, sync it.
-			this.maybeSyncTitle(id, handle).catch(() => {});
+			this.clearIdleTimer(active);
+			await this.transitionStatus(id, "working");
 
-			if (timedOut) {
-				// The process is stalled, not merely slow — route through the
-				// same crash handling a real `agent_crashed` event gets (see
-				// TURN_TIMEOUT_MS): kills the wedged handle, drops it from
-				// `active` so the next send spawns fresh instead of reusing (and
-				// re-hanging on) this one, and gives the client an explicit,
-				// visible signal instead of leaving it to infer nothing is
-				// happening.
-				console.error(
-					`[sessions] turn for ${id} exceeded ${TURN_TIMEOUT_MS / 1000}s with no response — treating as crashed`,
-				);
-				this.broadcast(id, {
-					type: "agent_crashed",
-					exitCode: -1,
-					stderrTail: [
-						...handle.stderrTail.slice(-5),
-						`dilna: turn aborted after ${TURN_TIMEOUT_MS / 60000}m with no response from the agent`,
-					],
-				});
-				this.markCrashed(id);
-			} else {
-				// Best-effort: pull fresh account rate limits now that the turn
-				// consumed quota. fetchClaudeOauthUsage already logs its own
-				// soft-failures; this catch only guards unexpected errors from
-				// parsing/persisting the result (applyRateLimitWindows), so a bad
-				// response can't take down the turn.
-				this.refreshRateLimits().catch((err) => {
-					console.error(
-						`[sessions] failed to apply refreshed rate limits for ${id}:`,
-						err,
-					);
-				});
+			if (turn.stopRequested) {
+				// Stop landed while still spawning (cold start): per ADR-0016 §3
+				// this completes the spawn but skips prompt dispatch entirely,
+				// leaving the process warm rather than sending the message and
+				// racing to abort it.
+				await this.transitionStatus(id, "idle");
+				this.armIdleTimer(id, active);
+				return;
+			}
 
-				// Recompute the "Changed files" panel's diff now that the turn's
-				// worktree edits (committed or not) have settled.
-				try {
-					const files = await this.getChangedFiles(id);
-					this.broadcast(id, { type: "changed_files", files });
-				} catch (err) {
-					console.error(
-						`[sessions] failed to compute changed files for ${id}:`,
-						err,
-					);
+			const handle = active.handle;
+			const onEvent = (ev: AgentStreamEvent) => {
+				// Refusal-fallback retraction (ADR-0016 §5): reset the whole
+				// in-flight snapshot rather than trying to surgically evict just
+				// the retracted parts (see normalizeModelRefusalFallback's doc
+				// comment) — every client re-runs its on-open routine off the
+				// `resync` this pairs with.
+				if (ev.type === "resync") {
+					active.liveTurn = null;
+				} else {
+					// Mirror the turn's content into the live-turn snapshot before
+					// broadcasting, so a subscriber connecting between events can be
+					// replayed the turn-so-far (see subscribe).
+					active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
+				}
+				const outgoing = this.accumulateSessionUsage(id, ev);
+				if (outgoing.type === "turn_failed") {
+					this.lastTurnFailed.set(id, outgoing);
+				} else if (outgoing.type === "turn_activity") {
+					this.lastTurnActivity.set(id, outgoing);
+				} else if (outgoing.type === "notice") {
+					this.lastNotice.set(id, outgoing);
+				}
+				this.broadcast(id, outgoing);
+			};
+
+			// One-shot: ensureStarted sets this when it had to start a fresh
+			// session instead of resuming (see buildContextPrimer). Only the
+			// outgoing prompt gets the recap prepended — the persisted user
+			// message keeps the original text so history doesn't show it twice.
+			const primer = active.contextPrimer;
+			active.contextPrimer = undefined;
+			const outgoingText = primer ? `${primer}\n\n${text}` : text;
+
+			let expectedClaudeMessageId: string | undefined;
+			let timedOut = false;
+			let crashed = false;
+			try {
+				expectedClaudeMessageId = await Promise.race([
+					chatClaude(handle, {
+						message: outgoingText,
+						onEvent,
+						abortSignal: turn.abortController.signal,
+					}),
+					setTimeoutAsync(TURN_TIMEOUT_MS).then((): never => {
+						throw new TurnTimeoutError();
+					}),
+				]);
+			} catch (err) {
+				if (err instanceof TurnTimeoutError) {
+					timedOut = true;
+				} else if (!handle.isAlive()) {
+					// The process exited mid-turn — chatClaude's own exitListener
+					// rejected with the same fact; nothing more to extract from
+					// the error itself beyond "the process is gone".
+					crashed = true;
+				} else {
+					throw err;
+				}
+			} finally {
+				// Claude's agentSessionId is unknown until the first turn's init
+				// message arrives (see claude.ts), so re-sync it post-chat.
+				if (handle.agentSessionId) {
+					const db = getDb();
+					db.update(sessionsTable)
+						.set({ agentSessionId: handle.agentSessionId })
+						.where(eq(sessionsTable.id, id))
+						.run();
 				}
 
-				await this.setStatus(id, "idle");
-				this.armIdleTimer(id, active);
+				// Persist everything we don't already have from the agent backend.
+				// The placeholder is only dropped once the turn's real user row
+				// landed; if the transcript never recorded the turn (crash before
+				// the init handshake, transcript unreadable) it's promoted to a
+				// permanent row instead — the user's message must survive every
+				// failure mode (ADR-0014).
+				let persistedUserMessage = false;
+				try {
+					({ persistedUserMessage } = await this.persistMessagesFromAgent(
+						id,
+						handle,
+						expectedClaudeMessageId,
+					));
+				} catch (err) {
+					console.error(
+						`[sessions] failed to persist turn messages for ${id}:`,
+						err,
+					);
+					this.failTurn(id, turn, {
+						class: "persistence_failure",
+						message: `failed to persist turn messages: ${err instanceof Error ? err.message : String(err)}`,
+					});
+				}
+				if (persistedUserMessage) {
+					this.deleteMessage(id, this.pendingUserMessageId(id));
+				} else {
+					this.promotePendingUserMessage(id);
+				}
+				// The turn's rows are now in the DB (or promoted) — the in-memory
+				// snapshot has served its purpose. Cleared only after persisting so
+				// a subscriber connecting in between never sees neither.
+				active.liveTurn = null;
+				// turn_activity/notice are valid only inside a turn (ADR-0016 §5).
+				this.lastTurnActivity.delete(id);
+				this.lastNotice.delete(id);
+
+				// Best-effort: if the agent auto-generated a title, sync it.
+				this.maybeSyncTitle(id, handle).catch(() => {});
+
+				if (timedOut) {
+					// The process is stalled, not merely slow — route through the
+					// same failure handling a real crash gets: kills the wedged
+					// handle, drops it from `active` so the next send spawns fresh
+					// instead of reusing (and re-hanging on) this one, and gives
+					// the client an explicit, visible signal instead of leaving it
+					// to infer nothing is happening.
+					console.error(
+						`[sessions] turn for ${id} exceeded ${TURN_TIMEOUT_MS / 1000}s with no response — treating as crashed`,
+					);
+					this.failTurn(id, turn, {
+						class: "turn_timeout",
+						message: `turn aborted after ${TURN_TIMEOUT_MS / 60000}m with no response from the agent`,
+						detail: { stderrTail: handle.stderrTail.slice(-5) },
+					});
+				} else if (crashed) {
+					this.failTurn(id, turn, {
+						class: "agent_crash",
+						message: "claude agent process exited",
+						detail: { stderrTail: handle.stderrTail.slice(-5) },
+					});
+				} else if (!turn.terminalized) {
+					// Normal end of turn — and not already routed to a terminal
+					// status by a racing stop-timeout escalation (see
+					// requestStop/escalateStopTimeout) or a persistence failure
+					// just above.
+					//
+					// Best-effort: pull fresh account rate limits now that the
+					// turn consumed quota. fetchClaudeOauthUsage already logs its
+					// own soft-failures; this catch only guards unexpected errors
+					// from parsing/persisting the result (applyRateLimitWindows),
+					// so a bad response can't take down the turn.
+					this.refreshRateLimits().catch((err) => {
+						console.error(
+							`[sessions] failed to apply refreshed rate limits for ${id}:`,
+							err,
+						);
+					});
+
+					// Recompute the "Changed files" panel's diff now that the
+					// turn's worktree edits (committed or not) have settled.
+					try {
+						const files = await this.getChangedFiles(id);
+						this.broadcast(id, { type: "changed_files", files });
+					} catch (err) {
+						console.error(
+							`[sessions] failed to compute changed files for ${id}:`,
+							err,
+						);
+					}
+
+					await this.transitionStatus(id, "idle");
+					this.armIdleTimer(id, active);
+				}
 			}
+		} finally {
+			if (turn.escalationTimer) clearTimeout(turn.escalationTimer);
+			this.turnsInProgress.delete(id);
 		}
+	}
+
+	/**
+	 * Broadcast the turn's one `turn_failed` event and route to its mapped
+	 * terminal status (ADR-0016 §2's class→terminal table:
+	 * `spawn_failure`/`agent_crash`/`turn_timeout` → `crashed`;
+	 * `turn_error`/`persistence_failure` → `idle`). Idempotent per turn — a
+	 * turn may reach exactly one terminal status, so a second call (e.g. the
+	 * stop-timeout escalation racing a genuine crash) is a no-op.
+	 */
+	private failTurn(
+		id: string,
+		turn: Turn,
+		failure: {
+			class: TurnFailedClass;
+			message: string;
+			detail?: { exitCode?: number; stderrTail?: string[] };
+		},
+	): void {
+		if (turn.terminalized) return;
+		turn.terminalized = true;
+
+		const ev: AgentStreamEvent = { type: "turn_failed", ...failure };
+		this.lastTurnFailed.set(id, ev);
+		this.broadcast(id, ev);
+
+		const crashy =
+			failure.class === "spawn_failure" ||
+			failure.class === "agent_crash" ||
+			failure.class === "turn_timeout";
+		if (crashy) {
+			this.markCrashed(id);
+		} else {
+			void this.transitionStatus(id, "idle");
+			const active = this.active.get(id);
+			if (active) this.armIdleTimer(id, active);
+		}
+	}
+
+	/**
+	 * Stop the in-flight turn, if any (ADR-0016 §3). Aborts via the SDK's
+	 * `interrupt()` (wired through `chatClaude`'s `abortSignal`) rather than
+	 * killing the process — the process stays warm and the session lands
+	 * `idle`, a clean ending with no `turn_failed`. No-op success when there
+	 * is no turn in progress, and idempotent while stopping is already under
+	 * way (a repeat call does not restart the escalation clock). Bounded by
+	 * `STOP_TIMEOUT_MS`: if the turn hasn't reached a terminal status by
+	 * then, `escalateStopTimeout` hard-kills the process instead.
+	 */
+	async requestStop(id: string): Promise<void> {
+		const turn = this.turnsInProgress.get(id);
+		if (!turn) return;
+		if (turn.stopRequested) return;
+		turn.stopRequested = true;
+		await this.transitionStatus(id, "stopping");
+		turn.abortController.abort();
+		turn.escalationTimer = setTimeout(
+			() => this.escalateStopTimeout(id),
+			STOP_TIMEOUT_MS,
+		);
+	}
+
+	/**
+	 * `requestStop`'s escalation: `interrupt()` didn't bring the turn to a
+	 * terminal status within `STOP_TIMEOUT_MS`, so the process is wedged, not
+	 * just slow to acknowledge. Hard-kills it via the same `turn_failed`
+	 * path a real crash gets (`markCrashed`, inside `failTurn`) — no new
+	 * failure class. `failTurn`'s `terminalized` guard makes this safe to
+	 * race against `runTurn`'s own completion (whichever gets there first
+	 * wins; the other call is a no-op).
+	 */
+	private escalateStopTimeout(id: string): void {
+		const turn = this.turnsInProgress.get(id);
+		if (!turn || turn.terminalized) return;
+		console.error(
+			`[sessions] stop for ${id} did not complete within ${STOP_TIMEOUT_MS / 1000}s — killing the process`,
+		);
+		this.failTurn(id, turn, {
+			class: "turn_timeout",
+			message: `stop did not complete within ${STOP_TIMEOUT_MS / 1000}s with no response from the agent`,
+		});
 	}
 
 	/**
@@ -1222,8 +1523,7 @@ class SessionManager {
 		} catch {
 			// already gone
 		}
-		this.broadcast(id, { type: "session_status", status: "idle" });
-		await this.setStatus(id, "idle");
+		await this.transitionStatus(id, "idle");
 	}
 
 	private async ensureStarted(
@@ -1234,8 +1534,7 @@ class SessionManager {
 		if (existing?.handle.isAlive()) return existing;
 		if (existing) this.active.delete(id);
 
-		await this.setStatus(id, "starting");
-		this.broadcast(id, { type: "session_status", status: "starting" });
+		await this.transitionStatus(id, "starting");
 
 		if (session.agentType === "openai") {
 			throw new Error("openai agent backend is not implemented yet");
@@ -1264,6 +1563,18 @@ class SessionManager {
 				);
 				resumeId = undefined;
 				contextPrimer = await this.buildContextPrimer(id);
+				// Degraded success, not failure (ADR-0016 §2): the agent's own
+				// memory of the conversation is gone, but dilna's history and the
+				// worktree's files are unaffected — a transient inline notice,
+				// not a turn_failed. Retained for the mid-turn subscribe snapshot
+				// (ADR-0016 §4/§5) same as the aggregate below.
+				const noticeEvent: AgentStreamEvent = {
+					type: "notice",
+					message:
+						"Couldn't resume the previous agent session — started a fresh one primed with this session's history.",
+				};
+				this.lastNotice.set(id, noticeEvent);
+				this.broadcast(id, noticeEvent);
 			}
 		}
 
@@ -1300,14 +1611,17 @@ class SessionManager {
 
 		const active: ActiveAgent = {
 			handle,
-			chatInProgress: false,
 			idleTimer: null,
 			liveTurn: null,
 			contextPrimer,
 		};
 		this.active.set(id, active);
-		await this.setStatus(id, "idle");
-		this.broadcast(id, { type: "session_status", status: "idle" });
+		// Deliberately no status transition here: per ADR-0016 §1 a cold send's
+		// sequence is starting → working → terminal, with no idle in between —
+		// the caller (runTurn) transitions straight to "working" next. This path
+		// only runs on an actual spawn (the isAlive check above short-circuits a
+		// warm send before ever reaching "starting"), so there is no other
+		// caller relying on an idle status landing here.
 		return active;
 	}
 
@@ -1390,7 +1704,7 @@ class SessionManager {
 
 	private async idleKill(id: string) {
 		const active = this.active.get(id);
-		if (!active || active.chatInProgress) return;
+		if (!active || this.turnsInProgress.has(id)) return;
 		await this.stopSession(id);
 	}
 
@@ -1401,8 +1715,7 @@ class SessionManager {
 			this.active.delete(id);
 			void active.handle.stop().catch(() => {});
 		}
-		void this.setStatus(id, "crashed");
-		this.broadcast(id, { type: "session_status", status: "crashed" });
+		void this.transitionStatus(id, "crashed");
 	}
 
 	private broadcast(id: string, event: AgentStreamEvent) {
