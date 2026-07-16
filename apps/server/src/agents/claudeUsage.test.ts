@@ -102,6 +102,12 @@ describe("fetchClaudeOauthUsage", () => {
 			expect(new Headers(init.headers).get("anthropic-beta")).toBe(
 				"oauth-2025-04-20",
 			);
+			// A missing/generic User-Agent has been observed tripping this
+			// endpoint's throttling (429s, and a 403 on reload) — see the
+			// Claude-Code-Usage-Monitor#202 reference in claudeUsage.ts.
+			expect(new Headers(init.headers).get("User-Agent")).toMatch(
+				/^claude-code\//,
+			);
 		}));
 
 	it("resolves null on a non-2xx response instead of throwing", () =>
