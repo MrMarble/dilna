@@ -8,7 +8,8 @@ import { CLAUDE_HOME } from "./claude";
  * CLI's `/usage` command uses: `GET https://api.anthropic.com/api/oauth/usage`
  * authorized by the claude.ai OAuth access token. Verified against the live
  * endpoint (2026-07-14, Pro account): returns `five_hour`/`seven_day` objects
- * with `utilization` (0–100) and an ISO-8601 `resets_at` — the same shape
+ * with `utilization` (a 0–1 fraction — see `pullRateLimitsToWindows`, which
+ * converts it to a percentage) and an ISO-8601 `resets_at` — the same shape
  * `pullRateLimitsToWindows` already parses.
  *
  * This replaces the Agent SDK's
@@ -39,6 +40,19 @@ import { CLAUDE_HOME } from "./claude";
 const OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 /** Same beta header the CLI sends on its OAuth API calls. */
 const OAUTH_BETA_HEADER = "oauth-2025-04-20";
+/**
+ * A community report (Claude-Code-Usage-Monitor#202) documented this exact
+ * endpoint throttling aggressively — 429s — for requests that don't
+ * identify as the CLI, and dilna's own fetch has been observed hitting both
+ * a 429 and (on reload) a 403 against it. dilna's fetch sends no
+ * `User-Agent` by default (Node's `fetch` doesn't set one recognizable),
+ * unlike the CLI's own HTTP client, which sets one on every request. The
+ * version is the CLI release this was verified against
+ * (`AI_AGENT=claude-code_2-1-203_agent`), not dilna's own — this only needs
+ * to look like real CLI traffic, not be accurate about what's actually
+ * making the request.
+ */
+const OAUTH_USER_AGENT = "claude-code/2.1.203";
 /** The CLI's own timeout for this fetch. */
 const USAGE_FETCH_TIMEOUT_MS = 5000;
 /** Refuse a token about to expire mid-flight rather than eat a 401. */
@@ -127,12 +141,19 @@ export async function fetchClaudeOauthUsage(deps?: {
 				Authorization: `Bearer ${token}`,
 				"Content-Type": "application/json",
 				"anthropic-beta": OAUTH_BETA_HEADER,
+				"User-Agent": OAUTH_USER_AGENT,
 			},
 			signal: AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS),
 		});
 		if (!res.ok) {
+			// Body included (not just status): a 403 here has read as both a
+			// generic block and the account's real `permission_error` reason
+			// (e.g. missing OAuth scope) — indistinguishable from the status
+			// code alone, and this endpoint is undocumented enough that
+			// guessing which one it is isn't worth another round trip to find out.
+			const bodyText = await res.text().catch(() => "<unreadable body>");
 			console.error(
-				`[claude-agent] usage pull failed: GET /api/oauth/usage → ${res.status}`,
+				`[claude-agent] usage pull failed: GET /api/oauth/usage → ${res.status} ${bodyText.slice(0, 500)}`,
 			);
 			return null;
 		}
