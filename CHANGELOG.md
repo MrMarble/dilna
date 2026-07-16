@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/MrMarble/dilna/compare/v0.5.1...v0.5.2) (2026-07-16)
+
+
+### Bug Fixes
+
+* **sessions:** log raw utilization from push rate_limit_events ([#46](https://github.com/MrMarble/dilna/issues/46)) ([fb194a9](https://github.com/MrMarble/dilna/commit/fb194a93d62df4a39af2829d7cdf04800dc15172))
+
 ## [0.5.1](https://github.com/MrMarble/dilna/compare/v0.5.0...v0.5.1) (2026-07-15)
 
 
