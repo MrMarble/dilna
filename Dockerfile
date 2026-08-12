@@ -43,9 +43,15 @@ RUN corepack enable && corepack prepare pnpm@11.10.0 --activate
 # the trailing `test -x` is a belt-and-suspenders check that the installer
 # actually produced a binary before this stage is considered done.
 ARG MISE_VERSION=2026.7.5
-RUN curl -fsSL https://mise.run -o /tmp/mise-install.sh \
-	&& MISE_VERSION="v${MISE_VERSION}" MISE_INSTALL_PATH=/usr/local/bin/mise \
-		sh /tmp/mise-install.sh \
+RUN curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors https://mise.run -o /tmp/mise-install.sh \
+	&& n=0 \
+	&& until MISE_VERSION="v${MISE_VERSION}" MISE_INSTALL_PATH=/usr/local/bin/mise sh /tmp/mise-install.sh; do \
+		n=$((n+1)); \
+		if [ "$n" -ge 5 ]; then \
+			exit 1; \
+		fi; \
+		sleep $((n*2)); \
+	done \
 	&& rm -f /tmp/mise-install.sh \
 	&& test -x /usr/local/bin/mise
 
