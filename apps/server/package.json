@@ -18,7 +18,7 @@
 		"@dilna/shared": "workspace:*",
 		"better-sqlite3": "^12.11.1",
 		"drizzle-orm": "^0.45.2",
-		"hono": "^4.12.28",
+		"hono": "^4.12.34",
 		"@hono/node-server": "^2.0.10",
 		"nanoid": "^5.1.16"
 	},
