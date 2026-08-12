@@ -19,6 +19,5 @@ jobs:
           # action pushes triggers docker-publish.yml, and the release PR runs
           # CI — events created with GITHUB_TOKEN never trigger other workflows.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-          # "node" keeps the version in the root package.json and maintains
-          # CHANGELOG.md; the repo releases as a single unit, not per-package.
-          release-type: node
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
