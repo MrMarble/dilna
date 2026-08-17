@@ -13,3 +13,5 @@ coverage/
 .vitest/
 /data/
 .playwright-mcp/
+/apps/web/test-results/
+/apps/web/playwright-report/
