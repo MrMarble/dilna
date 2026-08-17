@@ -10,6 +10,7 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:e2e": "playwright test",
+		"check": "node scripts/check-page.mjs",
 		"typecheck": "tsc -p tsconfig.json --noEmit"
 	},
 	"dependencies": {
