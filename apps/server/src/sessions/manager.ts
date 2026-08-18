@@ -409,6 +409,17 @@ type ActiveAgent = {
 class SessionManager {
 	/** Map of active dilna session id -> running agent process. */
 	private active = new Map<string, ActiveAgent>();
+	/** Map of dilna session id -> in-flight `ensureStarted` promise. Without
+	 * this, two `sendMessage` calls that both arrive while `active` has no
+	 * (alive) entry — e.g. two rapid sends right after a server restart —
+	 * would each race through `ensureStarted`'s several `await`s, spawn their
+	 * own agent process, and overwrite each other in `active`. Both would
+	 * then see `chatInProgress: false` on their own distinct `ActiveAgent`
+	 * and proceed to insert the same `pending-user-<id>` placeholder row,
+	 * violating the messages primary key. Singleflighting the start makes
+	 * the second caller await and reuse the first caller's in-progress
+	 * start instead of racing it. */
+	private starting = new Map<string, Promise<ActiveAgent>>();
 	/** Map of dilna session id -> SSE subscribers (browser tabs etc). Kept
 	 * independent of the agent lifecycle so a UI tab can subscribe before
 	 * any agent is running and still receive events once it starts. */
@@ -1551,6 +1562,19 @@ class SessionManager {
 		if (existing?.handle.isAlive()) return existing;
 		if (existing) this.active.delete(id);
 
+		const inFlight = this.starting.get(id);
+		if (inFlight) return inFlight;
+
+		const promise = this.startAgent(id, session).finally(() => {
+			this.starting.delete(id);
+		});
+		this.starting.set(id, promise);
+		return promise;
+	}
+
+	/** Actually spawns/resumes the agent process for `id`. Only ever called
+	 * through `ensureStarted`'s singleflight guard — see `starting`. */
+	private async startAgent(id: string, session: Session): Promise<ActiveAgent> {
 		await this.transitionStatus(id, "starting");
 
 		if (session.agentType === "openai") {
