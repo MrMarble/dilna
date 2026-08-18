@@ -4,7 +4,7 @@ import type {
 	SessionListEvent,
 } from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
 import { AppVersion } from "@/components/AppVersion";
 import { ChatHeader, MobileMenuButton } from "@/components/ChatHeader";
@@ -15,6 +15,15 @@ import { Sidebar } from "@/components/Sidebar";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
+
+// Keeps the URL shareable/bookmarkable as /<repo-slug>/<session-id> — see
+// the App component's history hydration/popstate effects for the read side.
+function pushSessionPath(repoSlug: string, sessionId: string | null) {
+	const path = sessionId ? `/${repoSlug}/${sessionId}` : `/${repoSlug}`;
+	if (path !== window.location.pathname) {
+		window.history.pushState(null, "", path);
+	}
+}
 
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
@@ -131,6 +140,41 @@ export function App() {
 		return unsubscribe;
 	}, []);
 
+	// Read the initial /<repo-slug>/<session-id> from the URL once repos are
+	// available to resolve the slug. Runs once; an unknown slug normalizes
+	// the URL back to "/" rather than leaving a dead link in the bar.
+	const hydratedFromUrl = useRef(false);
+	useEffect(() => {
+		if (hydratedFromUrl.current || loadingRepos) return;
+		hydratedFromUrl.current = true;
+		const [repoSlug, sessionId] = window.location.pathname
+			.split("/")
+			.filter(Boolean);
+		if (!repoSlug) return;
+		const repo = repos.find((r) => r.slug === repoSlug);
+		if (!repo) {
+			window.history.replaceState(null, "", "/");
+			return;
+		}
+		setSelectedRepoId(repo.id);
+		if (sessionId) setSelectedSessionId(sessionId);
+	}, [repos, loadingRepos]);
+
+	// Browser back/forward — the URL has already changed by the time this
+	// fires, so just re-derive selection from it.
+	useEffect(() => {
+		function onPopState() {
+			const [repoSlug, sessionId] = window.location.pathname
+				.split("/")
+				.filter(Boolean);
+			const repo = repoSlug ? repos.find((r) => r.slug === repoSlug) : null;
+			setSelectedRepoId(repo?.id ?? null);
+			setSelectedSessionId(repo && sessionId ? sessionId : null);
+		}
+		window.addEventListener("popstate", onPopState);
+		return () => window.removeEventListener("popstate", onPopState);
+	}, [repos]);
+
 	const selectedRepo = repos.find((r) => r.id === selectedRepoId) ?? null;
 	const selectedSession = selectedSessionId
 		? (sessionsById[selectedSessionId] ?? null)
@@ -159,27 +203,33 @@ export function App() {
 				.filter((s) => s.repoId === id)
 				.sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
 			setSelectedSessionId(latest?.id ?? null);
+			const repo = repos.find((r) => r.id === id);
+			if (repo) pushSessionPath(repo.slug, latest?.id ?? null);
 			mobileSheet.close();
 		},
-		[sessionsById, mobileSheet.close],
+		[sessionsById, repos, mobileSheet.close],
 	);
 
 	const handleSelectSession = useCallback(
 		(session: SessionView) => {
 			setSelectedRepoId(session.repoId);
 			setSelectedSessionId(session.id);
+			const repo = repos.find((r) => r.id === session.repoId);
+			if (repo) pushSessionPath(repo.slug, session.id);
 			mobileSheet.close();
 		},
-		[mobileSheet.close],
+		[repos, mobileSheet.close],
 	);
 
 	const handleSessionCreated = useCallback(
 		(session: SessionView) => {
 			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
 			setSelectedSessionId(session.id);
+			const repo = repos.find((r) => r.id === session.repoId);
+			if (repo) pushSessionPath(repo.slug, session.id);
 			mobileSheet.close();
 		},
-		[mobileSheet.close],
+		[repos, mobileSheet.close],
 	);
 
 	// No agent picker to confirm (Claude is the only backend), so "New
@@ -221,12 +271,16 @@ export function App() {
 					delete next[id];
 					return next;
 				});
-				if (selectedSessionId === id) setSelectedSessionId(null);
+				if (selectedSessionId === id) {
+					setSelectedSessionId(null);
+					const repo = repos.find((r) => r.id === selectedRepoId);
+					if (repo) pushSessionPath(repo.slug, null);
+				}
 			} catch (e) {
 				console.error(e);
 			}
 		},
-		[selectedSessionId],
+		[selectedSessionId, selectedRepoId, repos],
 	);
 
 	const repoSlugById = Object.fromEntries(
