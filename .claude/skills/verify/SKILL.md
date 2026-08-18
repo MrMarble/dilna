@@ -27,10 +27,11 @@ timeout 2 curl -sN :4517/api/stream                                # SSE connect
 
 All POST bodies need `-H 'content-type: application/json'`. A trivial prompt ("Reply with the single word: ok") completes a real agent turn in a few seconds and exercises the full post-turn pipeline (persistence, title sync, rate-limit pull).
 
-For the web UI, run vite against the isolated API and screenshot with Playwright MCP:
+For the web UI, run vite against the isolated API and check it with Playwright (see the `browser-check` skill):
 
 ```bash
 DILNA_API_URL=http://localhost:4517 pnpm --filter ./apps/web run dev
+pnpm --filter @dilna/web run check http://localhost:5174 /tmp/screenshot.png
 ```
 
 Gotchas:
