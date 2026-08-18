@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getDb } from "../db";
 import { rateLimits as rateLimitsTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
@@ -231,6 +231,66 @@ describe("SessionManager", () => {
 		expect(sessionManager.getRateLimits()).toEqual([
 			{ kind: "five_hour", utilizationPct: 32, resetsAt: future },
 		]);
+	});
+});
+
+/**
+ * ADR-0017: the 5-minute idle-kill timer must not tear down the resident
+ * Claude CLI process while the SDK reports in-flight background work (a
+ * `run_in_background` shell job) or a pending `ScheduleWakeup`/`CronCreate`/
+ * `/loop` registration — either would be silently orphaned (the child dies
+ * with the parent per ADR-0014). Reaches into `SessionManager`'s private
+ * idle-timer methods directly (via a narrow structural cast) rather than
+ * driving a full mocked turn through `startClaude`/`chatClaude`: the guard
+ * being tested lives entirely in `armIdleTimer`/`handlePendingWorkChanged`/
+ * `idleKill`, and a fake `ActiveAgent` exercises exactly that without also
+ * having to fake transcript persistence, changed-files diffing, etc.
+ */
+describe("idle-kill defers to pending background work (ADR-0017)", () => {
+	it("skips the idle-kill while pending work is signaled, and resumes it once cleared", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`idle-pending-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+
+		const stop = vi.fn().mockResolvedValue(undefined);
+		const activeAgent = {
+			handle: { stop, isAlive: () => true },
+			idleTimer: null as NodeJS.Timeout | null,
+			liveTurn: null,
+			hasPendingBackgroundWork: false,
+		};
+		const manager = sessionManager as unknown as {
+			active: Map<string, typeof activeAgent>;
+			armIdleTimer: (id: string, active: typeof activeAgent) => void;
+			handlePendingWorkChanged: (id: string, hasPendingWork: boolean) => void;
+		};
+		manager.active.set(session.id, activeAgent);
+
+		vi.useFakeTimers();
+		try {
+			// Mirrors the Stop hook firing with a live wakeup/background task,
+			// then the normal turn-end path trying to arm the timer as usual —
+			// it must be a no-op while pending work is flagged.
+			manager.handlePendingWorkChanged(session.id, true);
+			manager.armIdleTimer(session.id, activeAgent);
+			await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+			expect(stop).not.toHaveBeenCalled();
+
+			// Once the pending work clears, nothing else tells SessionManager an
+			// autonomous cron-fired response happened — handlePendingWorkChanged
+			// itself must resume the countdown.
+			manager.handlePendingWorkChanged(session.id, false);
+			await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+			expect(stop).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+
+		manager.active.delete(session.id);
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
 	});
 });
 

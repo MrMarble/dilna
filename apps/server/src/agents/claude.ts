@@ -22,6 +22,7 @@ import {
 	type SDKThinkingTokensMessage,
 	type SDKToolProgressMessage,
 	type SDKUserMessage,
+	type StopHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStreamEvent, UsageTotals } from "@dilna/shared";
 import { getDataDir } from "../db";
@@ -110,6 +111,19 @@ export type ClaudeStartOptions = AgentStartOptions & {
 	 * whose *first* turn was interrupted.
 	 */
 	onInit?: (agentSessionId: string) => void;
+	/**
+	 * Fired on every `Stop` hook invocation (ADR-0017) — i.e. whenever the CLI
+	 * is about to end a response, whether that response was dilna-initiated
+	 * or the agent's own cron/wakeup firing autonomously — with whether the
+	 * SDK reports any in-flight background work (`background_tasks`) or
+	 * pending `ScheduleWakeup`/`CronCreate`/`/loop` registrations
+	 * (`session_crons`) for this session. `SessionManager` uses this to avoid
+	 * idle-killing the resident process while either is non-empty: killing it
+	 * would silently orphan a scheduled wakeup or drop a running background
+	 * shell/subagent task with no trace beyond the CLI's own "stopped/agent
+	 * teardown" ambiguity on the other end.
+	 */
+	onPendingWorkChanged?: (hasPendingWork: boolean) => void;
 };
 
 export type ClaudeHandle = {
@@ -246,6 +260,21 @@ export function createNormalizeState(): NormalizeState {
 			thinkingTokens: undefined,
 		},
 	};
+}
+
+/**
+ * Whether the SDK's `Stop`-hook payload (ADR-0017) reports any work that
+ * needs the resident process kept alive: a running/pending/backgrounded
+ * `background_tasks` entry (shell, subagent, monitor, workflow), or a
+ * `session_crons` registration from `ScheduleWakeup`/`CronCreate`/`/loop`.
+ * Exported alongside `createNormalizeState` so claude.test.ts can exercise it
+ * with fixture hook payloads without registering a real hook.
+ */
+export function hasPendingBackgroundWork(input: StopHookInput): boolean {
+	return (
+		(input.background_tasks?.length ?? 0) > 0 ||
+		(input.session_crons?.length ?? 0) > 0
+	);
 }
 
 /**
@@ -400,6 +429,30 @@ export async function startClaude(
 				if (!trimmed) return;
 				stderrTail.push(trimmed);
 				if (stderrTail.length > 50) stderrTail.shift();
+			},
+			// The `Stop` hook is the only point in the SDK's message stream where
+			// `session_crons` (ScheduleWakeup/CronCreate/`/loop` registrations) is
+			// exposed at all — there is no push event for it the way
+			// `background_tasks_changed` covers running background work (ADR-0017).
+			// It fires once per response regardless of what triggered that
+			// response, so this doubles as the turn-end signal for autonomous
+			// cron-fired responses that never went through `chatClaude`. Returning
+			// `{}` is a deliberate no-op: every `SyncHookJSONOutput` field is
+			// optional and omitting `decision` lets the stop proceed exactly as it
+			// would with no hook registered — this hook only observes.
+			hooks: {
+				Stop: [
+					{
+						hooks: [
+							async (input) => {
+								if (input.hook_event_name === "Stop") {
+									opts.onPendingWorkChanged?.(hasPendingBackgroundWork(input));
+								}
+								return {};
+							},
+						],
+					},
+				],
 			},
 			// Per ADR-0003, bypassPermissions is only safe because the process's
 			// filesystem writes are confined to the worktree. Enforced here by

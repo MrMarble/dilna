@@ -398,6 +398,12 @@ type ActiveAgent = {
 	 * so the freshly-spawned agent gets dilna's own persisted history as
 	 * context instead of starting completely blind. */
 	contextPrimer?: string;
+	/** Latest `Stop`-hook snapshot (ADR-0017): true when the SDK reports
+	 * in-flight background work or a pending `ScheduleWakeup`/`CronCreate`/
+	 * `/loop` registration for this session. While true, `armIdleTimer` will
+	 * not arm a kill timer and `idleKill` is a no-op — the resident process
+	 * must stay alive for that work to complete or the wakeup to fire. */
+	hasPendingBackgroundWork: boolean;
 };
 
 class SessionManager {
@@ -1605,6 +1611,8 @@ class SessionManager {
 					.where(eq(sessionsTable.id, id))
 					.run();
 			},
+			onPendingWorkChanged: (hasPendingWork) =>
+				this.handlePendingWorkChanged(id, hasPendingWork),
 		};
 		const handle: ClaudeHandle = await startClaude(startOpts);
 
@@ -1625,6 +1633,7 @@ class SessionManager {
 			idleTimer: null,
 			liveTurn: null,
 			contextPrimer,
+			hasPendingBackgroundWork: false,
 		};
 		this.active.set(id, active);
 		// Deliberately no status transition here: per ADR-0016 §1 a cold send's
@@ -1699,8 +1708,15 @@ class SessionManager {
 		].join("\n");
 	}
 
+	/** No-op while `hasPendingBackgroundWork` is set (ADR-0017) — a scheduled
+	 * wakeup or a still-running background task needs the resident process
+	 * alive to fire/finish, and dilna's own turn tracking has no visibility
+	 * into either, so it must defer to the SDK's own Stop-hook signal instead
+	 * of blindly starting the countdown. `handlePendingWorkChanged` is
+	 * responsible for arming the timer once that signal clears. */
 	private armIdleTimer(id: string, active: ActiveAgent) {
 		this.clearIdleTimer(active);
+		if (active.hasPendingBackgroundWork) return;
 		active.idleTimer = setTimeout(() => {
 			void this.idleKill(id);
 		}, IDLE_TIMEOUT_MS);
@@ -1716,7 +1732,38 @@ class SessionManager {
 	private async idleKill(id: string) {
 		const active = this.active.get(id);
 		if (!active || this.turnsInProgress.has(id)) return;
+		// Defensive re-check (ADR-0017): the timer that led here could have
+		// been armed just before a Stop-hook callback set this, since the
+		// hook and the turn-end path that calls armIdleTimer race each other.
+		if (active.hasPendingBackgroundWork) return;
 		await this.stopSession(id);
+	}
+
+	/**
+	 * ADR-0017: consumes the Claude Agent SDK's `Stop`-hook snapshot of
+	 * in-flight background work / pending cron-style wakeups
+	 * (`ClaudeStartOptions.onPendingWorkChanged`), which fires once per
+	 * response — including responses the CLI generates on its own when a
+	 * `ScheduleWakeup`/`CronCreate`/`/loop` registration fires, something
+	 * `SessionManager` has no other visibility into since those never go
+	 * through `chatClaude`. Turning pending work off is the only path that
+	 * re-arms the idle timer for such an autonomous response, since nothing
+	 * else in `SessionManager` knows one happened.
+	 */
+	private handlePendingWorkChanged(id: string, hasPendingWork: boolean) {
+		const active = this.active.get(id);
+		if (!active) return;
+		active.hasPendingBackgroundWork = hasPendingWork;
+		if (hasPendingWork) {
+			this.clearIdleTimer(active);
+			return;
+		}
+		// Only (re-)arm here when the session is actually idle and untracked —
+		// a turn dilna itself is driving will arm the timer through the normal
+		// turn-end path once it finishes, and arming early here would race it.
+		if (!active.idleTimer && !this.turnsInProgress.has(id)) {
+			this.armIdleTimer(id, active);
+		}
 	}
 
 	private markCrashed(id: string) {
