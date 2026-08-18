@@ -95,9 +95,14 @@ FROM node:24-bookworm-slim AS runtime
 # server/watcher in the background; these are what let it find and kill
 # what's holding a port or PID rather than getting stuck on "address already
 # in use".
+# libatomic1: the mise-installed pnpm binary (aqua registry, ADR-0012) is
+# linked against it and fails outright at startup without it —
+# "error while loading shared libraries: libatomic.so.1: cannot open shared
+# object file" — since node:*-bookworm-slim doesn't ship it and there's no
+# root/sudo at runtime for a session to install it itself.
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
-		curl unzip xz-utils jq procps lsof \
+		curl unzip xz-utils jq procps lsof libatomic1 \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
@@ -160,13 +165,18 @@ VOLUME ["/data"]
 # native Bash sandbox (see apps/server/src/agents/claude.ts) has a concrete,
 # already-`node`-owned path to grant `filesystem.allowWrite` on — everything
 # under $HOME is otherwise outside the worktree the sandbox confines writes
-# to.
+# to. Same reasoning for /home/node/.local/share/pnpm: pnpm's default store
+# location resolves to the DILNA_DATA_DIR volume root, outside the worktree
+# the sandbox confines writes to, so claude.ts redirects it here instead via
+# `npm_config_store_dir` (see PNPM_STORE_DIR's doc comment) — pre-created for
+# the same "already node-owned" reason as the mise dirs above.
 ENV PATH="/home/node/.local/share/mise/shims:${PATH}"
 RUN mkdir -p \
 		/home/node/.local/share/mise \
 		/home/node/.local/state/mise \
 		/home/node/.cache/mise \
 		/home/node/.config/mise \
+		/home/node/.local/share/pnpm \
 	&& chown -R node:node /home/node/.local /home/node/.cache /home/node/.config
 EXPOSE 3001
 

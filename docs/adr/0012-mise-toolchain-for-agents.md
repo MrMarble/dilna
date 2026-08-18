@@ -167,3 +167,36 @@ before this change.
 - Bare-host dev (the repo root's own `mise.toml`) is untouched; this ADR is
   scoped to the Docker runtime image sessions actually run inside of in
   every non-dev deployment.
+
+### Follow-up: pnpm-specific sandbox/toolchain gaps (issue #70)
+
+Real sessions installing `pnpm` via mise (an aqua-registry tool, verified via
+GitHub artifact attestations) hit three more gaps beyond the general
+`MISE_WRITABLE_PATHS` grant above, all fixed the same way — an explicit
+grant or redirect rather than relying on an unenumerable default location:
+
+- **Attestation verification cache**: mise statically links the
+  `sigstore-tuf` crate to verify those attestations, and that crate keeps
+  its own TUF trust-root cache at `~/.cache/sigstore-rust` — outside mise's
+  own `~/.cache/mise` layout, so outside `MISE_WRITABLE_PATHS` too. Added as
+  a fifth entry in that same constant in `claude.ts`.
+- **Missing system library**: the mise-installed `pnpm` binary itself needs
+  `libatomic.so.1`, which `node:*-bookworm-slim` doesn't ship and no session
+  can install at runtime (no root/sudo). Added `libatomic1` to the runtime
+  stage's `apt-get install` list in the Dockerfile.
+- **Store directory outside the sandbox**: pnpm's default content-addressable
+  store resolves to the topmost directory of the filesystem/mount containing
+  the project — inside a dilna worktree, that's the `DILNA_DATA_DIR` volume
+  root, outside the worktree the sandbox confines writes to. Rather than
+  granting that unpredictable volume-root path, `claude.ts` pins the store
+  inside `$HOME` via the `npm_config_store_dir` env var (`PNPM_STORE_DIR`),
+  matching a new `PNPM_WRITABLE_PATHS` grant.
+
+A fourth, more general gap surfaced investigating the above: when a command
+runs with the native sandbox disabled (the workaround used before these
+fixes existed, and still available for other cases), `TMPDIR` isn't set the
+way the sandbox sets it automatically when enabled — an unset `TMPDIR` has
+caused stray scratch-file writes to resolve into the worktree root instead.
+`claude.ts` now sets `TMPDIR` explicitly in every session's subprocess env
+(reusing the already-granted `CLI_SCRATCH_PARENT_DIR`), so it's defined
+regardless of whether a given command happens to run sandboxed.

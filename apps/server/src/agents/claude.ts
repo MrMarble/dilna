@@ -266,12 +266,26 @@ export function createNormalizeState(): NormalizeState {
  */
 export const CLAUDE_HOME =
 	process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
+/**
+ * The CLI's own per-invocation scratch dir lives one level deeper than this
+ * (named after the sanitized worktree path plus a random suffix it picks
+ * itself), so only this parent is grantable/known ahead of time — see
+ * {@link CLAUDE_SCRATCH_WRITABLE_PATHS}'s doc comment. Reused below as the
+ * explicit `TMPDIR` handed to every session's subprocess env: it's already
+ * writable, so any ad-hoc `mktemp`/tempfile use lands here instead of
+ * silently falling back to an unset-`TMPDIR` default (see that env
+ * assignment's comment in {@link startClaude}).
+ */
+const CLI_SCRATCH_PARENT_DIR = path.join(
+	os.tmpdir(),
+	`claude-${process.getuid?.() ?? 0}`,
+);
 const CLAUDE_SCRATCH_WRITABLE_PATHS = [
 	path.join(os.homedir(), ".cache", "claude"),
 	path.join(os.homedir(), ".cache", "claude-cli-nodejs"),
 	path.join(CLAUDE_HOME, "session-env"),
 	path.join(CLAUDE_HOME, "projects"),
-	path.join(os.tmpdir(), `claude-${process.getuid?.() ?? 0}`),
+	CLI_SCRATCH_PARENT_DIR,
 ];
 
 /**
@@ -282,13 +296,48 @@ const CLAUDE_SCRATCH_WRITABLE_PATHS = [
  * {@link CLAUDE_SCRATCH_WRITABLE_PATHS} — it needs an explicit
  * `filesystem.allowWrite` grant or every `mise install`/`mise use` fails
  * "read-only file system" under the native sandbox.
+ *
+ * `.cache/sigstore-rust` is a separate grant for the same reason but a
+ * different tool: mise statically links the `sigstore-tuf` crate to verify
+ * GitHub artifact attestations on aqua-registry installs (e.g. `pnpm`), and
+ * that crate keeps its own TUF trust-root cache outside mise's own
+ * `~/.cache/mise` layout. Without this, `mise install pnpm` (and any other
+ * attested aqua tool) fails "Failed to create cache directory: Read-only
+ * file system" the first time a session's $HOME doesn't already have this
+ * directory — confirmed by diffing filesystem writes between a sandboxed
+ * and unsandboxed `mise install` run.
  */
 const MISE_WRITABLE_PATHS = [
 	path.join(os.homedir(), ".local", "share", "mise"),
 	path.join(os.homedir(), ".local", "state", "mise"),
 	path.join(os.homedir(), ".cache", "mise"),
 	path.join(os.homedir(), ".config", "mise"),
+	path.join(os.homedir(), ".cache", "sigstore-rust"),
 ];
+
+/**
+ * pnpm defaults its content-addressable store to the topmost directory of
+ * the filesystem/mount containing the current project, not `$HOME` — so
+ * hard links between the store and a workspace's `node_modules` stay on one
+ * device. Inside a dilna worktree that resolves to the root of the
+ * `DILNA_DATA_DIR` volume (e.g. `/data/.pnpm-store`), which sits outside the
+ * worktree the sandbox confines writes to, so a plain `pnpm install` fails
+ * "read-only file system" the same way `mise install` did before
+ * {@link MISE_WRITABLE_PATHS}. Rather than granting that volume-root path —
+ * unpredictable in general, and far broader than pnpm actually needs — this
+ * pins the store inside `$HOME` instead (already sandboxed-writable
+ * territory) via the `npm_config_store_dir` env var set in {@link startClaude},
+ * which pnpm (and corepack's pnpm) both honor same as any other
+ * npm-namespaced config override.
+ */
+const PNPM_WRITABLE_PATHS = [path.join(os.homedir(), ".local", "share", "pnpm")];
+const PNPM_STORE_DIR = path.join(
+	os.homedir(),
+	".local",
+	"share",
+	"pnpm",
+	"store",
+);
 
 /**
  * Appended to the SDK's `claude_code` system-prompt preset (see `systemPrompt`
@@ -389,6 +438,19 @@ export async function startClaude(
 				]
 					.filter(Boolean)
 					.join(":"),
+				// See PNPM_STORE_DIR's doc comment: pins pnpm's store inside $HOME
+				// (sandboxed-writable) instead of the volume root it'd otherwise
+				// resolve to. Only takes effect if nothing in the inherited
+				// process.env already set it — an operator's own override wins.
+				npm_config_store_dir: process.env.npm_config_store_dir ?? PNPM_STORE_DIR,
+				// Explicit fallback scratch dir so any ad-hoc temp-file use (a
+				// one-off script, `mktemp`, etc.) has somewhere sandboxed-writable
+				// to land even if a command runs with the sandbox disabled — that
+				// mode doesn't get the sandbox's own default `TMPDIR`, and without
+				// this an unset `TMPDIR` has previously caused stray writes to
+				// resolve into the worktree root instead (see CLI_SCRATCH_PARENT_DIR's
+				// doc comment).
+				TMPDIR: process.env.TMPDIR ?? CLI_SCRATCH_PARENT_DIR,
 			},
 			// Emit stream_event deltas so replies stream token-by-token instead
 			// of arriving as whole text blocks. The complete assistant message
@@ -432,6 +494,7 @@ export async function startClaude(
 					allowWrite: [
 						...CLAUDE_SCRATCH_WRITABLE_PATHS,
 						...MISE_WRITABLE_PATHS,
+						...PNPM_WRITABLE_PATHS,
 						...GH_WRITABLE_PATHS,
 						...(gitCommonDir ? [gitCommonDir] : []),
 					],
