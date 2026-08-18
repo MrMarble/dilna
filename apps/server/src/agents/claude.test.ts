@@ -2,9 +2,14 @@ import type {
 	SDKAssistantMessage,
 	SDKPartialAssistantMessage,
 	SDKResultMessage,
+	StopHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
-import { createNormalizeState, normalizeMessage } from "./claude";
+import {
+	createNormalizeState,
+	hasPendingBackgroundWork,
+	normalizeMessage,
+} from "./claude";
 
 // Minimal fixtures — only the fields normalizeMessage actually reads.
 // Cast through `unknown` rather than satisfying the SDK's full (large,
@@ -282,5 +287,55 @@ describe("normalizeMessage stream_event (partial messages)", () => {
 			messageId: "m2",
 			chunk: "next",
 		});
+	});
+});
+
+// ADR-0017: the `Stop` hook is the only place the SDK exposes
+// `session_crons`/`background_tasks` — SessionManager's idle-kill guard
+// depends on this classifying both correctly.
+describe("hasPendingBackgroundWork", () => {
+	function stopInput(overrides: {
+		background_tasks?: unknown[];
+		session_crons?: unknown[];
+	}): StopHookInput {
+		return {
+			hook_event_name: "Stop",
+			stop_hook_active: false,
+			background_tasks: overrides.background_tasks,
+			session_crons: overrides.session_crons,
+		} as unknown as StopHookInput;
+	}
+
+	it("is false when both arrays are absent or empty", () => {
+		expect(hasPendingBackgroundWork(stopInput({}))).toBe(false);
+		expect(
+			hasPendingBackgroundWork(
+				stopInput({ background_tasks: [], session_crons: [] }),
+			),
+		).toBe(false);
+	});
+
+	it("is true when a background task is in flight", () => {
+		expect(
+			hasPendingBackgroundWork(
+				stopInput({
+					background_tasks: [
+						{ id: "t1", type: "shell", status: "running", description: "" },
+					],
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("is true when a ScheduleWakeup/CronCreate/loop registration is pending", () => {
+		expect(
+			hasPendingBackgroundWork(
+				stopInput({
+					session_crons: [
+						{ id: "c1", schedule: "*/5 * * * *", recurring: false, prompt: "" },
+					],
+				}),
+			),
+		).toBe(true);
 	});
 });
