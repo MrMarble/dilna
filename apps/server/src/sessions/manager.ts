@@ -1621,6 +1621,7 @@ class SessionManager {
 
 		const startOpts: ClaudeStartOptions = {
 			worktreePath: session.worktreePath,
+			repoId: session.repoId,
 			existingAgentSessionId: resumeId,
 			onRateLimit: (info) => this.handleRateLimitEvent(info),
 			// Persist the Claude-side session id the moment the init handshake

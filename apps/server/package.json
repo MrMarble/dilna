@@ -20,7 +20,8 @@
 		"drizzle-orm": "^0.45.2",
 		"hono": "^4.12.34",
 		"@hono/node-server": "^2.0.10",
-		"nanoid": "^5.1.16"
+		"nanoid": "^5.1.16",
+		"zod": "^3.25.76"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",

@@ -5,6 +5,7 @@ import { setTimeout as setTimeoutAsync } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
 	type ApiKeySource,
+	createSdkMcpServer,
 	type Query,
 	query,
 	type SDKAPIRetryMessage,
@@ -23,9 +24,16 @@ import {
 	type SDKToolProgressMessage,
 	type SDKUserMessage,
 	type StopHookInput,
+	tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStreamEvent, UsageTotals } from "@dilna/shared";
+import { z } from "zod";
 import { getDataDir } from "../db";
+import {
+	getRepoMemory,
+	REPO_MEMORY_MAX_CHARS,
+	setRepoMemory,
+} from "../repos/memory";
 import type { AgentChatOptions, AgentStartOptions } from "./types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,6 +109,14 @@ export type Listener = (event: AgentStreamEvent) => void;
  * for the consumer side.
  */
 export type ClaudeStartOptions = AgentStartOptions & {
+	/**
+	 * The Session's owning Repo (per CONTEXT.md, memory is scoped per-Repo,
+	 * not per-Session/Worktree). Used to load persisted repo memory into the
+	 * system prompt at start and to scope the `update_repo_memory` tool's
+	 * writes (see {@link repoMemorySystemPromptSection} and the `mcpServers`
+	 * option below) — see ADR-0018 and issue #59.
+	 */
+	repoId: string;
 	onRateLimit?: (info: SDKRateLimitInfo) => void;
 	/**
 	 * Fired when the first turn's `system init` message reports the Claude-side
@@ -401,6 +417,24 @@ const GH_WRITABLE_PATHS = [
 ];
 
 /**
+ * Per-Repo agent memory (issue #59, ADR-0018): rendered into the system
+ * prompt when the Repo has any persisted memory, and referenced by the
+ * `update_repo_memory` tool description below so the agent knows both what
+ * it currently holds and how to change it. Empty-memory Repos get neither —
+ * no empty section, no dangling "you have no memory yet" filler.
+ */
+function repoMemorySystemPromptSection(memoryContent: string): string {
+	if (!memoryContent) return "";
+	return `\n\n## Repo memory\n\nFacts a previous session recorded about this Repo (not this Worktree — every Session gets an isolated Worktree per ADR-0010, but memory carries over since it's scoped to the Repo). Use the \`update_repo_memory\` tool to add, edit, or remove entries; that tool replaces this whole section, so read it here before editing it.\n\n${memoryContent}`;
+}
+
+const UPDATE_REPO_MEMORY_TOOL_DESCRIPTION = `Replace this Repo's persistent memory with short, durable facts that should carry over to every future Session on this Repo (e.g. "tests need FOO_ENV set", "this suite is flaky on CI", "don't hand-edit the generated file, it's overwritten by build"). Every Session gets an isolated, throwaway Worktree, so without this a fact discovered in one Session is invisible to the next.
+
+This call REPLACES the entire memory, it does not append — read the current content from the "Repo memory" section of your system prompt (if present), then send back the full edited text (add/edit/remove entries as needed). Pass an empty string to clear it entirely.
+
+Keep it to short, standalone facts, not procedures, task notes, or anything specific to the current conversation. Hard cap: ${REPO_MEMORY_MAX_CHARS} characters — an over-limit call is rejected with an error, so trim before resubmitting rather than getting truncated silently.`;
+
+/**
  * Spawn a `claude-agent-sdk` query for the given worktree in streaming-input
  * mode, so a single underlying Claude Code subprocess stays resident across
  * multiple user turns (one process per worktree, per ADR-0003). Tool
@@ -434,6 +468,7 @@ export async function startClaude(
 	const workspaceRoot = findWorkspaceRoot(__dirname);
 	const dataDir = getDataDir();
 	const nestedInCheckout = dataDir.startsWith(`${workspaceRoot}${path.sep}`);
+	const repoMemoryContent = await getRepoMemory(opts.repoId);
 
 	const q = query({
 		prompt: inputQueue.iterable,
@@ -443,7 +478,37 @@ export async function startClaude(
 			systemPrompt: {
 				type: "preset",
 				preset: "claude_code",
-				append: DILNA_AGENT_CONTEXT,
+				append:
+					DILNA_AGENT_CONTEXT +
+					repoMemorySystemPromptSection(repoMemoryContent),
+			},
+			// In-process MCP server (issue #59, ADR-0018): lets the agent persist
+			// short, durable facts about this Repo directly, no SessionManager
+			// mediation — unlike session_status (ADR-0016 §1) there's no ordering
+			// or broadcast contract to protect, just a single-row upsert.
+			mcpServers: {
+				dilna: createSdkMcpServer({
+					name: "dilna",
+					tools: [
+						tool(
+							"update_repo_memory",
+							UPDATE_REPO_MEMORY_TOOL_DESCRIPTION,
+							{ content: z.string() },
+							async ({ content }) => {
+								const result = await setRepoMemory(opts.repoId, content);
+								if (!result.ok) {
+									return {
+										content: [{ type: "text", text: result.error }],
+										isError: true,
+									};
+								}
+								return {
+									content: [{ type: "text", text: "Repo memory updated." }],
+								};
+							},
+						),
+					],
+				}),
 			},
 			permissionMode: "bypassPermissions",
 			allowDangerouslySkipPermissions: true,

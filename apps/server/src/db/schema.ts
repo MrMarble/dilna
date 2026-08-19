@@ -41,6 +41,20 @@ export const messages = sqliteTable("messages", {
 });
 
 /**
+ * Per-Repo agent-curated memory (issue #59): short, durable facts an agent
+ * discovers about a Repo (e.g. "tests need FOO_ENV set") that should survive
+ * across otherwise-isolated Sessions/Worktrees (ADR-0010). One row per repo,
+ * upserted wholesale by `repos/memory.ts` — never partially patched — and
+ * bounded to REPO_MEMORY_MAX_CHARS there, not in the schema, so the limit
+ * stays a single source of truth alongside the write path.
+ */
+export const repoMemory = sqliteTable("repo_memory", {
+	repoId: text("repo_id").primaryKey(),
+	content: text("content").notNull().default(""),
+	updatedAt: integer("updated_at").notNull().$defaultFn(now),
+});
+
+/**
  * Last-known account-wide plan rate-limit reading per window (one row per
  * `RateLimitWindowKind`), persisted so the sidebar footer survives a server
  * restart / page reload without waiting for the next agent turn to re-fetch
