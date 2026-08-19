@@ -11,6 +11,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { repoManager } from "./manager";
+import { getRepoMemory, setRepoMemory } from "./memory";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -135,6 +136,19 @@ describe("RepoManager", () => {
 		expect(existsSync(repoPath)).toBe(false);
 		const repos = await repoManager.list();
 		expect(repos.find((r) => r.id === repo.id)).toBeUndefined();
+	});
+
+	it("deletes a repo's persisted memory alongside the repo", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`del-memory-${Date.now()}`,
+		);
+		await setRepoMemory(repo.id, "- some durable fact");
+		expect(await getRepoMemory(repo.id)).toBe("- some durable fact");
+
+		await repoManager.delete(repo.id);
+
+		expect(await getRepoMemory(repo.id)).toBe("");
 	});
 
 	it("pull updates the default branch ref from origin without a working tree", async () => {

@@ -29,6 +29,13 @@
 			"when": 1783628926185,
 			"tag": "0003_parched_chameleon",
 			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "6",
+			"when": 1786400000000,
+			"tag": "0004_open_scarlet_spider",
+			"breakpoints": true
 		}
 	]
 }

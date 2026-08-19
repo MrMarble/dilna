@@ -6,7 +6,10 @@ import type { Repo, RepoStats } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getDataDir, getDb } from "../db";
-import { repos as reposTable } from "../db/schema";
+import {
+	repoMemory as repoMemoryTable,
+	repos as reposTable,
+} from "../db/schema";
 import { languagesFromFiles, type TreeFile } from "./languages";
 
 const execFileAsync = promisify(execFile);
@@ -282,6 +285,7 @@ export class RepoManager {
 		}
 		rmSync(wtBase, { recursive: true, force: true });
 		rmSync(repo.path, { recursive: true, force: true });
+		db.delete(repoMemoryTable).where(eq(repoMemoryTable.repoId, id)).run();
 		db.delete(reposTable).where(eq(reposTable.id, id)).run();
 	}
 }
