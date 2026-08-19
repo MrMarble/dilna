@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/MrMarble/dilna/compare/v0.8.0...v0.9.0) (2026-08-19)
+
+
+### Features
+
+* **repos:** add per-repo agent memory ([#75](https://github.com/MrMarble/dilna/issues/75)) ([6e4daa4](https://github.com/MrMarble/dilna/commit/6e4daa4d60ce555089d6049ae9caebf2a99fe53f))
+
+
+### Bug Fixes
+
+* **agents:** close the dangerouslyDisableSandbox escape hatch ([#74](https://github.com/MrMarble/dilna/issues/74)) ([#76](https://github.com/MrMarble/dilna/issues/76)) ([15f615b](https://github.com/MrMarble/dilna/commit/15f615b031e22507a0dd5a03ba9bbb1a5e63fdda))
+
 ## [0.8.0](https://github.com/MrMarble/dilna/compare/v0.7.0...v0.8.0) (2026-08-19)
 
 
