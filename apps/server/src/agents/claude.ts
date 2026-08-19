@@ -383,7 +383,8 @@ const PNPM_STORE_DIR = path.join(
 const DILNA_AGENT_CONTEXT = `You are running headless inside dilna, a self-hosted workspace that drives coding agents against locally-cloned repos.
 
 - Your cwd is a git worktree checked out to its own branch, created solely for this session — not the repo's main checkout. Other sessions on the same repo run in sibling worktrees; you won't see their uncommitted work and they won't see yours.
-- Bash commands run inside a sandbox confined to this worktree (plus the shared git object store, so git history/commit/branch commands work). Writes outside that boundary fail with a read-only-filesystem error — that's the sandbox, not a bug. Tool calls are auto-approved (no human is present to answer permission prompts), so act autonomously rather than pausing to ask.
+- Bash commands run inside a sandbox confined to this worktree (plus the shared git object store, so git history/commit/branch commands work). Writes outside that boundary fail with a read-only-filesystem error — that's the sandbox, not a bug. Tool calls are auto-approved (no human is present to answer permission prompts), so act autonomously rather than pausing to ask. The sandbox cannot be disabled — don't reach for an unsandboxed-command flag as a workaround for a write that fails; widen the actual grant instead or report the gap.
+- Nothing persists between separate Bash tool calls except the worktree's own on-disk contents — not exported env vars, not installed binaries, not $HOME. Chain multi-step toolchain setup (e.g. \`mise install\` followed by a package-manager install) into one command instead of spreading it across turns, or every step after the first starts from scratch.
 - Nothing runtime-specific is pre-installed for the repo you're in. Use mise (already on PATH) to get whatever toolchain it needs: \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. This covers node, pnpm (via corepack once node is installed), go, python, rust, ruby, and more.`;
 
 /**
@@ -565,16 +566,28 @@ export async function startClaude(
 						: {}),
 				},
 			},
-			...(nestedInCheckout
-				? {
-						settings: {
+			// `allowUnsandboxedCommands: false` makes the Bash tool's own
+			// `dangerouslyDisableSandbox` param a no-op instead of the SDK's
+			// default (silently honored). Per ADR-0003, bypassPermissions is
+			// only safe because filesystem writes are confined by the sandbox;
+			// without this, an agent hitting a writability gap it doesn't know
+			// how to fix (a missing allowWrite grant, e.g.) can just opt itself
+			// out of confinement instead — observed doing exactly that in
+			// practice (see #74), landing writes anywhere on the host with no
+			// human in the loop to object. The fix for a real writability gap
+			// is widening the relevant *_WRITABLE_PATHS grant above, not an
+			// agent-initiated escape hatch.
+			settings: {
+				sandbox: { allowUnsandboxedCommands: false },
+				...(nestedInCheckout
+					? {
 							claudeMdExcludes: [
 								path.join(workspaceRoot, "CLAUDE.md"),
 								path.join(workspaceRoot, "**", "CLAUDE.md"),
 							],
-						},
-					}
-				: {}),
+						}
+					: {}),
+			},
 		},
 	});
 
