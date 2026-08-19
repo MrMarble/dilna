@@ -51,7 +51,8 @@ describe("repo memory", () => {
 		const result = await setRepoMemory("repo-4", tooLong);
 
 		expect(result.ok).toBe(false);
-		if (!result.ok) expect(result.error).toContain(String(REPO_MEMORY_MAX_CHARS));
+		if (!result.ok)
+			expect(result.error).toContain(String(REPO_MEMORY_MAX_CHARS));
 		expect(await getRepoMemory("repo-4")).toBe("- kept");
 	});
 

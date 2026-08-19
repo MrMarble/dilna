@@ -139,7 +139,10 @@ describe("RepoManager", () => {
 	});
 
 	it("deletes a repo's persisted memory alongside the repo", async () => {
-		const repo = await repoManager.clone(fixtureRepo, `del-memory-${Date.now()}`);
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`del-memory-${Date.now()}`,
+		);
 		await setRepoMemory(repo.id, "- some durable fact");
 		expect(await getRepoMemory(repo.id)).toBe("- some durable fact");
 

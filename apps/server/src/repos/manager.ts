@@ -6,7 +6,10 @@ import type { Repo, RepoStats } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getDataDir, getDb } from "../db";
-import { repoMemory as repoMemoryTable, repos as reposTable } from "../db/schema";
+import {
+	repoMemory as repoMemoryTable,
+	repos as reposTable,
+} from "../db/schema";
 import { languagesFromFiles, type TreeFile } from "./languages";
 
 const execFileAsync = promisify(execFile);
