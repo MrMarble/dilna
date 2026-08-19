@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.0](https://github.com/MrMarble/dilna/compare/v0.7.0...v0.8.0) (2026-08-19)
+
+
+### Features
+
+* reflect selected repo/session in the URL path ([#68](https://github.com/MrMarble/dilna/issues/68)) ([94e3a71](https://github.com/MrMarble/dilna/commit/94e3a7176b172b4b3a05fcbee278e3a33e0e5b78))
+
+
+### Bug Fixes
+
+* **agents:** close remaining pnpm sandbox/toolchain gaps ([#70](https://github.com/MrMarble/dilna/issues/70)) ([#73](https://github.com/MrMarble/dilna/issues/73)) ([ac9e552](https://github.com/MrMarble/dilna/commit/ac9e552f7ccd4b5e8091067f91c95696950bd521))
+* **sessions:** defer idle-kill while the agent has pending background work ([#71](https://github.com/MrMarble/dilna/issues/71)) ([a96238a](https://github.com/MrMarble/dilna/commit/a96238a79df16d4d6912621053a1c4a0fc1edb94))
+* **sessions:** singleflight agent starts to prevent duplicate message id inserts ([#72](https://github.com/MrMarble/dilna/issues/72)) ([d77e21b](https://github.com/MrMarble/dilna/commit/d77e21b050cb018ec6a58b0296e5b07e6caa69be))
+
 ## [0.7.0](https://github.com/MrMarble/dilna/compare/v0.6.0...v0.7.0) (2026-08-13)
 
 
