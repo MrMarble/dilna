@@ -330,7 +330,9 @@ const MISE_WRITABLE_PATHS = [
  * which pnpm (and corepack's pnpm) both honor same as any other
  * npm-namespaced config override.
  */
-const PNPM_WRITABLE_PATHS = [path.join(os.homedir(), ".local", "share", "pnpm")];
+const PNPM_WRITABLE_PATHS = [
+	path.join(os.homedir(), ".local", "share", "pnpm"),
+];
 const PNPM_STORE_DIR = path.join(
 	os.homedir(),
 	".local",
@@ -442,7 +444,8 @@ export async function startClaude(
 				// (sandboxed-writable) instead of the volume root it'd otherwise
 				// resolve to. Only takes effect if nothing in the inherited
 				// process.env already set it — an operator's own override wins.
-				npm_config_store_dir: process.env.npm_config_store_dir ?? PNPM_STORE_DIR,
+				npm_config_store_dir:
+					process.env.npm_config_store_dir ?? PNPM_STORE_DIR,
 				// Explicit fallback scratch dir so any ad-hoc temp-file use (a
 				// one-off script, `mktemp`, etc.) has somewhere sandboxed-writable
 				// to land even if a command runs with the sandbox disabled — that
