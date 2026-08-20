@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as setTimeoutAsync } from "node:timers/promises";
@@ -418,6 +418,32 @@ const GH_WRITABLE_PATHS = [
 ];
 
 /**
+ * A `filesystem.allowWrite` entry below only does anything once the sandbox
+ * has an existing host directory to bind read-write into the sandboxed
+ * subprocess — it doesn't fabricate one. A leaf that's on the allowlist but
+ * has never been written by any process on this host (e.g. `.cache/gh`
+ * before a session's first `gh` invocation, `.cache/sigstore-rust` before
+ * mise's first attestation-verifying install) is silently inert: writes to
+ * it fail "read-only file system" from inside the sandbox exactly like an
+ * ungranted path would, with nothing to distinguish the two from the
+ * agent's side. Pre-creating every writable-path leaf here, from the
+ * trusted host process before the sandboxed subprocess spawns, makes each
+ * grant actually work from a session's first use of the corresponding tool
+ * instead of only after some earlier, unrelated session happened to touch
+ * it first.
+ */
+function ensureWritablePathsExist(): void {
+	for (const dir of [
+		...CLAUDE_SCRATCH_WRITABLE_PATHS,
+		...MISE_WRITABLE_PATHS,
+		...PNPM_WRITABLE_PATHS,
+		...GH_WRITABLE_PATHS,
+	]) {
+		mkdirSync(dir, { recursive: true });
+	}
+}
+
+/**
  * Per-Repo agent memory (issue #59, ADR-0018): rendered into the system
  * prompt when the Repo has any persisted memory, and referenced by the
  * `update_repo_memory` tool description below so the agent knows both what
@@ -454,6 +480,7 @@ Keep it to short, standalone facts, not procedures, task notes, or anything spec
 export async function startClaude(
 	opts: ClaudeStartOptions,
 ): Promise<ClaudeHandle> {
+	ensureWritablePathsExist();
 	const stderrTail: string[] = [];
 	const inputQueue = createInputQueue();
 
@@ -595,6 +622,25 @@ export async function startClaude(
 				enabled: true,
 				autoAllowBashIfSandboxed: true,
 				failIfUnavailable: true,
+				// Makes the Bash tool's own `dangerouslyDisableSandbox` param a
+				// no-op instead of the SDK's default (silently honored). Per
+				// ADR-0003, bypassPermissions is only safe because filesystem
+				// writes are confined by the sandbox; without this, an agent
+				// hitting a writability gap it doesn't know how to fix (a missing
+				// allowWrite grant, e.g.) can just opt itself out of confinement
+				// instead — observed doing exactly that in practice (see #74),
+				// landing writes anywhere on the host with no human in the loop
+				// to object. The fix for a real writability gap is widening the
+				// relevant *_WRITABLE_PATHS grant below, not an agent-initiated
+				// escape hatch. This must be set here, on the top-level `sandbox`
+				// object that directly configures the running sandbox — the
+				// identically-named `settings.sandbox.allowUnsandboxedCommands`
+				// below sits in the separate settings.json-style cascade
+				// (`resolveSettings()`'s own type excludes this top-level field
+				// from that cascade) and does not reach the native sandbox on its
+				// own, which is why the original #74 fix (15f615b), which only
+				// set it there, didn't actually close the hole.
+				allowUnsandboxedCommands: false,
 				// Set only inside dilna's own Docker image (DILNA_CONTAINERIZED=true
 				// in the Dockerfile): bwrap can't mount a fresh /proc inside an
 				// already-unprivileged container, so it bind-mounts the container's
@@ -631,17 +677,11 @@ export async function startClaude(
 						: {}),
 				},
 			},
-			// `allowUnsandboxedCommands: false` makes the Bash tool's own
-			// `dangerouslyDisableSandbox` param a no-op instead of the SDK's
-			// default (silently honored). Per ADR-0003, bypassPermissions is
-			// only safe because filesystem writes are confined by the sandbox;
-			// without this, an agent hitting a writability gap it doesn't know
-			// how to fix (a missing allowWrite grant, e.g.) can just opt itself
-			// out of confinement instead — observed doing exactly that in
-			// practice (see #74), landing writes anywhere on the host with no
-			// human in the loop to object. The fix for a real writability gap
-			// is widening the relevant *_WRITABLE_PATHS grant above, not an
-			// agent-initiated escape hatch.
+			// Belt-and-suspenders duplicate of `sandbox.allowUnsandboxedCommands`
+			// above (the settings.json-style cascade rather than the direct
+			// sandbox config) — kept in case some path resolves the sandbox via
+			// this cascade instead. See the comment on the top-level `sandbox`
+			// field for why that one, not this one, is the actual fix for #74.
 			settings: {
 				sandbox: { allowUnsandboxedCommands: false },
 				...(nestedInCheckout
