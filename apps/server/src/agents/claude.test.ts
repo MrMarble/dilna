@@ -2,6 +2,7 @@ import type {
 	SDKAssistantMessage,
 	SDKPartialAssistantMessage,
 	SDKResultMessage,
+	SDKTaskNotificationMessage,
 	StopHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { describe, expect, it } from "vitest";
@@ -76,6 +77,23 @@ function resultMessage(overrides: {
 		usage: overrides.usage,
 		errors: [],
 	} as unknown as SDKResultMessage;
+}
+
+function taskNotificationMessage(overrides: {
+	taskId: string;
+	status?: "completed" | "failed" | "stopped";
+	summary?: string;
+}): SDKTaskNotificationMessage {
+	return {
+		type: "system",
+		subtype: "task_notification",
+		task_id: overrides.taskId,
+		status: overrides.status ?? "completed",
+		output_file: "/tmp/output.md",
+		summary: overrides.summary ?? "",
+		uuid: "tn1",
+		session_id: "s1",
+	} as unknown as SDKTaskNotificationMessage;
 }
 
 describe("normalizeMessage usage_update", () => {
@@ -180,6 +198,32 @@ describe("normalizeMessage usage_update", () => {
 			messageId: "m2",
 			role: "assistant",
 		});
+	});
+});
+
+describe("normalizeMessage task_notification", () => {
+	it("surfaces the background task's summary as a notice", () => {
+		const state = createNormalizeState();
+		const events = normalizeMessage(
+			taskNotificationMessage({
+				taskId: "t1",
+				summary: 'Agent "Research foo" finished',
+			}),
+			state,
+		);
+		expect(events).toContainEqual({
+			type: "notice",
+			message: 'Agent "Research foo" finished',
+		});
+	});
+
+	it("emits no notice when the notification carries no summary", () => {
+		const state = createNormalizeState();
+		const events = normalizeMessage(
+			taskNotificationMessage({ taskId: "t1", summary: "" }),
+			state,
+		);
+		expect(events.some((e) => e.type === "notice")).toBe(false);
 	});
 });
 
