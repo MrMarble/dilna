@@ -126,8 +126,15 @@ function claudeContentToText(content: unknown): string {
  *
  * Tool results arrive as separate synthetic user-role transcript entries;
  * they're merged back into the owning tool_call part rather than persisted
- * as their own row. Real (non-tool-result) user entries are persisted as
- * their own text messages and also flush any in-progress assistant turn.
+ * as their own row (and don't end the turn — more tool round-trips follow).
+ * A background Task-tool completion is also a synthetic user-role entry
+ * (`origin.kind === "task-notification"`, carrying a `<task-notification>`
+ * XML payload meant for the model, not the user) but it *does* end the
+ * turn — the model's follow-up once it reads the result is a fresh turn,
+ * same as it is live (see normalizeTaskNotification in `agents/claude.ts`) —
+ * so it flushes without being persisted itself. Real user entries are
+ * persisted as their own text messages and also flush any in-progress
+ * assistant turn.
  *
  * Claude's transcript entries carry no timestamp, so createdAt is
  * synthesized as `now - (length - index)`: monotonically increasing within
@@ -201,8 +208,16 @@ export function claudeMessagesToDilna(
 				}
 			}
 		} else if (entry.type === "user") {
-			const isSynthetic = blocks.some((b) => b.type === "tool_result");
-			if (isSynthetic) return;
+			const origin = (entry as { origin?: { kind?: string } }).origin;
+			if (origin?.kind === "task-notification") {
+				// Ends the pre-task turn without persisting the notification's raw
+				// `<task-notification>` XML as a chat message — the follow-up
+				// report the model gives once it reads the result is a fresh turn,
+				// same as it is live (see normalizeTaskNotification in claude.ts).
+				flushTurn();
+				return;
+			}
+			if (blocks.some((b) => b.type === "tool_result")) return;
 			// A real user message ends any in-progress assistant turn.
 			flushTurn();
 			const text = claudeContentToText(content);
@@ -1468,6 +1483,12 @@ class SessionManager {
 		const pending = persisted.find((m) => m.id === pendingId);
 		const turnUserRow = fresh.filter((m) => m.role === "user").at(-1);
 		if (pending && turnUserRow) {
+			// A cold-started (non-resumed) session's outgoing prompt is prefixed
+			// with a context-primer recap (see buildContextPrimer/runTurn) — the
+			// transcript's row for this turn is the *prefixed* text, but the
+			// placeholder already holds the user's real, unprefixed text. Prefer
+			// it so the recap never leaks into persisted history.
+			turnUserRow.parts = pending.parts;
 			const idx = fresh.indexOf(turnUserRow);
 			const prevStamp =
 				idx > 0 ? (fresh[idx - 1]?.createdAt ?? 0) : maxExisting;
@@ -1700,8 +1721,13 @@ class SessionManager {
 		const history = await this.getMessages(id);
 		const lines = history
 			.map((m) => {
+				// Tool calls are dropped, not summarized: their inputs/outputs are
+				// gone from the fresh agent's context regardless, so a placeholder
+				// like "[used tool: Bash]" would only spend context budget without
+				// telling the model anything it can act on.
 				const text = m.parts
-					.map((p) => (p.type === "text" ? p.text : `[used tool: ${p.tool}]`))
+					.filter((p) => p.type === "text")
+					.map((p) => p.text)
 					.join("\n")
 					.trim();
 				return text ? `${m.role}: ${text}` : null;

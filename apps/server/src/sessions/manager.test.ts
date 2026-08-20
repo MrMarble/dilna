@@ -444,4 +444,36 @@ describe("claudeMessagesToDilna", () => {
 			expect(cur.createdAt).toBeGreaterThanOrEqual(prev.createdAt);
 		}
 	});
+
+	it("drops a background task-notification entry, flushing the pre-task turn without persisting it as a user message", () => {
+		const raw = [
+			entry("user", "u-1", "kick off research"),
+			entry("assistant", "a-1", "on it, running in the background"),
+			{
+				type: "user",
+				uuid: "tn-1",
+				origin: { kind: "task-notification" },
+				message: {
+					role: "user",
+					content: [
+						{
+							type: "text",
+							text: "<task-notification>\n<status>completed</status>\n</task-notification>",
+						},
+					],
+				},
+			},
+			entry("assistant", "a-2", "here's what it found"),
+		];
+		const messages = claudeMessagesToDilna("s1", raw as Raw);
+
+		// The notification never becomes its own row, but does split the two
+		// assistant turns it falls between (mirroring the live turn boundary).
+		expect(messages.map((m) => m.id)).toEqual(["u-1", "a-1", "a-2"]);
+		expect(messages.map((m) => m.role)).toEqual([
+			"user",
+			"assistant",
+			"assistant",
+		]);
+	});
 });

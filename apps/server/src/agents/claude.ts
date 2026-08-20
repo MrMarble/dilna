@@ -1141,12 +1141,27 @@ function normalizeTaskUpdated(
 	return [activityEvent(state)];
 }
 
+/**
+ * A background Task-tool subagent settling. This is the only live signal
+ * for that event — the matching synthetic user-role transcript entry (an
+ * `origin.kind: "task-notification"` message carrying the full
+ * `<task-notification>` XML, result included) is context for the model's
+ * next turn, not a client-facing one; `normalizeUserMessage` never sees a
+ * `tool_result` block in it and correctly ignores it, and
+ * `claudeMessagesToDilna` drops it from persisted history for the same
+ * reason. So this is surfaced as a `notice` using the structured `summary`
+ * field here rather than trying to parse anything out of that XML.
+ */
 function normalizeTaskNotification(
 	msg: SDKTaskNotificationMessage,
 	state: NormalizeState,
 ): AgentStreamEvent[] {
 	state.activity.tasks.delete(msg.task_id);
-	return [activityEvent(state)];
+	const events: AgentStreamEvent[] = [activityEvent(state)];
+	if (msg.summary) {
+		events.push({ type: "notice", message: msg.summary });
+	}
+	return events;
 }
 
 function normalizeThinkingTokens(
