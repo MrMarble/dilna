@@ -1,6 +1,12 @@
 import type { SessionView } from "@dilna/shared";
 
-export function StatusDot({ status }: { status: SessionView["status"] }) {
+export function StatusDot({
+	status,
+	className = "",
+}: {
+	status: SessionView["status"];
+	className?: string;
+}) {
 	const color =
 		status === "working"
 			? "bg-emerald-500"
@@ -9,5 +15,7 @@ export function StatusDot({ status }: { status: SessionView["status"] }) {
 				: status === "crashed"
 					? "bg-red-500"
 					: "bg-zinc-400";
-	return <span className={`size-1.5 shrink-0 rounded-full ${color}`} />;
+	return (
+		<span className={`size-1.5 shrink-0 rounded-full ${color} ${className}`} />
+	);
 }

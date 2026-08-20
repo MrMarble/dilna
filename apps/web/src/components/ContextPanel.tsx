@@ -10,6 +10,7 @@ import {
 	FilePlus,
 	FileX,
 	GitCommitHorizontal,
+	PanelRightClose,
 	Pencil,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -30,6 +31,9 @@ type Props = {
 	 * the outer width/border/header chrome for use inside the mobile bottom
 	 * sheet (issue #12) — the sheet itself supplies the surrounding chrome. */
 	variant?: "panel" | "sheet";
+	/** Desktop-only collapse button in the panel's top bar. Absent in the
+	 * sheet variant, which closes via the drawer instead. */
+	onCollapse?: () => void;
 };
 
 function formatDateTime(epochSeconds: number) {
@@ -61,6 +65,7 @@ export function ContextPanel({
 	repo,
 	stats,
 	variant = "panel",
+	onCollapse,
 }: Props) {
 	const isSheet = variant === "sheet";
 	const [files, setFiles] = useState<ChangedFile[]>([]);
@@ -117,10 +122,20 @@ export function ContextPanel({
 			)}
 		>
 			{!isSheet && (
-				<div className="flex h-14 shrink-0 items-center border-b border-sidebar-border px-4">
+				<div className="flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border px-4">
 					<span className="text-xs font-medium text-muted-foreground">
 						Context
 					</span>
+					{onCollapse && (
+						<button
+							type="button"
+							onClick={onCollapse}
+							title="Collapse context panel"
+							className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+						>
+							<PanelRightClose className="size-4" />
+						</button>
+					)}
 				</div>
 			)}
 			<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
