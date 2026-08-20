@@ -1,6 +1,7 @@
 import type {
 	RateLimitWindow,
 	RepoStats,
+	RepoSyncStatus,
 	SessionListEvent,
 } from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
@@ -44,6 +45,9 @@ export function App() {
 	const [statsByRepoId, setStatsByRepoId] = useState<Record<string, RepoStats>>(
 		{},
 	);
+	const [syncStatusByRepoId, setSyncStatusByRepoId] = useState<
+		Record<string, RepoSyncStatus>
+	>({});
 	// Below 768px the desktop Sidebar/ContextPanel aren't rendered at all
 	// (rather than just hidden via CSS) so their SSE subscriptions don't run
 	// twice alongside the mobile sheet's own instances — see issue #12.
@@ -116,6 +120,34 @@ export function App() {
 		}
 		return () => {
 			cancelled = true;
+		};
+	}, [repos]);
+
+	// Periodic "N commits behind" check per repo, VS Code-style — entirely
+	// client-driven (no server-side timer) so the fetch only happens while
+	// the app is open. Runs once whenever the repo list changes (covers the
+	// initial load and right after a manual pull, since pullRepos ends by
+	// replacing `repos`) and then every 3 minutes; a repo whose remote is
+	// unreachable just keeps its last-known badge instead of clearing it.
+	useEffect(() => {
+		if (repos.length === 0) return;
+		let cancelled = false;
+		const checkAll = () => {
+			for (const repo of repos) {
+				api.repos
+					.sync(repo.id)
+					.then(({ status }) => {
+						if (cancelled) return;
+						setSyncStatusByRepoId((prev) => ({ ...prev, [repo.id]: status }));
+					})
+					.catch(() => {});
+			}
+		};
+		checkAll();
+		const interval = setInterval(checkAll, 3 * 60_000);
+		return () => {
+			cancelled = true;
+			clearInterval(interval);
 		};
 	}, [repos]);
 
@@ -306,6 +338,7 @@ export function App() {
 		onSelectBackgroundSession: handleSelectSession,
 		rateLimitWindows,
 		primaryLanguageByRepoId,
+		syncStatusByRepoId,
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
 		currentSession: selectedSession,
 		onDeleteCurrentSession: handleDeleteSession,
