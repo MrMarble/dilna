@@ -31,6 +31,20 @@ export type RepoStats = {
 	languages: LanguageStat[];
 };
 
+/** How the bare clone's local `defaultBranch` ref compares to `origin`'s,
+ * computed on demand (never persisted) by the sidebar's periodic sync check —
+ * see `RepoManager.syncStatus`. */
+export type RepoSyncStatus = {
+	/** Commits on the local ref not yet on `origin` (to push). In practice
+	 * always 0 today since nothing but `pull` ever moves this ref, and that
+	 * always fast-forwards it to match `origin` — kept symmetric in case that
+	 * changes. */
+	ahead: number;
+	/** Commits on `origin` not yet pulled locally — what the "N to pull"
+	 * badge counts. */
+	behind: number;
+};
+
 /** One commit in a Session's Worktree history (`git log`), newest first. */
 export type CommitInfo = {
 	/** Abbreviated hash. */

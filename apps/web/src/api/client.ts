@@ -7,6 +7,7 @@ import type {
 	RateLimitWindow,
 	Repo,
 	RepoStats,
+	RepoSyncStatus,
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
@@ -20,6 +21,7 @@ export type {
 	RateLimitWindow,
 	Repo,
 	RepoStats,
+	RepoSyncStatus,
 	SessionListEvent,
 	SessionView,
 };
@@ -190,6 +192,10 @@ export const api = {
 			request<{ repo: Repo }>(`/api/repos/${id}/pull`, { method: "POST" }),
 		stats: (id: string) =>
 			request<{ stats: RepoStats }>(`/api/repos/${id}/stats`),
+		sync: (id: string) =>
+			request<{ status: RepoSyncStatus }>(`/api/repos/${id}/sync`, {
+				method: "POST",
+			}),
 		delete: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/repos/${id}`, {
 				method: "DELETE",

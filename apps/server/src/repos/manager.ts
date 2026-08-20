@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Repo, RepoStats } from "@dilna/shared";
+import type { Repo, RepoStats, RepoSyncStatus } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getDataDir, getDb } from "../db";
@@ -239,6 +239,45 @@ export class RepoManager {
 				`git fetch failed for ${repo.slug}: ${e.stderr?.trim() || e.message}`,
 			);
 		}
+	}
+
+	/**
+	 * How far the bare clone's local `defaultBranch` ref has drifted from
+	 * `origin`'s, for the sidebar's periodic "N to pull" badge. Unlike `pull`,
+	 * this only updates `refs/remotes/origin/<defaultBranch>` — the local ref
+	 * is left untouched — so it's safe to call on a timer purely to check
+	 * what's new upstream without changing what any Session branches off of.
+	 */
+	async syncStatus(repo: Repo): Promise<RepoSyncStatus> {
+		try {
+			await git(
+				[
+					"fetch",
+					"origin",
+					`+refs/heads/${repo.defaultBranch}:refs/remotes/origin/${repo.defaultBranch}`,
+				],
+				{ cwd: repo.path },
+			);
+		} catch (err) {
+			const e = err as { stderr?: string; message?: string };
+			throw new Error(
+				`git fetch failed for ${repo.slug}: ${e.stderr?.trim() || e.message}`,
+			);
+		}
+		const { stdout } = await git(
+			[
+				"rev-list",
+				"--left-right",
+				"--count",
+				`refs/heads/${repo.defaultBranch}...refs/remotes/origin/${repo.defaultBranch}`,
+			],
+			{ cwd: repo.path },
+		);
+		const [ahead, behind] = stdout
+			.trim()
+			.split(/\s+/)
+			.map((n) => Number.parseInt(n, 10) || 0);
+		return { ahead: ahead ?? 0, behind: behind ?? 0 };
 	}
 
 	/**

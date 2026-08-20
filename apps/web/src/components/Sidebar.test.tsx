@@ -59,6 +59,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			onSelectBackgroundSession={noop}
 			rateLimitWindows={[]}
 			primaryLanguageByRepoId={{}}
+			syncStatusByRepoId={{}}
 			{...overrides}
 		/>,
 	);

@@ -1,5 +1,17 @@
-import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
-import { FolderGit2, Plus, RefreshCw, Trash2 } from "lucide-react";
+import type {
+	RateLimitWindow,
+	Repo,
+	RepoSyncStatus,
+	SessionView,
+} from "@dilna/shared";
+import {
+	ArrowDown,
+	ArrowUp,
+	FolderGit2,
+	Plus,
+	RefreshCw,
+	Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppVersion } from "@/components/AppVersion";
 import { StatusDot } from "@/components/StatusDot";
@@ -42,6 +54,10 @@ type Props = {
 	 * GitHub-style language icons in the repo list. Missing/undefined values
 	 * fall back to the generic folder icon. */
 	primaryLanguageByRepoId: Record<string, string | undefined>;
+	/** Repo id → ahead/behind vs `origin`, from the periodic client-side sync
+	 * check (see App.tsx). Missing entry just means no check has landed yet
+	 * (or it failed) — renders no badge, not a stale one. */
+	syncStatusByRepoId: Record<string, RepoSyncStatus | undefined>;
 	/** "panel" (default) is the desktop always-visible aside. "sheet" strips
 	 * the outer width/border/brand chrome for use inside the mobile bottom
 	 * sheet (issue #12) and pins the rate-limit footer below a scrollable
@@ -73,6 +89,7 @@ export function Sidebar({
 	onSelectBackgroundSession,
 	rateLimitWindows,
 	primaryLanguageByRepoId,
+	syncStatusByRepoId,
 	variant = "panel",
 	currentSession,
 	onDeleteCurrentSession,
@@ -138,6 +155,7 @@ export function Sidebar({
 					onRefresh={onRefreshRepos}
 					onNew={onNewRepo}
 					primaryLanguageByRepoId={primaryLanguageByRepoId}
+					syncStatusByRepoId={syncStatusByRepoId}
 				/>
 
 				{/* Spacer keeps the Background Agents card pinned just above the
@@ -192,6 +210,7 @@ function ReposSection({
 	onRefresh,
 	onNew,
 	primaryLanguageByRepoId,
+	syncStatusByRepoId,
 }: {
 	repos: Repo[];
 	loading: boolean;
@@ -201,6 +220,7 @@ function ReposSection({
 	onRefresh: () => void;
 	onNew: () => void;
 	primaryLanguageByRepoId: Record<string, string | undefined>;
+	syncStatusByRepoId: Record<string, RepoSyncStatus | undefined>;
 }) {
 	return (
 		<div className="flex flex-col">
@@ -242,6 +262,7 @@ function ReposSection({
 									<span className="ml-auto shrink-0 text-[0.6875rem] text-muted-foreground/80">
 										{repo.defaultBranch}
 									</span>
+									<SyncBadge status={syncStatusByRepoId[repo.id]} />
 								</button>
 							</li>
 						))}
@@ -249,6 +270,32 @@ function ReposSection({
 				)}
 			</div>
 		</div>
+	);
+}
+
+/** VS Code-style "N to pull" / "N to push" indicator next to a repo's default
+ * branch. Renders nothing when there's nothing to show — no status yet, or
+ * the local ref is already caught up with `origin`. */
+function SyncBadge({ status }: { status: RepoSyncStatus | undefined }) {
+	if (!status || (status.ahead === 0 && status.behind === 0)) return null;
+	return (
+		<span
+			className="ml-1 flex shrink-0 items-center gap-0.5 text-[0.6875rem] text-muted-foreground/80"
+			title={`${status.behind} commit${status.behind === 1 ? "" : "s"} to pull, ${status.ahead} to push`}
+		>
+			{status.behind > 0 && (
+				<span className="flex items-center gap-px">
+					<ArrowDown className="size-3" />
+					{status.behind}
+				</span>
+			)}
+			{status.ahead > 0 && (
+				<span className="flex items-center gap-px">
+					<ArrowUp className="size-3" />
+					{status.ahead}
+				</span>
+			)}
+		</span>
 	);
 }
 
