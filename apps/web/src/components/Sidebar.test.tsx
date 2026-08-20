@@ -1,5 +1,6 @@
 import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/Sidebar";
 
@@ -54,9 +55,11 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			onNewRepo={noop}
 			onNewSession={noop}
 			creatingSession={false}
+			selectedSessionId={null}
+			sessionsByRepoId={{}}
 			backgroundSessions={[]}
 			repoSlugById={{}}
-			onSelectBackgroundSession={noop}
+			onSelectSession={noop}
 			rateLimitWindows={[]}
 			primaryLanguageByRepoId={{}}
 			syncStatusByRepoId={{}}
@@ -113,15 +116,14 @@ describe("Sidebar", () => {
 		expect(screen.getByText(repo.slug)).toBeInTheDocument();
 	});
 
-	it("highlights the selected repo row", () => {
+	it("expands only the selected repo's row", () => {
 		const repo = makeRepo({ slug: "alpha" });
 		const other = makeRepo({ id: "repo-2", slug: "beta" });
 		renderSidebar({ repos: [repo, other], selectedRepoId: repo.id });
 		const alphaBtn = screen.getByText("alpha").closest("button");
 		const betaBtn = screen.getByText("beta").closest("button");
-		const selectedClass = /(?:^|\s)bg-sidebar-accent(?:\s|$)/;
-		expect(alphaBtn?.className).toMatch(selectedClass);
-		expect(betaBtn?.className).not.toMatch(selectedClass);
+		expect(alphaBtn).toHaveAttribute("aria-expanded", "true");
+		expect(betaBtn).toHaveAttribute("aria-expanded", "false");
 	});
 
 	it("renders background sessions with their repo slug", () => {
@@ -137,6 +139,57 @@ describe("Sidebar", () => {
 	it("renders an error message when repo loading fails", () => {
 		renderSidebar({ error: "boom" });
 		expect(screen.getByText("boom")).toBeInTheDocument();
+	});
+
+	describe("per-repo session submenu", () => {
+		it("only shows the selected repo's sessions", () => {
+			const repo = makeRepo({ slug: "alpha" });
+			const other = makeRepo({ id: "repo-2", slug: "beta" });
+			renderSidebar({
+				repos: [repo, other],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: {
+					[repo.id]: [makeSession({ id: "s1", title: "alpha session" })],
+					[other.id]: [
+						makeSession({ id: "s2", repoId: other.id, title: "beta session" }),
+					],
+				},
+			});
+			expect(screen.getByText("alpha session")).toBeInTheDocument();
+			expect(screen.queryByText("beta session")).not.toBeInTheDocument();
+		});
+
+		it("shows an empty hint when the selected repo has no sessions", () => {
+			const repo = makeRepo();
+			renderSidebar({ repos: [repo], selectedRepoId: repo.id });
+			expect(screen.getByText("No sessions yet.")).toBeInTheDocument();
+		});
+
+		it("selecting a session calls onSelectSession", async () => {
+			const repo = makeRepo();
+			const session = makeSession({ title: "pick me" });
+			const onSelectSession = vi.fn();
+			renderSidebar({
+				repos: [repo],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: { [repo.id]: [session] },
+				onSelectSession,
+			});
+			await userEvent.click(screen.getByText("pick me"));
+			expect(onSelectSession).toHaveBeenCalledWith(session);
+		});
+
+		it("re-clicking the already-selected repo's row does not re-trigger onSelectRepo", async () => {
+			const repo = makeRepo({ slug: "unique-reclick-repo" });
+			const onSelectRepo = vi.fn();
+			renderSidebar({
+				repos: [repo],
+				selectedRepoId: repo.id,
+				onSelectRepo,
+			});
+			await userEvent.click(screen.getByText(repo.slug));
+			expect(onSelectRepo).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("rate-limit footer", () => {

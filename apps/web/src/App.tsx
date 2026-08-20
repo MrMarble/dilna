@@ -8,7 +8,11 @@ import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
 import { AppVersion } from "@/components/AppVersion";
-import { ChatHeader, MobileMenuButton } from "@/components/ChatHeader";
+import {
+	ChatHeader,
+	ExpandSidebarButton,
+	MobileMenuButton,
+} from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { ContextPanel } from "@/components/ContextPanel";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
@@ -16,6 +20,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
+import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
 
 // Keeps the URL shareable/bookmarkable as /<repo-slug>/<session-id> — see
 // the App component's history hydration/popstate effects for the read side.
@@ -53,6 +58,16 @@ export function App() {
 	// twice alongside the mobile sheet's own instances — see issue #12.
 	const isDesktop = useIsDesktop();
 	const mobileSheet = useMobileSheet();
+	// Desktop-only: the Sidebar/ContextPanel are otherwise always-open fixed
+	// columns that eat most of the width on a laptop-size (not phone-size)
+	// viewport, squeezing the chat. Collapsing is per-panel and persisted so
+	// it survives a reload.
+	const [sidebarCollapsed, setSidebarCollapsed] = usePersistedBoolean(
+		"dilna:sidebar-collapsed",
+	);
+	const [contextCollapsed, setContextCollapsed] = usePersistedBoolean(
+		"dilna:context-collapsed",
+	);
 
 	// Crossing back over the breakpoint (window resize, tablet rotation) while
 	// the sheet is open would otherwise leave it floating over the now-visible
@@ -212,13 +227,26 @@ export function App() {
 		? (sessionsById[selectedSessionId] ?? null)
 		: null;
 
-	const repoSessions = useMemo(
-		() =>
-			Object.values(sessionsById)
-				.filter((s) => s.repoId === selectedRepoId)
-				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
-		[sessionsById, selectedRepoId],
-	);
+	// Every repo's Sessions, newest-active first — the Sidebar's per-repo
+	// submenu (issue: session switching moved out of the header dropdown and
+	// into the sidebar) only ever renders the selected repo's list, but keeps
+	// this pre-grouped so switching repos doesn't need a fetch or a re-filter
+	// of every Session on every render.
+	const sessionsByRepoId = useMemo(() => {
+		const map: Record<string, SessionView[]> = {};
+		for (const session of Object.values(sessionsById)) {
+			let list = map[session.repoId];
+			if (!list) {
+				list = [];
+				map[session.repoId] = list;
+			}
+			list.push(session);
+		}
+		for (const sessions of Object.values(map)) {
+			sessions.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
+		}
+		return map;
+	}, [sessionsById]);
 
 	const backgroundSessions = useMemo(
 		() =>
@@ -237,7 +265,11 @@ export function App() {
 			setSelectedSessionId(latest?.id ?? null);
 			const repo = repos.find((r) => r.id === id);
 			if (repo) pushSessionPath(repo.slug, latest?.id ?? null);
-			mobileSheet.close();
+			// Only close the mobile sheet when the repo has a session to land
+			// on — otherwise closing dumps the user on an empty state with no
+			// visible "New session" affordance, forcing them to reopen the
+			// sheet just to tap the button that's already right here.
+			if (latest) mobileSheet.close();
 		},
 		[sessionsById, repos, mobileSheet.close],
 	);
@@ -333,9 +365,11 @@ export function App() {
 		onRefreshRepos: pullRepos,
 		onNewSession: handleNewSession,
 		creatingSession,
+		selectedSessionId,
+		sessionsByRepoId,
 		backgroundSessions,
 		repoSlugById,
-		onSelectBackgroundSession: handleSelectSession,
+		onSelectSession: handleSelectSession,
 		rateLimitWindows,
 		primaryLanguageByRepoId,
 		syncStatusByRepoId,
@@ -347,23 +381,34 @@ export function App() {
 	return (
 		<>
 			<div className="flex h-dvh w-screen">
-				{isDesktop && (
-					<Sidebar {...sidebarProps} onNewRepo={() => setNewRepoOpen(true)} />
+				{isDesktop && !sidebarCollapsed && (
+					<Sidebar
+						{...sidebarProps}
+						onNewRepo={() => setNewRepoOpen(true)}
+						onCollapse={() => setSidebarCollapsed(true)}
+					/>
 				)}
 				<main className="flex flex-1 flex-col overflow-hidden">
 					{selectedRepo ? (
 						<ChatHeader
 							repo={selectedRepo}
-							sessions={repoSessions}
 							selectedSession={selectedSession}
-							onSelectSession={handleSelectSession}
 							onDeleteSession={handleDeleteSession}
 							menuTrigger={mobileSheet.menuTrigger}
 							filesTrigger={mobileSheet.filesTrigger}
+							sidebarCollapsed={isDesktop && sidebarCollapsed}
+							onExpandSidebar={() => setSidebarCollapsed(false)}
+							contextCollapsed={isDesktop && contextCollapsed}
+							onExpandContext={() => setContextCollapsed(false)}
 						/>
 					) : (
 						<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
 							<MobileMenuButton trigger={mobileSheet.menuTrigger} />
+							{isDesktop && sidebarCollapsed && (
+								<ExpandSidebarButton
+									onClick={() => setSidebarCollapsed(false)}
+								/>
+							)}
 							<span className="text-muted-foreground">dilna</span>
 							<AppVersion className="ml-1 max-w-none" />
 						</header>
@@ -377,11 +422,12 @@ export function App() {
 									isDesktop={isDesktop}
 								/>
 							</div>
-							{selectedRepo && isDesktop && (
+							{selectedRepo && isDesktop && !contextCollapsed && (
 								<ContextPanel
 									session={selectedSession}
 									repo={selectedRepo}
 									stats={statsByRepoId[selectedRepo.id]}
+									onCollapse={() => setContextCollapsed(true)}
 								/>
 							)}
 						</div>

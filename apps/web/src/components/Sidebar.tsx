@@ -7,7 +7,9 @@ import type {
 import {
 	ArrowDown,
 	ArrowUp,
+	ChevronRight,
 	FolderGit2,
+	PanelLeftClose,
 	Plus,
 	RefreshCw,
 	Trash2,
@@ -42,9 +44,19 @@ type Props = {
 	onNewRepo: () => void;
 	onNewSession: () => void;
 	creatingSession: boolean;
+	/** The Session open in the chat, if any — highlighted in the selected
+	 * repo's session submenu. */
+	selectedSessionId: string | null;
+	/** Repo id → its Sessions (newest-active first), for the per-repo
+	 * expandable submenu — only the selected repo's list is ever rendered,
+	 * but every repo's is available so switching repos doesn't need a
+	 * fetch. */
+	sessionsByRepoId: Record<string, SessionView[]>;
 	backgroundSessions: SessionView[];
 	repoSlugById: Record<string, string>;
-	onSelectBackgroundSession: (session: SessionView) => void;
+	/** Used both for the per-repo session submenu and the Background Agents
+	 * card — selecting a Session means the same thing everywhere. */
+	onSelectSession: (session: SessionView) => void;
 	/** Account-wide plan rate-limit windows (per ADR-0006-adjacent design in
 	 * the "Account-wide plan rate-limit footer" issue). Empty/absent when
 	 * unavailable — e.g. API-key auth, or no live Session has reported yet —
@@ -72,6 +84,10 @@ type Props = {
 	 * Session open yet. */
 	currentSession?: SessionView | null;
 	onDeleteCurrentSession?: (id: string) => void;
+	/** Desktop-only collapse button in the panel's top bar (issue: sidebar
+	 * can't be collapsed, squeezing the chat on non-mobile narrow viewports).
+	 * Absent in the sheet variant, which closes via the drawer instead. */
+	onCollapse?: () => void;
 };
 
 export function Sidebar({
@@ -84,15 +100,18 @@ export function Sidebar({
 	onNewRepo,
 	onNewSession,
 	creatingSession,
+	selectedSessionId,
+	sessionsByRepoId,
 	backgroundSessions,
 	repoSlugById,
-	onSelectBackgroundSession,
+	onSelectSession,
 	rateLimitWindows,
 	primaryLanguageByRepoId,
 	syncStatusByRepoId,
 	variant = "panel",
 	currentSession,
 	onDeleteCurrentSession,
+	onCollapse,
 }: Props) {
 	const isSheet = variant === "sheet";
 	return (
@@ -110,6 +129,16 @@ export function Sidebar({
 					<span className="font-semibold tracking-tight">dilna</span>
 					<AppVersion />
 					<ThemeToggle className="ml-auto" />
+					{onCollapse && (
+						<button
+							type="button"
+							onClick={onCollapse}
+							title="Collapse sidebar"
+							className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+						>
+							<PanelLeftClose className="size-4" />
+						</button>
+					)}
 				</div>
 			)}
 
@@ -151,23 +180,21 @@ export function Sidebar({
 					loading={loadingRepos}
 					error={error}
 					selectedRepoId={selectedRepoId}
+					selectedSessionId={selectedSessionId}
+					sessionsByRepoId={sessionsByRepoId}
 					onSelectRepo={onSelectRepo}
+					onSelectSession={onSelectSession}
 					onRefresh={onRefreshRepos}
 					onNew={onNewRepo}
 					primaryLanguageByRepoId={primaryLanguageByRepoId}
 					syncStatusByRepoId={syncStatusByRepoId}
+					isSheet={isSheet}
 				/>
-
-				{/* Spacer keeps the Background Agents card pinned just above the
-				    footer, matching the draft's floating-card placement. Only
-				    meaningful on desktop, where this column always spans the full
-				    viewport height; the sheet variant scrolls instead. */}
-				{!isSheet && <div className="flex-1" />}
 
 				<BackgroundAgentsSection
 					sessions={backgroundSessions}
 					repoSlugById={repoSlugById}
-					onSelect={onSelectBackgroundSession}
+					onSelect={onSelectSession}
 				/>
 			</div>
 
@@ -193,7 +220,7 @@ function CurrentSessionRow({
 				type="button"
 				onClick={() => onDelete(session.id)}
 				title="Delete session"
-				className="shrink-0 rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+				className="shrink-0 rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
 			>
 				<Trash2 className="size-3.5" />
 			</button>
@@ -201,29 +228,46 @@ function CurrentSessionRow({
 	);
 }
 
+/**
+ * Repos as a single-open accordion: clicking a repo selects it (which — per
+ * App's handleSelectRepo — also jumps to its latest Session) and expands its
+ * Session submenu in place, collapsing whichever repo was expanded before.
+ * Re-clicking the already-selected repo's row is a no-op rather than
+ * re-running the "jump to latest" logic, so it doesn't clobber a Session the
+ * user explicitly picked from the submenu. This replaces the old header
+ * dropdown as the only way to switch Sessions (see ChatHeader).
+ */
 function ReposSection({
 	repos,
 	loading,
 	error,
 	selectedRepoId,
+	selectedSessionId,
+	sessionsByRepoId,
 	onSelectRepo,
+	onSelectSession,
 	onRefresh,
 	onNew,
 	primaryLanguageByRepoId,
 	syncStatusByRepoId,
+	isSheet,
 }: {
 	repos: Repo[];
 	loading: boolean;
 	error: string | null;
 	selectedRepoId: string | null;
+	selectedSessionId: string | null;
+	sessionsByRepoId: Record<string, SessionView[]>;
 	onSelectRepo: (id: string) => void;
+	onSelectSession: (session: SessionView) => void;
 	onRefresh: () => void;
 	onNew: () => void;
 	primaryLanguageByRepoId: Record<string, string | undefined>;
 	syncStatusByRepoId: Record<string, RepoSyncStatus | undefined>;
+	isSheet: boolean;
 }) {
 	return (
-		<div className="flex flex-col">
+		<div className={cn("flex flex-col", !isSheet && "min-h-0 flex-1")}>
 			<SidebarSectionHeader
 				title="Repositories"
 				newTitle="New repository"
@@ -231,7 +275,12 @@ function ReposSection({
 				onRefresh={onRefresh}
 				refreshTitle="Pull latest default-branch changes"
 			/>
-			<div className="max-h-64 overflow-y-auto px-2 pb-2">
+			<div
+				className={cn(
+					"px-2 pb-2",
+					isSheet ? undefined : "min-h-0 flex-1 overflow-y-auto",
+				)}
+			>
 				{loading && repos.length === 0 ? (
 					<RepoListSkeleton />
 				) : error ? (
@@ -242,34 +291,87 @@ function ReposSection({
 					</p>
 				) : (
 					<ul className="space-y-0.5">
-						{repos.map((repo) => (
-							<li key={repo.id}>
-								<button
-									type="button"
-									onClick={() => onSelectRepo(repo.id)}
-									className={
-										"flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors " +
-										(repo.id === selectedRepoId
-											? "bg-sidebar-accent font-medium"
-											: "hover:bg-sidebar-accent/50")
-									}
-								>
-									<LanguageIcon
-										language={primaryLanguageByRepoId[repo.id]}
-										className="size-4 shrink-0 text-muted-foreground"
-									/>
-									<span className="truncate">{repo.slug}</span>
-									<span className="ml-auto shrink-0 text-[0.6875rem] text-muted-foreground/80">
-										{repo.defaultBranch}
-									</span>
-									<SyncBadge status={syncStatusByRepoId[repo.id]} />
-								</button>
-							</li>
-						))}
+						{repos.map((repo) => {
+							const expanded = repo.id === selectedRepoId;
+							return (
+								<li key={repo.id}>
+									<button
+										type="button"
+										onClick={() => {
+											if (!expanded) onSelectRepo(repo.id);
+										}}
+										aria-expanded={expanded}
+										className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent/40"
+									>
+										<ChevronRight
+											className={cn(
+												"size-3.5 shrink-0 text-muted-foreground transition-transform",
+												expanded && "rotate-90",
+											)}
+										/>
+										<LanguageIcon
+											language={primaryLanguageByRepoId[repo.id]}
+											className="size-4 shrink-0 text-muted-foreground"
+										/>
+										<span className="truncate font-medium">{repo.slug}</span>
+										<span className="ml-auto shrink-0 text-[0.6875rem] text-muted-foreground/80">
+											{repo.defaultBranch}
+										</span>
+										<SyncBadge status={syncStatusByRepoId[repo.id]} />
+									</button>
+									{expanded && (
+										<RepoSessionsSubmenu
+											sessions={sessionsByRepoId[repo.id] ?? []}
+											selectedSessionId={selectedSessionId}
+											onSelect={onSelectSession}
+										/>
+									)}
+								</li>
+							);
+						})}
 					</ul>
 				)}
 			</div>
 		</div>
+	);
+}
+
+function RepoSessionsSubmenu({
+	sessions,
+	selectedSessionId,
+	onSelect,
+}: {
+	sessions: SessionView[];
+	selectedSessionId: string | null;
+	onSelect: (session: SessionView) => void;
+}) {
+	if (sessions.length === 0) {
+		return (
+			<div className="ml-[19px] border-l border-muted-foreground/25 py-1.5 pl-3">
+				<p className="text-xs text-muted-foreground">No sessions yet.</p>
+			</div>
+		);
+	}
+	return (
+		<ul className="ml-[19px] space-y-0.5 border-l border-muted-foreground/25 py-0.5 pl-3">
+			{sessions.map((session) => (
+				<li key={session.id}>
+					<button
+						type="button"
+						onClick={() => onSelect(session)}
+						className={cn(
+							"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+							session.id === selectedSessionId
+								? "bg-sidebar-accent font-medium text-foreground"
+								: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground",
+						)}
+					>
+						<StatusDot status={session.status} />
+						<span className="truncate">{session.title}</span>
+					</button>
+				</li>
+			))}
+		</ul>
 	);
 }
 
@@ -460,19 +562,19 @@ function SidebarSectionHeader({
 					<button
 						type="button"
 						onClick={onRefresh}
-						className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+						className="rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
 						title={refreshTitle}
 					>
-						<RefreshCw className="size-3.5" />
+						<RefreshCw className="size-4" />
 					</button>
 				)}
 				<button
 					type="button"
 					onClick={onNew}
-					className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+					className="rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
 					title={newTitle}
 				>
-					<Plus className="size-3.5" />
+					<Plus className="size-4" />
 				</button>
 			</div>
 		</div>
