@@ -373,13 +373,24 @@ const TOOLCHAIN_HOME = path.join(getDataDir(), "toolchain-home");
  * `mise install pnpm`. `XDG_CACHE_HOME` is set (not just this one leaf) so
  * any other well-behaved tool that follows the XDG base-dir spec (gh's own
  * cache included) lands under {@link TOOLCHAIN_HOME} the same way, without
- * needing its own dedicated env var and writable-path entry.
+ * needing its own dedicated env var and writable-path entry — `XDG_DATA_HOME`
+ * and `XDG_CONFIG_HOME` get the same treatment for the other two legs of the
+ * base-dir spec, for the same reason: `pnpm install` itself writes CLI
+ * state/config under `$XDG_DATA_HOME`/`$XDG_CONFIG_HOME` (default
+ * `~/.local/share`/`~/.config`) independent of the content-addressable store
+ * `PNPM_STORE_DIR` covers, and without a grant here that write fails
+ * "read-only file system" the same way the store's did before
+ * {@link PNPM_WRITABLE_PATHS} — except *this* failure surfaces as `pnpm
+ * install` stalling/getting killed rather than a clean error, since it hits
+ * partway through the install rather than at the top.
  */
 const MISE_DATA_DIR = path.join(TOOLCHAIN_HOME, "mise", "data");
 const MISE_CONFIG_DIR = path.join(TOOLCHAIN_HOME, "mise", "config");
 const MISE_CACHE_DIR = path.join(TOOLCHAIN_HOME, "mise", "cache");
 const MISE_STATE_DIR = path.join(TOOLCHAIN_HOME, "mise", "state");
 const XDG_CACHE_HOME = path.join(TOOLCHAIN_HOME, "cache");
+const XDG_DATA_HOME = path.join(TOOLCHAIN_HOME, "xdg-data");
+const XDG_CONFIG_HOME = path.join(TOOLCHAIN_HOME, "xdg-config");
 const MISE_WRITABLE_PATHS = [
 	MISE_DATA_DIR,
 	MISE_CONFIG_DIR,
@@ -387,6 +398,8 @@ const MISE_WRITABLE_PATHS = [
 	MISE_STATE_DIR,
 	XDG_CACHE_HOME,
 	path.join(XDG_CACHE_HOME, "sigstore-rust"),
+	XDG_DATA_HOME,
+	XDG_CONFIG_HOME,
 ];
 
 /**
@@ -607,6 +620,8 @@ export async function startClaude(
 				MISE_CACHE_DIR: process.env.MISE_CACHE_DIR ?? MISE_CACHE_DIR,
 				MISE_STATE_DIR: process.env.MISE_STATE_DIR ?? MISE_STATE_DIR,
 				XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? XDG_CACHE_HOME,
+				XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? XDG_DATA_HOME,
+				XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? XDG_CONFIG_HOME,
 				GH_CONFIG_DIR: process.env.GH_CONFIG_DIR ?? GH_CONFIG_DIR,
 				// Explicit fallback scratch dir so any ad-hoc temp-file use (a
 				// one-off script, `mktemp`, etc.) has somewhere sandboxed-writable
