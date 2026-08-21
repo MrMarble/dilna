@@ -334,30 +334,59 @@ const CLAUDE_SCRATCH_WRITABLE_PATHS = [
 ];
 
 /**
+ * Root for every toolchain's per-user install/cache/config state (ADR-0012,
+ * issue #83) — mise, pnpm's content-addressable store, gh's config/cache.
+ * All of these tools default to somewhere under `$HOME` (`~/.local/share`,
+ * `~/.cache`, `~/.config`), which is exactly the mistake `CLAUDE_CONFIG_DIR`
+ * already made and had to be corrected out of — see the comment above
+ * `process.env.CLAUDE_CONFIG_DIR ??=` in `db/index.ts`: in the reference
+ * Docker/Kubernetes deployment only `DILNA_DATA_DIR` is a mounted volume,
+ * so anything left under plain `$HOME` is wiped on every pod restart. A
+ * `mise install`/`pnpm install` done in one Bash tool call would then
+ * silently vanish by the time a later call (or a later session, since every
+ * session on this dilna instance shares one `$HOME`) needed it again —
+ * indistinguishable, from the agent's side, from the toolchain never having
+ * been installed at all. Rooting it here instead, alongside `claude-home`,
+ * makes it survive a pod restart the same way dilna's own DB and Claude's
+ * transcript storage already do.
+ */
+const TOOLCHAIN_HOME = path.join(getDataDir(), "toolchain-home");
+
+/**
  * mise's own state (ADR-0012): the per-user tool installs, shims, and
  * config that let a session install whatever node/go/python/etc. version
- * the repo it's working on actually needs. All of it lives under $HOME by
- * mise's own default layout, not under the worktree, so — same reasoning as
- * {@link CLAUDE_SCRATCH_WRITABLE_PATHS} — it needs an explicit
- * `filesystem.allowWrite` grant or every `mise install`/`mise use` fails
- * "read-only file system" under the native sandbox.
+ * the repo it's working on actually needs. Pointed at {@link TOOLCHAIN_HOME}
+ * (see its doc comment for why, not mise's own `$HOME`-based default layout)
+ * via the `MISE_DATA_DIR`/`MISE_CONFIG_DIR`/`MISE_CACHE_DIR`/`MISE_STATE_DIR`
+ * env vars set in {@link startClaude}. Still needs an explicit
+ * `filesystem.allowWrite` grant here regardless of which root it lives
+ * under — same reasoning as {@link CLAUDE_SCRATCH_WRITABLE_PATHS} — or every
+ * `mise install`/`mise use` fails "read-only file system" under the native
+ * sandbox.
  *
- * `.cache/sigstore-rust` is a separate grant for the same reason but a
- * different tool: mise statically links the `sigstore-tuf` crate to verify
- * GitHub artifact attestations on aqua-registry installs (e.g. `pnpm`), and
- * that crate keeps its own TUF trust-root cache outside mise's own
- * `~/.cache/mise` layout. Without this, `mise install pnpm` (and any other
- * attested aqua tool) fails "Failed to create cache directory: Read-only
- * file system" the first time a session's $HOME doesn't already have this
- * directory — confirmed by diffing filesystem writes between a sandboxed
- * and unsandboxed `mise install` run.
+ * `sigstore-rust` is a separate grant for the same reason but a different
+ * tool: mise statically links the `sigstore-tuf` crate to verify GitHub
+ * artifact attestations on aqua-registry installs (e.g. `pnpm`), and that
+ * crate keeps its own TUF trust-root cache under `$XDG_CACHE_HOME/sigstore-rust`
+ * rather than mise's own cache dir — confirmed directly by pointing
+ * `XDG_CACHE_HOME` at a scratch dir and diffing what landed under it after
+ * `mise install pnpm`. `XDG_CACHE_HOME` is set (not just this one leaf) so
+ * any other well-behaved tool that follows the XDG base-dir spec (gh's own
+ * cache included) lands under {@link TOOLCHAIN_HOME} the same way, without
+ * needing its own dedicated env var and writable-path entry.
  */
+const MISE_DATA_DIR = path.join(TOOLCHAIN_HOME, "mise", "data");
+const MISE_CONFIG_DIR = path.join(TOOLCHAIN_HOME, "mise", "config");
+const MISE_CACHE_DIR = path.join(TOOLCHAIN_HOME, "mise", "cache");
+const MISE_STATE_DIR = path.join(TOOLCHAIN_HOME, "mise", "state");
+const XDG_CACHE_HOME = path.join(TOOLCHAIN_HOME, "cache");
 const MISE_WRITABLE_PATHS = [
-	path.join(os.homedir(), ".local", "share", "mise"),
-	path.join(os.homedir(), ".local", "state", "mise"),
-	path.join(os.homedir(), ".cache", "mise"),
-	path.join(os.homedir(), ".config", "mise"),
-	path.join(os.homedir(), ".cache", "sigstore-rust"),
+	MISE_DATA_DIR,
+	MISE_CONFIG_DIR,
+	MISE_CACHE_DIR,
+	MISE_STATE_DIR,
+	XDG_CACHE_HOME,
+	path.join(XDG_CACHE_HOME, "sigstore-rust"),
 ];
 
 /**
@@ -370,21 +399,15 @@ const MISE_WRITABLE_PATHS = [
  * "read-only file system" the same way `mise install` did before
  * {@link MISE_WRITABLE_PATHS}. Rather than granting that volume-root path —
  * unpredictable in general, and far broader than pnpm actually needs — this
- * pins the store inside `$HOME` instead (already sandboxed-writable
- * territory) via the `npm_config_store_dir` env var set in {@link startClaude},
- * which pnpm (and corepack's pnpm) both honor same as any other
- * npm-namespaced config override.
+ * pins the store under {@link TOOLCHAIN_HOME} instead (already
+ * sandboxed-writable, and — per {@link TOOLCHAIN_HOME}'s doc comment —
+ * durable across a pod restart unlike a plain `$HOME` path) via the
+ * `npm_config_store_dir` env var set in {@link startClaude}, which pnpm (and
+ * corepack's pnpm) both honor same as any other npm-namespaced config
+ * override.
  */
-const PNPM_WRITABLE_PATHS = [
-	path.join(os.homedir(), ".local", "share", "pnpm"),
-];
-const PNPM_STORE_DIR = path.join(
-	os.homedir(),
-	".local",
-	"share",
-	"pnpm",
-	"store",
-);
+const PNPM_STORE_DIR = path.join(TOOLCHAIN_HOME, "pnpm", "store");
+const PNPM_WRITABLE_PATHS = [PNPM_STORE_DIR];
 
 /**
  * Appended to the SDK's `claude_code` system-prompt preset (see `systemPrompt`
@@ -400,22 +423,26 @@ const DILNA_AGENT_CONTEXT = `You are running headless inside dilna, a self-hoste
 
 - Your cwd is a git worktree checked out to its own branch, created solely for this session — not the repo's main checkout. Other sessions on the same repo run in sibling worktrees; you won't see their uncommitted work and they won't see yours.
 - Bash commands run inside a sandbox confined to this worktree (plus the shared git object store, so git history/commit/branch commands work). Writes outside that boundary fail with a read-only-filesystem error — that's the sandbox, not a bug. Tool calls are auto-approved (no human is present to answer permission prompts), so act autonomously rather than pausing to ask. The sandbox cannot be disabled — don't reach for an unsandboxed-command flag as a workaround for a write that fails; widen the actual grant instead or report the gap.
-- Nothing persists between separate Bash tool calls except the worktree's own on-disk contents — not exported env vars, not installed binaries, not $HOME. Chain multi-step toolchain setup (e.g. \`mise install\` followed by a package-manager install) into one command instead of spreading it across turns, or every step after the first starts from scratch.
-- Nothing runtime-specific is pre-installed for the repo you're in. Use mise (already on PATH) to get whatever toolchain it needs: \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. This covers node, pnpm (via corepack once node is installed), go, python, rust, ruby, and more.`;
+- Only the shell process itself resets between separate Bash tool calls — exported env vars, shell functions, and sourced profile state don't carry over, so re-\`export\`/re-\`source\` anything a later call needs. The working directory and everything actually written to disk persists, and that includes $HOME: it's the same on-disk directory across every Bash call in this session, and across every other session this dilna instance spawns, not wiped or reprovisioned per call. So a toolchain installed via \`mise install\`/\`pnpm install\` stays installed — check \`command -v <tool>\` before paying for a fresh install (it may already be there from earlier in this session, or from a previous one), rather than re-chaining the full install before every later command that needs it.
+- Nothing runtime-specific is guaranteed pre-installed for the repo you're in. Use mise (already on PATH) to get whatever toolchain it needs: \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. This covers node, pnpm (via corepack once node is installed), go, python, rust, ruby, and more.`;
 
 /**
  * gh (GitHub CLI, ADR-0013): authenticates purely from the GH_TOKEN env var
  * (no `gh auth login`, no host-mounted config — see the Dockerfile's gh
- * install comment), but it may still write a small config/cache under $HOME
- * the first time it runs (e.g. its default config.yml, extension list
- * cache). Granted defensively, same reasoning as MISE_WRITABLE_PATHS above:
- * without this every such write fails "read-only file system" under the
+ * install comment), but it may still write a small config/cache the first
+ * time it runs (e.g. its default config.yml, extension list cache). Config
+ * dir is pointed at {@link TOOLCHAIN_HOME} via the `GH_CONFIG_DIR` env var
+ * set in {@link startClaude} (confirmed directly: `gh config set` honors it);
+ * cache dir follows `XDG_CACHE_HOME`, already redirected there for
+ * `sigstore-rust`'s sake — see {@link MISE_WRITABLE_PATHS}'s doc comment for
+ * why both need to live under `DILNA_DATA_DIR` rather than plain `$HOME`.
+ * Still needs an explicit `filesystem.allowWrite` grant regardless of which
+ * root it lives under, same reasoning as `MISE_WRITABLE_PATHS` above:
+ * without it every such write fails "read-only file system" under the
  * native sandbox.
  */
-const GH_WRITABLE_PATHS = [
-	path.join(os.homedir(), ".config", "gh"),
-	path.join(os.homedir(), ".cache", "gh"),
-];
+const GH_CONFIG_DIR = path.join(TOOLCHAIN_HOME, "gh-config");
+const GH_WRITABLE_PATHS = [GH_CONFIG_DIR, path.join(XDG_CACHE_HOME, "gh")];
 
 /**
  * A `filesystem.allowWrite` entry below only does anything once the sandbox
@@ -562,12 +589,25 @@ export async function startClaude(
 				]
 					.filter(Boolean)
 					.join(":"),
-				// See PNPM_STORE_DIR's doc comment: pins pnpm's store inside $HOME
-				// (sandboxed-writable) instead of the volume root it'd otherwise
-				// resolve to. Only takes effect if nothing in the inherited
-				// process.env already set it — an operator's own override wins.
+				// See PNPM_STORE_DIR's doc comment: pins pnpm's store under
+				// TOOLCHAIN_HOME (sandboxed-writable, durable across a pod
+				// restart) instead of the volume root it'd otherwise resolve to.
+				// Only takes effect if nothing in the inherited process.env
+				// already set it — an operator's own override wins.
 				npm_config_store_dir:
 					process.env.npm_config_store_dir ?? PNPM_STORE_DIR,
+				// See TOOLCHAIN_HOME's doc comment: without these, mise/sigstore-rust/gh
+				// all default somewhere under plain $HOME, which — unlike
+				// TOOLCHAIN_HOME, itself under DILNA_DATA_DIR — doesn't survive a
+				// pod restart (issue #83). Each `??` respects an operator who's
+				// already set the var explicitly, same pattern as
+				// npm_config_store_dir above.
+				MISE_DATA_DIR: process.env.MISE_DATA_DIR ?? MISE_DATA_DIR,
+				MISE_CONFIG_DIR: process.env.MISE_CONFIG_DIR ?? MISE_CONFIG_DIR,
+				MISE_CACHE_DIR: process.env.MISE_CACHE_DIR ?? MISE_CACHE_DIR,
+				MISE_STATE_DIR: process.env.MISE_STATE_DIR ?? MISE_STATE_DIR,
+				XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? XDG_CACHE_HOME,
+				GH_CONFIG_DIR: process.env.GH_CONFIG_DIR ?? GH_CONFIG_DIR,
 				// Explicit fallback scratch dir so any ad-hoc temp-file use (a
 				// one-off script, `mktemp`, etc.) has somewhere sandboxed-writable
 				// to land even if a command runs with the sandbox disabled — that
