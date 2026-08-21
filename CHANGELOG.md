@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.0](https://github.com/MrMarble/dilna/compare/v0.9.0...v0.10.0) (2026-08-21)
+
+
+### Features
+
+* **repos:** show ahead/behind vs origin in sidebar ([#80](https://github.com/MrMarble/dilna/issues/80)) ([dc2b8ea](https://github.com/MrMarble/dilna/commit/dc2b8ea172b92fcd020e308f7eb7fe094ecf0d04))
+* **web:** overhaul mobile/desktop UX — collapsible panels, session tree, touch targets ([#85](https://github.com/MrMarble/dilna/issues/85)) ([eb63af6](https://github.com/MrMarble/dilna/commit/eb63af6dfcf55c55b33d2515133d7915037708ea))
+
+
+### Bug Fixes
+
+* **agents:** actually close the dangerouslyDisableSandbox escape hatch ([#74](https://github.com/MrMarble/dilna/issues/74)) ([#82](https://github.com/MrMarble/dilna/issues/82)) ([428b478](https://github.com/MrMarble/dilna/commit/428b4788bd890c50f9318f45a18983936c3aa090))
+* **agents:** root mise/pnpm/gh toolchain state under DILNA_DATA_DIR, not $HOME ([#83](https://github.com/MrMarble/dilna/issues/83)) ([#86](https://github.com/MrMarble/dilna/issues/86)) ([107e749](https://github.com/MrMarble/dilna/commit/107e749a5a0325f1eeb78d9cecd65fdee3fa3d0f))
+* **agents:** stop background task-notification from mis-rendering as a user message ([#84](https://github.com/MrMarble/dilna/issues/84)) ([50287b6](https://github.com/MrMarble/dilna/commit/50287b687c0c633bad8ff2367050f22bedbc172c))
+
 ## [0.9.0](https://github.com/MrMarble/dilna/compare/v0.8.0...v0.9.0) (2026-08-19)
 
 
