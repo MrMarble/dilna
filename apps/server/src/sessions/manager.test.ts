@@ -446,13 +446,16 @@ describe("claudeMessagesToDilna", () => {
 	});
 
 	it("drops a background task-notification entry, flushing the pre-task turn without persisting it as a user message", () => {
+		// No `origin` field here: getSessionMessages' own entry mapper strips it
+		// before dilna ever sees the entry (see claudeMessagesToDilna's doc
+		// comment), so detection has to key off the `<task-notification>` text
+		// itself, not `origin.kind`.
 		const raw = [
 			entry("user", "u-1", "kick off research"),
 			entry("assistant", "a-1", "on it, running in the background"),
 			{
 				type: "user",
 				uuid: "tn-1",
-				origin: { kind: "task-notification" },
 				message: {
 					role: "user",
 					content: [

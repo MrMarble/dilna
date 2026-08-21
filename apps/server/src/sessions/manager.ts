@@ -127,14 +127,19 @@ function claudeContentToText(content: unknown): string {
  * Tool results arrive as separate synthetic user-role transcript entries;
  * they're merged back into the owning tool_call part rather than persisted
  * as their own row (and don't end the turn — more tool round-trips follow).
- * A background Task-tool completion is also a synthetic user-role entry
- * (`origin.kind === "task-notification"`, carrying a `<task-notification>`
- * XML payload meant for the model, not the user) but it *does* end the
- * turn — the model's follow-up once it reads the result is a fresh turn,
- * same as it is live (see normalizeTaskNotification in `agents/claude.ts`) —
- * so it flushes without being persisted itself. Real user entries are
- * persisted as their own text messages and also flush any in-progress
- * assistant turn.
+ * A background Task-tool completion is also a synthetic user-role entry,
+ * carrying a `<task-notification>` XML payload meant for the model, not the
+ * user, but it *does* end the turn — the model's follow-up once it reads the
+ * result is a fresh turn, same as it is live (see normalizeTaskNotification
+ * in `agents/claude.ts`) — so it flushes without being persisted itself.
+ * It's identified by its text starting with `<task-notification>` rather
+ * than by `origin.kind` (as the live SDKUserMessage tags it): `getSessionMessages`'
+ * own entry mapper (`_v` in the SDK bundle) only copies `type`/`uuid`/
+ * `session_id`/`message`/`parent_tool_use_id`/`parent_agent_id`/`timestamp`
+ * onto the `SessionMessage` it returns, so `origin` never survives onto the
+ * objects this function actually receives — every caller here feeds it
+ * `getSessionMessages` output. Real user entries are persisted as their own
+ * text messages and also flush any in-progress assistant turn.
  *
  * Claude's transcript entries carry no timestamp, so createdAt is
  * synthesized as `now - (length - index)`: monotonically increasing within
@@ -208,8 +213,9 @@ export function claudeMessagesToDilna(
 				}
 			}
 		} else if (entry.type === "user") {
-			const origin = (entry as { origin?: { kind?: string } }).origin;
-			if (origin?.kind === "task-notification") {
+			if (blocks.some((b) => b.type === "tool_result")) return;
+			const text = claudeContentToText(content);
+			if (text.trimStart().startsWith("<task-notification>")) {
 				// Ends the pre-task turn without persisting the notification's raw
 				// `<task-notification>` XML as a chat message — the follow-up
 				// report the model gives once it reads the result is a fresh turn,
@@ -217,10 +223,8 @@ export function claudeMessagesToDilna(
 				flushTurn();
 				return;
 			}
-			if (blocks.some((b) => b.type === "tool_result")) return;
 			// A real user message ends any in-progress assistant turn.
 			flushTurn();
-			const text = claudeContentToText(content);
 			if (text) {
 				messages.push({
 					id: entry.uuid,
@@ -351,10 +355,14 @@ export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
 
 type Listener = (event: AgentStreamEvent) => void;
 
-/** Thrown by the race in `runTurn` when a turn exceeds `TURN_TIMEOUT_MS`
- * with no `result`/crash from the agent backend. Distinguished from a real
- * agent error so the `catch` in `runTurn` can tell "the agent stalled"
- * apart from "the agent actually failed" and re-throw anything else as-is. */
+/** Thrown by the race in `runTurn` when `TURN_TIMEOUT_MS` passes with no
+ * event of any kind from the agent backend — an inactivity gap, not a cap
+ * on the turn's total length; `runTurn`'s `onEvent` bumps the watchdog on
+ * every event, so a turn that's still actively streaming or running tools
+ * survives past the threshold as long as something keeps arriving.
+ * Distinguished from a real agent error so the `catch` in `runTurn` can tell
+ * "the agent stalled" apart from "the agent actually failed" and re-throw
+ * anything else as-is. */
 class TurnTimeoutError extends Error {
 	constructor() {
 		super(`turn exceeded ${TURN_TIMEOUT_MS / 1000}s with no response`);
@@ -1127,7 +1135,27 @@ class SessionManager {
 			}
 
 			const handle = active.handle;
+			// TURN_TIMEOUT_MS is a stall watchdog, not a hard cap on turn length —
+			// bumped on every event so a turn that's actively streaming text or
+			// running tools (including a long-running background task the agent
+			// is synchronously waiting on) isn't killed mid-flight just because
+			// its total wall-clock time crossed the threshold. Only genuine
+			// silence — no event of any kind for TURN_TIMEOUT_MS — trips it.
+			let stallTimer: NodeJS.Timeout | undefined;
+			let rejectStalled: (err: TurnTimeoutError) => void = () => {};
+			const bumpStallTimer = () => {
+				if (stallTimer) clearTimeout(stallTimer);
+				stallTimer = setTimeout(
+					() => rejectStalled(new TurnTimeoutError()),
+					TURN_TIMEOUT_MS,
+				);
+			};
+			const stallTimeout = new Promise<never>((_, reject) => {
+				rejectStalled = reject;
+				bumpStallTimer();
+			});
 			const onEvent = (ev: AgentStreamEvent) => {
+				bumpStallTimer();
 				// Refusal-fallback retraction (ADR-0016 §5): reset the whole
 				// in-flight snapshot rather than trying to surgically evict just
 				// the retracted parts (see normalizeModelRefusalFallback's doc
@@ -1170,9 +1198,7 @@ class SessionManager {
 						onEvent,
 						abortSignal: turn.abortController.signal,
 					}),
-					setTimeoutAsync(TURN_TIMEOUT_MS).then((): never => {
-						throw new TurnTimeoutError();
-					}),
+					stallTimeout,
 				]);
 			} catch (err) {
 				if (err instanceof TurnTimeoutError) {
@@ -1186,6 +1212,7 @@ class SessionManager {
 					throw err;
 				}
 			} finally {
+				clearTimeout(stallTimer);
 				// Claude's agentSessionId is unknown until the first turn's init
 				// message arrives (see claude.ts), so re-sync it post-chat.
 				if (handle.agentSessionId) {
