@@ -145,6 +145,29 @@ actually being used.
   provider/model config contract (ticket #98), and the `Session.agentType`
   schema migration (ticket #99). This ADR authorizes the direction; those
   tickets are where it becomes buildable.
+- **ADR-0014's crash-recovery guarantee regresses, accepted deliberately.**
+  Claude's boot recovery (`resetAllToIdle`/`backfillFromTranscript`) reads a
+  transcript file the CLI subprocess writes independently of dilna's own
+  process — a dilna server crash mid-turn can still recover the agent's
+  response from it. `pi-agent-core`'s `Agent` runs in-process, with no
+  independent durable copy of its own; a dilna server crash mid-turn loses
+  that turn's assistant output and tool calls (the user's own message
+  survives — `beginTurn`'s pending-placeholder promotion doesn't depend on
+  the agent at all). The *code changes themselves* aren't at risk — worktree
+  writes (edits, commits) are real, already-flushed filesystem/git state,
+  independent of dilna's SQLite or pi's in-memory transcript either way; what's
+  lost is the chat-visible record of that one interrupted turn. Incremental
+  persistence (writing on every `message_end` instead of batching at
+  `agent_end`) was considered and rejected as not actually closing the gap:
+  since pi has no subprocess of its own, a crash could still land mid-way
+  through the message that would have been the *next* `message_end` — it
+  narrows the loss window, it doesn't restore Claude's independent-process
+  guarantee, and it adds real write volume/complexity for a rare failure
+  mode (a server crash specifically mid-turn, not a resumable idle-kill or
+  clean restart). Accepted as a known, named limitation — matching this
+  migration's bare-minimum-now bias elsewhere (see [#101](https://github.com/MrMarble/dilna/issues/101)'s
+  identical resolution for the background-work/subagent/cron gap) — not
+  silently dropped.
 - `docs/research/pi-agent-harness.md` (branch `research/pi-agent-harness`)
   and the spike at `/home/atm/Documents/repos/pi-sandbox-spike` (branch
   `main`, commit `f9c1d4a`, local only) remain the primary sources behind
