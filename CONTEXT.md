@@ -17,5 +17,13 @@ A resumable chat conversation with an AI agent, bound 1:1 to a single **Worktree
 _Avoid_: conversation, thread, run
 
 **Agent**:
-The process that executes AI work for a **Session** against its **Worktree**. Today an Agent is the Claude Agent SDK (`apps/server/src/agents/claude.ts`); see ADR-0011 for why dilna standardized on a single backend.
-_Avoid_: model, assistant, bot
+The process that executes AI work for a **Session** against its **Worktree**, independent of which **Provider**/**Model** it talks to. Today an Agent is still the Claude Agent SDK (`apps/server/src/agents/claude.ts`); see ADR-0011 for why dilna standardized on a single backend. ADR-0020 has decided to replace it with a pi-ai/pi-agent-core-based adapter (`pi.ts`) — not yet built, so this sentence still describes `claude.ts` until that execution lands.
+_Avoid_: model, assistant, bot, backend (ambiguous between Agent and Provider — see Provider)
+
+**Provider**:
+The LLM vendor an Agent talks to — Anthropic, DeepSeek, Kimi (Moonshot), or Zhipu (GLM). Selected via a single global env var for the whole dilna instance, not a per-session choice; see ADR-0020 (not yet built — see the Agent entry). Distinct from the **Agent** itself: one Agent implementation is meant to serve any configured Provider, rather than one adapter per Provider.
+_Avoid_: backend (see Agent)
+
+**Model**:
+The specific LLM a **Provider** serves — e.g. Claude Opus, DeepSeek-V3, Kimi K2, GLM-4.7. Selected alongside Provider via the same env var; see ADR-0020.
+_Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
