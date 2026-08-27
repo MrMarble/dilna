@@ -40,8 +40,14 @@ which produces the spec only (see map #93's Notes).
   Anthropic.
 - **Multi-provider is first-class**, not speculative capacity: DeepSeek, Kimi
   K2, and GLM-4.7 are supported from v1, each via `pi-ai`'s native
-  per-provider API-key env vars (`DEEPSEEK_API_KEY`, `KIMI_API_KEY`,
-  `ZAI_API_KEY`, etc. — `pi-coding-agent`'s `docs/providers.md`). dilna adds
+  per-provider API-key env vars — confirmed directly against the installed
+  0.84.3 catalog (`getBuiltinProviders()`/`getApiKeyEnvVars()` in
+  `pi-ai/dist/env-api-keys.js`), **correcting this ADR's earlier text**:
+  DeepSeek is `DEEPSEEK_API_KEY` as expected, but Kimi K2's models live under
+  the `moonshotai` provider (`MOONSHOT_API_KEY`) — a *different* provider
+  from `kimi-coding` (`KIMI_API_KEY`), whose model catalog (`k3`,
+  `kimi-for-coding`, ...) doesn't include anything named `kimi-k2-*`. GLM-4.7
+  is confirmed under `zai` (`ZAI_API_KEY`), not `zai-coding-cn`. dilna adds
   only its own provider/model *selector* env vars on top (design: ticket
   [#98](https://github.com/MrMarble/dilna/issues/98)); it does no credential
   plumbing of its own.
