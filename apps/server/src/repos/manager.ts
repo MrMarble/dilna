@@ -14,7 +14,10 @@ import { languagesFromFiles, type TreeFile } from "./languages";
 
 const execFileAsync = promisify(execFile);
 
-async function git(args: string[], opts: { cwd?: string } = {}) {
+async function git(
+	args: string[],
+	opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+) {
 	return execFileAsync("git", args, { ...opts, maxBuffer: 50 * 1024 * 1024 });
 }
 
@@ -55,6 +58,18 @@ function uniqueSlug(used: Set<string>, base: string): string {
 	return `${base}-${i}`;
 }
 
+/**
+ * Reserved slug for the orchestrator meta-repo (ADR-0021) — a local
+ * `git init --bare` repo dilna creates for itself purely so an orchestrator
+ * Session can go through the exact same Worktree-creation path as any other
+ * Session, with no worktree/repoId nullability ripple through `Session`/
+ * `SessionView`. Never a real clone, never a valid `repoId` for
+ * `dilna_create_session`'s target. `list()` filters it out so it never
+ * reaches `GET /api/repos`, the sidebar, or the orchestrator's own
+ * `dilna_list_repos` tool.
+ */
+export const ORCHESTRATOR_REPO_SLUG = "_dilna-orchestrator";
+
 export class RepoManager {
 	get reposDir(): string {
 		return path.join(getDataDir(), "repos");
@@ -75,7 +90,7 @@ export class RepoManager {
 	async list(): Promise<Repo[]> {
 		const db = getDb();
 		const rows = db.select().from(reposTable).all();
-		return rows.map(rowToRepo);
+		return rows.map(rowToRepo).filter((r) => r.slug !== ORCHESTRATOR_REPO_SLUG);
 	}
 
 	async get(id: string): Promise<Repo | null> {
@@ -145,6 +160,75 @@ export class RepoManager {
 			})
 			.run();
 
+		return repo;
+	}
+
+	/**
+	 * Idempotent: creates the orchestrator meta-repo (see
+	 * {@link ORCHESTRATOR_REPO_SLUG}) on first call, returns the existing row
+	 * on every call after. Unlike `clone()`, there's no remote to clone from —
+	 * `git init --bare` plus a plumbed-in empty root commit (no worktree
+	 * needed to create one: `hash-object`/`commit-tree`/`update-ref` write
+	 * directly into the bare repo's object store) gives `defaultBranch` a
+	 * real ref to branch Sessions' Worktrees off of, matching what
+	 * `SessionManager.create`'s `git worktree add -b <branch> -- <path>
+	 * <defaultBranch>` requires.
+	 */
+	async ensureOrchestratorRepo(): Promise<Repo> {
+		const existing = await this.getBySlug(ORCHESTRATOR_REPO_SLUG);
+		if (existing) return existing;
+
+		const repoPath = this.repoPath(ORCHESTRATOR_REPO_SLUG);
+		mkdirSync(this.reposDir, { recursive: true });
+		mkdirSync(this.worktreesDir, { recursive: true });
+		await git(["init", "--bare", "--initial-branch=main", "--", repoPath]);
+		await this.ensureGitDefaults(repoPath);
+
+		const { stdout: emptyTree } = await git(
+			["hash-object", "-t", "tree", "/dev/null"],
+			{ cwd: repoPath },
+		);
+		// A sentinel identity, not read from ambient git config — this is an
+		// internal plumbing commit with no meaningful author, and the host
+		// running dilna may have no global user.name/user.email configured at
+		// all (git requires one to commit).
+		const { stdout: commit } = await git(
+			["commit-tree", emptyTree.trim(), "-m", "orchestrator meta-repo"],
+			{
+				cwd: repoPath,
+				env: {
+					...process.env,
+					GIT_AUTHOR_NAME: "dilna",
+					GIT_AUTHOR_EMAIL: "dilna@localhost",
+					GIT_COMMITTER_NAME: "dilna",
+					GIT_COMMITTER_EMAIL: "dilna@localhost",
+				},
+			},
+		);
+		await git(["update-ref", "refs/heads/main", commit.trim()], {
+			cwd: repoPath,
+		});
+
+		const now = Math.floor(Date.now() / 1000);
+		const repo: Repo = {
+			id: nanoid(),
+			slug: ORCHESTRATOR_REPO_SLUG,
+			path: repoPath,
+			defaultBranch: "main",
+			remoteUrl: "",
+			createdAt: now,
+		};
+		const db = getDb();
+		db.insert(reposTable)
+			.values({
+				id: repo.id,
+				slug: repo.slug,
+				path: repo.path,
+				defaultBranch: repo.defaultBranch,
+				remoteUrl: repo.remoteUrl,
+				createdAt: repo.createdAt,
+			})
+			.run();
 		return repo;
 	}
 

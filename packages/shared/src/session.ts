@@ -1,5 +1,5 @@
 import type { SessionStatus, UsageTotals } from "./events";
-import type { AgentType } from "./types";
+import type { AgentType, SessionKind } from "./types";
 
 export type Session = {
 	id: string;
@@ -8,6 +8,9 @@ export type Session = {
 	worktreeDirName: string;
 	branchName: string;
 	agentType: AgentType;
+	/** See {@link SessionKind}. Defaults to "session" for every pre-existing
+	 * row. */
+	kind: SessionKind;
 	title: string;
 	status: SessionStatus;
 	/** Session-lifetime token totals, persisted turn by turn (the agent only
@@ -23,6 +26,7 @@ export type SessionView = {
 	repoId: string;
 	title: string;
 	agentType: AgentType;
+	kind: SessionKind;
 	status: SessionStatus;
 	/** See {@link Session.usage}. Seeds the chat header's token badge on
 	 * mount, so it doesn't restart from 0 after a reload or session switch. */

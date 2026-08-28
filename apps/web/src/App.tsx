@@ -253,10 +253,13 @@ export function App() {
 	// submenu (issue: session switching moved out of the header dropdown and
 	// into the sidebar) only ever renders the selected repo's list, but keeps
 	// this pre-grouped so switching repos doesn't need a fetch or a re-filter
-	// of every Session on every render.
+	// of every Session on every render. Orchestrator Sessions are excluded —
+	// they live under the Sidebar's own top-level "Orchestrator" section, not
+	// nested under the (hidden) meta-repo they technically belong to.
 	const sessionsByRepoId = useMemo(() => {
 		const map: Record<string, SessionView[]> = {};
 		for (const session of Object.values(sessionsById)) {
+			if (session.kind === "orchestrator") continue;
 			let list = map[session.repoId];
 			if (!list) {
 				list = [];
@@ -273,9 +276,24 @@ export function App() {
 	const backgroundSessions = useMemo(
 		() =>
 			Object.values(sessionsById)
-				.filter((s) => s.id !== selectedSessionId && s.status !== "idle")
+				.filter(
+					(s) =>
+						s.kind !== "orchestrator" &&
+						s.id !== selectedSessionId &&
+						s.status !== "idle",
+				)
 				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
 		[sessionsById, selectedSessionId],
+	);
+
+	// The Sidebar's own top-level "Orchestrator" section — not nested under a
+	// repo (it's global, ADR-0021), so it isn't part of sessionsByRepoId.
+	const orchestratorSessions = useMemo(
+		() =>
+			Object.values(sessionsById)
+				.filter((s) => s.kind === "orchestrator")
+				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
+		[sessionsById],
 	);
 
 	const handleSelectRepo = useCallback(
@@ -307,6 +325,19 @@ export function App() {
 		[repos, mobileSheet.close],
 	);
 
+	// Same as handleSelectSession, but never sets selectedRepoId to the
+	// orchestrator's meta-repo id — that repo is intentionally excluded from
+	// `repos` (ADR-0021), so ChatHeader/ContextPanel (both gated on
+	// `selectedRepo`) fall back to their no-repo-selected rendering for free.
+	const handleSelectOrchestratorSession = useCallback(
+		(session: SessionView) => {
+			setSelectedRepoId(null);
+			setSelectedSessionId(session.id);
+			mobileSheet.close();
+		},
+		[mobileSheet.close],
+	);
+
 	const handleSessionCreated = useCallback(
 		(session: SessionView) => {
 			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
@@ -332,6 +363,23 @@ export function App() {
 			setCreatingSession(false);
 		}
 	}, [selectedRepoId, creatingSession, handleSessionCreated]);
+
+	const [creatingOrchestrator, setCreatingOrchestrator] = useState(false);
+	const handleNewOrchestratorSession = useCallback(async () => {
+		if (creatingOrchestrator) return;
+		setCreatingOrchestrator(true);
+		try {
+			const { session } = await api.sessions.createOrchestrator();
+			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
+			setSelectedRepoId(null);
+			setSelectedSessionId(session.id);
+			mobileSheet.close();
+		} catch (e) {
+			console.error(e);
+		} finally {
+			setCreatingOrchestrator(false);
+		}
+	}, [creatingOrchestrator, mobileSheet.close]);
 
 	// Cmd/Ctrl+K creates a new session for the currently selected repo,
 	// mirroring the sidebar button's shortcut hint. No-op with no repo
@@ -413,6 +461,10 @@ export function App() {
 		rateLimitWindows,
 		primaryLanguageByRepoId,
 		syncStatusByRepoId,
+		orchestratorSessions,
+		onNewOrchestratorSession: handleNewOrchestratorSession,
+		creatingOrchestrator,
+		onSelectOrchestratorSession: handleSelectOrchestratorSession,
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
 		currentSession: selectedSession,
 		onDeleteCurrentSession: handleDeleteSession,

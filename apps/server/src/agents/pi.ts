@@ -43,6 +43,14 @@ import {
 	setRepoMemory,
 } from "../repos/memory";
 import { createConfinementHook } from "./confinement";
+import {
+	createOrchestratorTools,
+	ORCHESTRATOR_SYSTEM_PROMPT,
+	type OrchestratorDeps,
+} from "./orchestratorTools";
+
+export type { OrchestratorDeps };
+
 import type { DilnaProvider } from "./providerConfig";
 import type { AgentChatOptions } from "./types";
 
@@ -388,6 +396,16 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		beforeToolCall: createConfinementHook(opts.worktreePath),
 	});
 
+	return wirePiHandle(agent, opts.worktreePath);
+}
+
+/**
+ * The event-plumbing/lifecycle tail every `PiHandle` needs regardless of
+ * which tools its `Agent` was built with — shared by `startPi` and
+ * `startOrchestrator` so the two only differ in what actually varies
+ * (system prompt, tool set, sandbox/confinement).
+ */
+function wirePiHandle(agent: Agent, worktreePath: string): PiHandle {
 	const listeners = new Set<Listener>();
 	const state: NormalizeState = createNormalizeState();
 	agent.subscribe((event) => {
@@ -414,13 +432,54 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 
 	return {
 		kind: "pi",
-		worktreePath: opts.worktreePath,
+		worktreePath,
 		agent,
 		listeners,
 		stop,
 		isAlive: () => !stopped,
 		stderrTail: [],
 	};
+}
+
+export type OrchestratorStartOptions = {
+	sessionId: string;
+	worktreePath: string;
+	initialMessages: AgentMessage[];
+	deps: OrchestratorDeps;
+};
+
+/**
+ * Construct a `pi-agent-core` `Agent` for an orchestrator Session (ADR-0021):
+ * no read/write/edit/grep/find/ls/bash tools, no sandbox, no confinement
+ * hook — there's nothing filesystem-shaped for this Agent to touch, only
+ * `orchestratorTools.ts`'s dilna-internals tools. Otherwise mirrors
+ * `startPi`: same model resolution, same `wirePiHandle` tail.
+ */
+export async function startOrchestrator(
+	opts: OrchestratorStartOptions,
+): Promise<PiHandle> {
+	const provider = process.env.DILNA_PROVIDER as DilnaProvider;
+	const modelId = process.env.DILNA_MODEL as string;
+	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
+	if (!model) {
+		throw new Error(
+			`DILNA_PROVIDER=${provider}/DILNA_MODEL=${modelId} is no longer a valid combination`,
+		);
+	}
+
+	const agent = new Agent({
+		initialState: {
+			systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
+			model,
+			tools: createOrchestratorTools(opts.deps),
+			messages: opts.initialMessages,
+		},
+		sessionId: opts.sessionId,
+		streamFn: streamSimple,
+		getApiKey: (p) => getEnvApiKey(p, process.env as Record<string, string>),
+	});
+
+	return wirePiHandle(agent, opts.worktreePath);
 }
 
 /**

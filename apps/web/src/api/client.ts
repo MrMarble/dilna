@@ -215,6 +215,10 @@ export const api = {
 				method: "POST",
 				body: JSON.stringify({ repoId, agentType }),
 			}),
+		createOrchestrator: () =>
+			request<{ session: SessionView }>("/api/sessions/orchestrator", {
+				method: "POST",
+			}),
 		delete: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}`, {
 				method: "DELETE",
