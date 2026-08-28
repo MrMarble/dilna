@@ -18,8 +18,7 @@ export const sessions = sqliteTable("sessions", {
 	worktreePath: text("worktree_path").notNull(),
 	worktreeDirName: text("worktree_dir_name").notNull(),
 	branchName: text("branch_name").notNull(),
-	agentType: text("agent_type").notNull().default("claude"),
-	agentSessionId: text("agent_session_id"),
+	agentType: text("agent_type").notNull().default("pi"),
 	title: text("title").notNull().default("New session"),
 	status: text("status").notNull().default("idle"),
 	/** Session-lifetime token totals, accumulated turn by turn (see

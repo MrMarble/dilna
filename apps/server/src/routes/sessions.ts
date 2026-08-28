@@ -11,7 +11,7 @@ import { streamSSE } from "hono/streaming";
 import { SessionNotFoundError, sessionManager } from "../sessions/manager";
 import { runSseLoop } from "./sse";
 
-const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["claude"];
+const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
 
 type ListResponse = { sessions: SessionView[] };
 type OneResponse = { session: SessionView };

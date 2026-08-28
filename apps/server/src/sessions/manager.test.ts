@@ -9,7 +9,6 @@ import { rateLimits as rateLimitsTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
 import {
 	applyEventToLiveTurn,
-	claudeMessagesToDilna,
 	type LiveTurn,
 	liveTurnReplayEvents,
 	sessionManager,
@@ -235,22 +234,16 @@ describe("SessionManager", () => {
 });
 
 /**
- * ADR-0017: the 5-minute idle-kill timer must not tear down the resident
- * Claude CLI process while the SDK reports in-flight background work (a
- * `run_in_background` shell job) or a pending `ScheduleWakeup`/`CronCreate`/
- * `/loop` registration — either would be silently orphaned (the child dies
- * with the parent per ADR-0014). Reaches into `SessionManager`'s private
- * idle-timer methods directly (via a narrow structural cast) rather than
- * driving a full mocked turn through `startClaude`/`chatClaude`: the guard
- * being tested lives entirely in `armIdleTimer`/`handlePendingWorkChanged`/
- * `idleKill`, and a fake `ActiveAgent` exercises exactly that without also
- * having to fake transcript persistence, changed-files diffing, etc.
+ * Idle-kill timer arms unconditionally on turn end. `pi.ts` has no
+ * background-work/scheduled-wakeup signal (see `armIdleTimer`'s doc comment
+ * on `SessionManager`) — ADR-0017's original Claude-Stop-hook-deferred
+ * variant of this test was removed alongside that mechanism, not ported.
  */
-describe("idle-kill defers to pending background work (ADR-0017)", () => {
-	it("skips the idle-kill while pending work is signaled, and resumes it once cleared", async () => {
+describe("idle-kill", () => {
+	it("stops the agent after the timer elapses with no turn in progress", async () => {
 		const repo = await repoManager.clone(
 			fixtureRepo,
-			`idle-pending-${Date.now()}`,
+			`idle-kill-${Date.now()}`,
 		);
 		const session = await sessionManager.create(repo.id);
 
@@ -259,29 +252,16 @@ describe("idle-kill defers to pending background work (ADR-0017)", () => {
 			handle: { stop, isAlive: () => true },
 			idleTimer: null as NodeJS.Timeout | null,
 			liveTurn: null,
-			hasPendingBackgroundWork: false,
 		};
 		const manager = sessionManager as unknown as {
 			active: Map<string, typeof activeAgent>;
 			armIdleTimer: (id: string, active: typeof activeAgent) => void;
-			handlePendingWorkChanged: (id: string, hasPendingWork: boolean) => void;
 		};
 		manager.active.set(session.id, activeAgent);
 
 		vi.useFakeTimers();
 		try {
-			// Mirrors the Stop hook firing with a live wakeup/background task,
-			// then the normal turn-end path trying to arm the timer as usual —
-			// it must be a no-op while pending work is flagged.
-			manager.handlePendingWorkChanged(session.id, true);
 			manager.armIdleTimer(session.id, activeAgent);
-			await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
-			expect(stop).not.toHaveBeenCalled();
-
-			// Once the pending work clears, nothing else tells SessionManager an
-			// autonomous cron-fired response happened — handlePendingWorkChanged
-			// itself must resume the countdown.
-			manager.handlePendingWorkChanged(session.id, false);
 			await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
 			expect(stop).toHaveBeenCalledTimes(1);
 		} finally {
@@ -393,90 +373,5 @@ describe("live turn snapshot", () => {
 		};
 		const types = liveTurnReplayEvents(turn).map((e) => e.type);
 		expect(types).toEqual(["message_start", "tool_call_start"]);
-	});
-});
-
-/**
- * Regression tests for transcript timestamp synthesis. Claude transcripts
- * carry no timestamps, and the original `now + index` synthesis stamped rows
- * minutes into the future on long transcripts — so the next turn's real-time
- * pending-user placeholder sorted *before* the previous turn's rows and the
- * UI interleaved messages out of order until the next reload.
- */
-describe("claudeMessagesToDilna", () => {
-	type Raw = Parameters<typeof claudeMessagesToDilna>[1];
-
-	const entry = (type: "user" | "assistant", uuid: string, text: string) => ({
-		type,
-		uuid,
-		message: { role: type, content: [{ type: "text", text }] },
-	});
-
-	it("never stamps createdAt in the future, even on long transcripts", () => {
-		const raw: unknown[] = [];
-		for (let i = 0; i < 150; i++) {
-			raw.push(entry("user", `u-${i}`, `question ${i}`));
-			raw.push(entry("assistant", `a-${i}`, `answer ${i}`));
-		}
-		const messages = claudeMessagesToDilna("s1", raw as Raw);
-		const now = Math.floor(Date.now() / 1000);
-
-		expect(messages.length).toBe(300);
-		for (const m of messages) {
-			expect(m.createdAt).toBeLessThanOrEqual(now);
-		}
-	});
-
-	it("keeps createdAt monotonically increasing in transcript order", () => {
-		const raw = [
-			entry("user", "u-1", "first"),
-			entry("assistant", "a-1", "first answer"),
-			entry("user", "u-2", "second"),
-			entry("assistant", "a-2", "second answer"),
-		];
-		const messages = claudeMessagesToDilna("s1", raw as Raw);
-
-		expect(messages.map((m) => m.id)).toEqual(["u-1", "a-1", "u-2", "a-2"]);
-		for (let i = 1; i < messages.length; i++) {
-			const prev = messages[i - 1];
-			const cur = messages[i];
-			if (!prev || !cur) throw new Error("unreachable");
-			expect(cur.createdAt).toBeGreaterThanOrEqual(prev.createdAt);
-		}
-	});
-
-	it("drops a background task-notification entry, flushing the pre-task turn without persisting it as a user message", () => {
-		// No `origin` field here: getSessionMessages' own entry mapper strips it
-		// before dilna ever sees the entry (see claudeMessagesToDilna's doc
-		// comment), so detection has to key off the `<task-notification>` text
-		// itself, not `origin.kind`.
-		const raw = [
-			entry("user", "u-1", "kick off research"),
-			entry("assistant", "a-1", "on it, running in the background"),
-			{
-				type: "user",
-				uuid: "tn-1",
-				message: {
-					role: "user",
-					content: [
-						{
-							type: "text",
-							text: "<task-notification>\n<status>completed</status>\n</task-notification>",
-						},
-					],
-				},
-			},
-			entry("assistant", "a-2", "here's what it found"),
-		];
-		const messages = claudeMessagesToDilna("s1", raw as Raw);
-
-		// The notification never becomes its own row, but does split the two
-		// assistant turns it falls between (mirroring the live turn boundary).
-		expect(messages.map((m) => m.id)).toEqual(["u-1", "a-1", "a-2"]);
-		expect(messages.map((m) => m.role)).toEqual([
-			"user",
-			"assistant",
-			"assistant",
-		]);
 	});
 });

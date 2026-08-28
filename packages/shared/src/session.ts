@@ -8,7 +8,6 @@ export type Session = {
 	worktreeDirName: string;
 	branchName: string;
 	agentType: AgentType;
-	agentSessionId: string | null;
 	title: string;
 	status: SessionStatus;
 	/** Session-lifetime token totals, persisted turn by turn (the agent only

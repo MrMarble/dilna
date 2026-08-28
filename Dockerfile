@@ -71,15 +71,22 @@ FROM node:24-bookworm-slim AS runtime
 # git + openssh-client: cloning repos (ADR-0005 host-passthrough — the
 # container inherits whatever ~/.ssh the operator mounts in).
 # ca-certificates: TLS for git https:// clones and outbound API calls.
-# bubblewrap + socat: Claude Code's own built-in sandbox (ADR-0010) — bwrap
-# does the per-Bash-command filesystem/process isolation, socat relays its
-# network proxy. Both are invoked by the `claude` CLI itself, per command,
-# not by dilna directly.
+# bubblewrap + socat: the sandbox `apps/server/src/agents/pi.ts`'s bash tool
+# runs every command through, via `@anthropic-ai/sandbox-runtime`'s
+# `SandboxManager` (ADR-0010's sandboxing model, now invoked by dilna's own
+# adapter code directly rather than by a CLI subprocess) — bwrap does the
+# per-command filesystem/process isolation, socat relays its network proxy
+# (confirmed against the installed package: `bwrapPath`/`socatPath` are real
+# `SandboxRuntimeConfig` fields). pi.ts's read/write/edit/grep/find/ls tools
+# are confined separately, by `confinement.ts`'s `beforeToolCall` hook, not
+# by bwrap.
 # gosu: lets docker-entrypoint.sh start as root (to chown /data), then drop
 # to the unprivileged `node` user (uid 1000, baked into the base image)
 # before exec'ing node, without losing PID 1 signal handling the way `su`
-# would. Claude Code's bypassPermissions mode (ADR-0003/0010) refuses to run
-# as root for safety, so the server (which spawns it) can't run as root.
+# would. Not just policy: bwrap's unprivileged-user-namespace sandboxing
+# model assumes a non-root caller, so the server (which spawns every
+# session's sandboxed bash calls) needs to not be root regardless of which
+# agent backend is driving it.
 # curl: general-purpose fetch for whatever a session's Bash tool needs
 # (hitting its own dev server, GitHub/GitLab APIs, one-off scripts) — also
 # what mise's asdf/vfox-compatible plugins shell out to for the long tail of
@@ -91,6 +98,17 @@ FROM node:24-bookworm-slim AS runtime
 # jq: the de facto way a Bash-tool command parses JSON output (package.json,
 # `gh`/REST API responses, lockfiles) without reaching for a scripting
 # language just to pluck a field.
+# ripgrep + fd-find: pi.ts's grep/find tools spawn `rg`/`fd` as subprocesses
+# (`pi-coding-agent`'s `dist/core/tools/{grep,find}.js`) and, if neither is
+# on PATH, self-download a copy into `$HOME/.pi/agent/bin` on first use — a
+# plain `$HOME`-rooted path, not under `DILNA_DATA_DIR`, so it's wiped on
+# every pod restart (the exact class of bug ADR-0012/#83 already fixed for
+# mise) and depends on GitHub Releases being reachable from inside the
+# container at that moment. Installing both as system packages makes
+# `getToolPath`'s PATH check (`systemBinaryNames: ["fd", "fdfind"]` for fd —
+# confirmed it already knows Debian's `fd-find` package installs the binary
+# as `fdfind`, not `fd`) succeed immediately, so the download path is never
+# reached at all.
 # procps + lsof: a session iterating on a repo commonly starts a dev
 # server/watcher in the background; these are what let it find and kill
 # what's holding a port or PID rather than getting stuck on "address already
@@ -102,7 +120,7 @@ FROM node:24-bookworm-slim AS runtime
 # root/sudo at runtime for a session to install it itself.
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
-		curl unzip xz-utils jq procps lsof libatomic1 \
+		curl unzip xz-utils jq ripgrep fd-find procps lsof libatomic1 \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
@@ -113,11 +131,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # apt repo rather than Debian bookworm's package — the Debian build lags and
 # was flagged by GitHub for depending on deprecated API behavior. Auth is a
 # straight extension of ADR-0005's host-passthrough model (same shape as
-# CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY): gh reads GH_TOKEN directly from
+# ANTHROPIC_API_KEY/DEEPSEEK_API_KEY/etc., ADR-0020): gh reads GH_TOKEN directly from
 # the process environment on every invocation, with no `gh auth login` and
 # nothing persisted to disk beforehand — setting GH_TOKEN in
-# docker-compose.yml is the entire auth story, since claude.ts already
-# spreads process.env into every session's subprocess env.
+# docker-compose.yml is the entire auth story, since pi.ts's sandboxed bash
+# operations already merge process.env into every session's command env.
 RUN mkdir -p -m 755 /etc/apt/keyrings \
 	&& curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 		-o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
@@ -150,26 +168,30 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV PORT=3001
 ENV DILNA_DATA_DIR=/data
 ENV HOME=/home/node
-# Tells the Claude backend's sandbox setup (ADR-0010) that an outer container
-# already provides process/mount isolation, so bwrap can run in its weaker
-# nested mode (bind-mounting the container's existing /proc instead of
-# mounting a fresh one, which an unprivileged container blocks).
+# Tells pi.ts's sandbox setup (`ensureSandboxInitialized`, ADR-0010) that an
+# outer container already provides process/mount isolation, so bwrap can run
+# in its weaker nested mode (bind-mounting the container's existing /proc
+# instead of mounting a fresh one, which an unprivileged container blocks).
 ENV DILNA_CONTAINERIZED=true
 RUN mkdir -p /data && chown node:node /data
 VOLUME ["/data"]
 
 # mise (ADR-0012): shims dir first on PATH so `node`/`go`/`python`/etc.
 # resolve to whatever version a session has installed for its own worktree,
-# ahead of the node/pnpm baked in for building dilna itself. mise's default
-# data/state/cache/config dirs (all under $HOME) are pre-created here so the
-# native Bash sandbox (see apps/server/src/agents/claude.ts) has a concrete,
-# already-`node`-owned path to grant `filesystem.allowWrite` on — everything
-# under $HOME is otherwise outside the worktree the sandbox confines writes
-# to. Same reasoning for /home/node/.local/share/pnpm: pnpm's default store
-# location resolves to the DILNA_DATA_DIR volume root, outside the worktree
-# the sandbox confines writes to, so claude.ts redirects it here instead via
-# `npm_config_store_dir` (see PNPM_STORE_DIR's doc comment) — pre-created for
-# the same "already node-owned" reason as the mise dirs above.
+# ahead of the node/pnpm baked in for building dilna itself.
+#
+# NOTE (unchanged by the pi migration, not re-verified here): as of ADR-0012/
+# issue #83, `apps/server/src/agents/pi.ts` (`toolchainEnv`) actually points
+# `MISE_DATA_DIR`/`MISE_CONFIG_DIR`/etc. — and therefore mise's real shims
+# dir — at `DILNA_DATA_DIR/toolchain-home/mise/...`, not at the
+# `/home/node/.local/share/mise` paths this block creates; `pi.ts`'s own
+# `ensureWritablePathsExist()` grants those DILNA_DATA_DIR-rooted paths
+# separately. Whether the plain `$HOME` dirs below (and this `ENV PATH`
+# prefix) still do anything useful, versus being inert leftovers from before
+# #83 redirected everything to DILNA_DATA_DIR, hasn't been re-confirmed —
+# same open question for `/home/node/.local/share/pnpm` below, vs.
+# `npm_config_store_dir`'s redirect (see `PNPM_STORE_DIR`'s doc comment in
+# pi.ts). Left as-is pending that.
 ENV PATH="/home/node/.local/share/mise/shims:${PATH}"
 RUN mkdir -p \
 		/home/node/.local/share/mise \
