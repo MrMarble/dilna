@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.1](https://github.com/MrMarble/dilna/compare/v0.13.0...v0.13.1) (2026-08-28)
+
+
+### Bug Fixes
+
+* **agents:** add working-style guidance to pi's system prompt ([#115](https://github.com/MrMarble/dilna/issues/115)) ([2f8b8e6](https://github.com/MrMarble/dilna/commit/2f8b8e65bf0a771a968ae9501c025b56ab7e9545))
+* **agents:** pre-create sandbox's default write paths so pnpm/mise work ([#113](https://github.com/MrMarble/dilna/issues/113)) ([775ccdf](https://github.com/MrMarble/dilna/commit/775ccdf4af2abc2d64406d85d32aa773982aea3e))
+
 ## [0.13.0](https://github.com/MrMarble/dilna/compare/v0.12.0...v0.13.0) (2026-08-28)
 
 
