@@ -15,6 +15,7 @@ import {
 } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { ContextPanel } from "@/components/ContextPanel";
+import { MetricsPage } from "@/components/MetricsPage";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { Sidebar } from "@/components/Sidebar";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
@@ -31,6 +32,15 @@ function pushSessionPath(repoSlug: string, sessionId: string | null) {
 	}
 }
 
+// The usage/cost dashboard (MetricsPage) — a standalone view, not scoped to
+// any repo/session, so it gets its own top-level path rather than nesting
+// under pushSessionPath's /<repo-slug> shape.
+function pushMetricsPath() {
+	if (window.location.pathname !== "/metrics") {
+		window.history.pushState(null, "", "/metrics");
+	}
+}
+
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
 	const [sessionsById, setSessionsById] = useState<Record<string, SessionView>>(
@@ -41,6 +51,12 @@ export function App() {
 	const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
 	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
 		null,
+	);
+	// "metrics" replaces the chat area with the usage/cost dashboard
+	// (MetricsPage) — orthogonal to which repo/session is selected, which
+	// stays put underneath so "back" restores it.
+	const [view, setView] = useState<"chat" | "metrics">(
+		window.location.pathname === "/metrics" ? "metrics" : "chat",
 	);
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
@@ -194,6 +210,7 @@ export function App() {
 	useEffect(() => {
 		if (hydratedFromUrl.current || loadingRepos) return;
 		hydratedFromUrl.current = true;
+		if (window.location.pathname === "/metrics") return;
 		const [repoSlug, sessionId] = window.location.pathname
 			.split("/")
 			.filter(Boolean);
@@ -211,6 +228,11 @@ export function App() {
 	// fires, so just re-derive selection from it.
 	useEffect(() => {
 		function onPopState() {
+			if (window.location.pathname === "/metrics") {
+				setView("metrics");
+				return;
+			}
+			setView("chat");
 			const [repoSlug, sessionId] = window.location.pathname
 				.split("/")
 				.filter(Boolean);
@@ -347,6 +369,24 @@ export function App() {
 		[selectedSessionId, selectedRepoId, repos],
 	);
 
+	const handleOpenMetrics = useCallback(() => {
+		setView("metrics");
+		pushMetricsPath();
+		mobileSheet.close();
+	}, [mobileSheet.close]);
+
+	// Restores whatever repo/session path was showing before Metrics was
+	// opened (or "/" if none was selected) — the selection itself was never
+	// cleared, just visually replaced.
+	const handleBackFromMetrics = useCallback(() => {
+		setView("chat");
+		const repo = repos.find((r) => r.id === selectedRepoId);
+		if (repo) pushSessionPath(repo.slug, selectedSessionId);
+		else if (window.location.pathname !== "/") {
+			window.history.pushState(null, "", "/");
+		}
+	}, [repos, selectedRepoId, selectedSessionId]);
+
 	const repoSlugById = Object.fromEntries(
 		repos.map((r) => [r.id, r.slug] as const),
 	);
@@ -376,6 +416,7 @@ export function App() {
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
 		currentSession: selectedSession,
 		onDeleteCurrentSession: handleDeleteSession,
+		onOpenMetrics: handleOpenMetrics,
 	};
 
 	return (
@@ -389,7 +430,9 @@ export function App() {
 					/>
 				)}
 				<main className="flex flex-1 flex-col overflow-hidden">
-					{selectedRepo ? (
+					{view === "metrics" ? (
+						<MetricsPage repos={repos} onBack={handleBackFromMetrics} />
+					) : selectedRepo ? (
 						<ChatHeader
 							repo={selectedRepo}
 							selectedSession={selectedSession}
@@ -413,7 +456,7 @@ export function App() {
 							<AppVersion className="ml-1 max-w-none" />
 						</header>
 					)}
-					{selectedSession ? (
+					{view === "metrics" ? null : selectedSession ? (
 						<div className="flex flex-1 overflow-hidden">
 							<div className="flex flex-1 flex-col overflow-hidden">
 								<ChatShell

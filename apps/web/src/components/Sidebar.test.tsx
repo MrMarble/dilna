@@ -63,6 +63,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			rateLimitWindows={[]}
 			primaryLanguageByRepoId={{}}
 			syncStatusByRepoId={{}}
+			onOpenMetrics={noop}
 			{...overrides}
 		/>,
 	);

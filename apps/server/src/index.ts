@@ -11,6 +11,7 @@ import { repoManager } from "./repos/manager";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
 import { streamRoute } from "./routes/stream";
+import { usageRoute } from "./routes/usage";
 import { sessionManager } from "./sessions/manager";
 
 // Fail fast (ADR-0020): every session on this instance talks to whichever
@@ -38,6 +39,7 @@ app.use(
 app.route("/api/repos", reposRoute);
 app.route("/api/sessions", sessionsRoute);
 app.route("/api/stream", streamRoute);
+app.route("/api/usage", usageRoute);
 
 app.get("/api/health", (c) =>
 	c.json({ ok: true, dataDir: getDataDir(), db: getDbPath() }),

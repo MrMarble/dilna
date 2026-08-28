@@ -35,6 +35,7 @@ import {
 	messages as messagesTable,
 	rateLimits as rateLimitsTable,
 	sessions as sessionsTable,
+	usageEvents as usageEventsTable,
 } from "../db/schema";
 import { repoManager } from "../repos/manager";
 import { computeChangedFiles } from "./diff";
@@ -1101,7 +1102,9 @@ class SessionManager {
 	}
 
 	/**
-	 * Fold a turn-end `usage_update` into the session's lifetime token totals.
+	 * Fold a turn-end `usage_update` into the session's lifetime token totals,
+	 * and record the turn's full usage (tokens + cache + cost) as one
+	 * `usage_events` row for the usage dashboard (`sessions/usageStats.ts`).
 	 *
 	 * Despite the SDK docs describing result usage as cumulative "for the
 	 * session", in dilna's streaming-input mode it is per-turn — verified
@@ -1112,6 +1115,11 @@ class SessionManager {
 	 * total — the badge's live snap-to number is then the same one
 	 * `GET /api/sessions/:id` serves after a reload. Non-turn-end events
 	 * pass through untouched.
+	 *
+	 * `usage_events` deliberately only ever stores the token-only fields
+	 * that already exist on `sessions` plus the extra cache/cost fields —
+	 * it never reads back from `sessions`, so it's unaffected by the
+	 * rewrite below.
 	 */
 	private accumulateSessionUsage(
 		sessionId: string,
@@ -1131,11 +1139,29 @@ class SessionManager {
 			.select({
 				inputTokens: sessionsTable.inputTokens,
 				outputTokens: sessionsTable.outputTokens,
+				repoId: sessionsTable.repoId,
 			})
 			.from(sessionsTable)
 			.where(eq(sessionsTable.id, sessionId))
 			.get();
 		if (!row) return ev;
+
+		db.insert(usageEventsTable)
+			.values({
+				id: nanoid(),
+				sessionId,
+				repoId: row.repoId,
+				provider: process.env.DILNA_PROVIDER ?? "unknown",
+				model: process.env.DILNA_MODEL ?? "unknown",
+				inputTokens: ev.cumulative.inputTokens,
+				outputTokens: ev.cumulative.outputTokens,
+				cacheReadTokens: ev.cumulative.cacheReadTokens ?? 0,
+				cacheWriteTokens: ev.cumulative.cacheWriteTokens ?? 0,
+				reasoningTokens: ev.cumulative.reasoningTokens ?? 0,
+				costUsd: ev.cumulative.costUsd ?? 0,
+			})
+			.run();
+
 		return {
 			...ev,
 			cumulative: {

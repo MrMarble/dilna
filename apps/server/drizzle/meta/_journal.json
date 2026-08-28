@@ -43,6 +43,13 @@
 			"when": 1787907674110,
 			"tag": "0005_steady_saracen",
 			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "6",
+			"when": 1787922167714,
+			"tag": "0006_nostalgic_northstar",
+			"breakpoints": true
 		}
 	]
 }

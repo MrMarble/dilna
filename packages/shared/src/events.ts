@@ -128,8 +128,21 @@ export type SessionStatus =
 	| "stopping"
 	| "crashed";
 
-/** Tokens-only usage totals (no cost) — see docs/research/claude-agent-sdk-usage-limits.md. */
+/**
+ * Per-turn usage totals. `inputTokens`/`outputTokens` are always populated
+ * (the original tokens-only contract — see
+ * docs/research/claude-agent-sdk-usage-limits.md — still relied on by the
+ * live session badge/`Session.usage`). The rest are optional: populated by
+ * the pi adapter (`agents/pi.ts`'s `extractUsageTotals`) from pi-ai's richer
+ * `Usage` shape, but only consumed today by `usage_events`-backed
+ * aggregation (`sessions/usageStats.ts`) — not persisted onto the
+ * session-lifetime `sessions.inputTokens`/`outputTokens` columns.
+ */
 export type UsageTotals = {
 	inputTokens: number;
 	outputTokens: number;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
+	reasoningTokens?: number;
+	costUsd?: number;
 };
