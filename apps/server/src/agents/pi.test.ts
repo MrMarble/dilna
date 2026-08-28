@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
 	createNormalizeState,
 	dilnaMessagesToInitialState,
+	extractTitleFromReply,
 	normalizePiEvent,
 	piMessagesToDilna,
 } from "./pi";
@@ -229,6 +230,27 @@ describe("dilnaMessagesToInitialState", () => {
 		];
 		const out = dilnaMessagesToInitialState(messages);
 		expect(out[1]).toMatchObject({ role: "toolResult", isError: true });
+	});
+});
+
+describe("extractTitleFromReply", () => {
+	it("trims whitespace and strips surrounding quotes", () => {
+		expect(extractTitleFromReply('  "Fix the login flow"  ')).toBe(
+			"Fix the login flow",
+		);
+		expect(extractTitleFromReply("'Add billing'")).toBe("Add billing");
+		expect(extractTitleFromReply("\u201cAdd billing\u201d")).toBe("Add billing");
+	});
+
+	it("preserves the body when the reply is already clean", () => {
+		expect(extractTitleFromReply("Fix the login flow")).toBe(
+			"Fix the login flow",
+		);
+	});
+
+	it("returns null for a blank or whitespace-only reply", () => {
+		expect(extractTitleFromReply("")).toBeNull();
+		expect(extractTitleFromReply("   ")).toBeNull();
 	});
 });
 

@@ -924,3 +924,98 @@ export function dilnaMessagesToInitialState(
 	}
 	return out;
 }
+
+// ---- Session title derivation -----------------------------------------------
+
+/**
+ * System prompt for the tiny, isolated title-derivation call that gives a
+ * Session a meaningful title from its first prompt. The retired Claude
+ * backend auto-derived a title from its own transcript summary; pi has no
+ * such equivalent (no CLI, no transcript summary — see ADR-0020), so instead
+ * of letting the framework keep a generic placeholder indefinitely we ask the
+ * pi agent itself (the same model/provider the Session runs on) a minimal
+ * question. Kept deliberately small and deterministic in what it asks for so
+ * the response is a single usable line rather than an essay.
+ */
+const TITLE_SYSTEM_PROMPT =
+	"You produce short session titles for dilna, a self-hosted workspace that " +
+	"runs AI coding agents against cloned repos. A user just started a new " +
+	"Session with a single first prompt. Write a concise, meaningful title for " +
+	"that Session: 3-4 words max, describing what the work is about — do not " +
+	"restate the prompt verbatim. Reply with ONLY the title: no quotes, no " +
+	"punctuation, no leading/trailing whitespace, no explanation.";
+
+/**
+ * Derive a short title for a Session by asking the pi agent itself (a fresh,
+ * throwaway `Agent` on the Session's own provider/model — same class and
+ * config `startPi` uses) to summarise the user's first prompt.
+ *
+ * Deliberately built as its OWN `Agent` instance rather than calling the
+ * Session's live `PiHandle.agent`:
+ *
+ * - **No transcript pollution.** The title prompt+response would otherwise land
+ *   in the Session's `agent.state.messages` and get persisted by
+ *   `persistMessagesFromAgent`'s slice as if it were real chat, and it would be
+ *   broadcast over the Session's SSE stream as a second, user-unasked turn. A
+ *   throwaway `Agent` with its own empty history never touches either.
+ * - **No working filesystem needed.** It carries no tools and no system prompt
+ *   beyond `TITLE_SYSTEM_PROMPT`, so it needs no `SandboxManager`, no
+ *   confinement hook, and no toolchain grants — just a bare model round-trip.
+ *
+ * Best-effort: any failure (no model configured, a provider error, a non-
+ * assistant reply) resolves `null`, which the caller treats as "keep the
+ * current title". Never rejects.
+ */
+export async function generateSessionTitle(
+	sessionId: string,
+	userPrompt: string,
+): Promise<string | null> {
+	const provider = process.env.DILNA_PROVIDER as DilnaProvider;
+	const modelId = process.env.DILNA_MODEL as string;
+	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
+	if (!model) return null;
+
+	// Title derivation carries no tools — just the bare model call described in
+	// the doc comment above. Uses the same explicit `AgentTool<any>` alias
+	// `startPi` relies on (pi-coding-agent's type-erased `Tool` type), here
+	// empty; annotated to keep the inference to `never[]` from drilling into the
+	// `Agent` constructor's tool parameter type.
+	// biome-ignore lint/suspicious/noExplicitAny: AgentTool<any> matches startPi.
+	const tools: AgentTool<any>[] = [];
+
+	const titleAgent = new Agent({
+		initialState: {
+			systemPrompt: TITLE_SYSTEM_PROMPT,
+			model,
+			tools,
+			messages: [],
+		},
+		// A distinct `sessionId` for the provider's cache-affinity hint so this
+		// tiny call never collides with the real Session's billing/cache bucket.
+		sessionId: `${sessionId}:title`,
+		streamFn: streamSimple,
+		getApiKey: (p) => getEnvApiKey(p, process.env as Record<string, string>),
+	});
+
+	await titleAgent.prompt(
+		`The user's first prompt:\n\n"""\n${userPrompt}\n"""\n\nWrite the Session title now.`,
+	);
+
+	const last = titleAgent.state.messages.at(-1);
+	if (last?.role !== "assistant") return null;
+	// Don't trust the model to have obeyed "no quotes": strip enclosing
+	// quotes/curly quotes in case it wrapped the title anyway.
+	return extractTitleFromReply(contentBlocksToText(last.content));
+}
+
+/**
+ * Parse a Session title out of the title-generating agent's reply. Pure and
+ * exported so the parsing is unit-testable without constructing a real
+ * provider-backed `Agent` — `generateSessionTitle` is the only caller.
+ * Trims whitespace, strips enclosing single/double/curly quotes, and drops
+ * an empty result to `null` ("no title produced").
+ */
+export function extractTitleFromReply(reply: string): string | null {
+	const title = reply.trim().replace(/^["'“”]+|["'“”]+$/g, "");
+	return title || null;
+}
