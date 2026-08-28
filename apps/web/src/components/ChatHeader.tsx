@@ -1,12 +1,16 @@
 import type { Repo, SessionView } from "@dilna/shared";
 import {
+	Check,
 	FileDiff,
 	FolderGit2,
+	Link as LinkIcon,
 	Menu,
 	PanelLeft,
 	PanelRight,
 	Trash2,
 } from "lucide-react";
+import { useState } from "react";
+import { api } from "@/api/client";
 import { StatusDot } from "@/components/StatusDot";
 import { UsageBadge } from "@/components/UsageBadge";
 import type { MobileSheetTrigger } from "@/hooks/useMobileSheet";
@@ -90,6 +94,7 @@ export function ChatHeader({
 					<span className="hidden rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground md:inline">
 						Agent · {agentLabel(selectedSession.agentType)}
 					</span>
+					<CopyTranscriptLinkButton sessionId={selectedSession.id} />
 					<button
 						type="button"
 						onClick={() => onDeleteSession(selectedSession.id)}
@@ -111,6 +116,35 @@ export function ChatHeader({
 				</div>
 			)}
 		</header>
+	);
+}
+
+/** Copies the session's full-transcript export URL to the clipboard — the
+ * link is handed to another agent to review a bug found mid-session, so it
+ * needs the full tool_call input/output the DB already holds, not just what
+ * ChatShell renders live. Server route: `GET /:id/transcript`. */
+function CopyTranscriptLinkButton({ sessionId }: { sessionId: string }) {
+	const [copied, setCopied] = useState(false);
+
+	const handleClick = async () => {
+		await navigator.clipboard.writeText(api.sessions.transcriptUrl(sessionId));
+		setCopied(true);
+		setTimeout(() => setCopied(false), 1500);
+	};
+
+	return (
+		<button
+			type="button"
+			onClick={handleClick}
+			title="Copy transcript link"
+			className="hidden rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:inline-flex"
+		>
+			{copied ? (
+				<Check className="size-3.5" />
+			) : (
+				<LinkIcon className="size-3.5" />
+			)}
+		</button>
 	);
 }
 

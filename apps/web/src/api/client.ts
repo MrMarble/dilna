@@ -235,6 +235,14 @@ export const api = {
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}/stop`, {
 				method: "POST",
 			}),
+		/** Absolute URL to the session's full-transcript export (server route,
+		 * unauthenticated like the rest of the API) — copy-to-clipboard target
+		 * for handing a session's history to another agent. */
+		transcriptUrl: (id: string) =>
+			new URL(
+				`/api/sessions/${id}/transcript`,
+				window.location.origin,
+			).toString(),
 		/** Subscribe to a session's live SSE stream. `onOpen` runs on first
 		 * connect and every reconnect (native retry or this function's own
 		 * liveness-driven one) — the single resync point (ADR-0016 §4): the
