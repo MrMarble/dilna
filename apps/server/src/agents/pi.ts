@@ -276,12 +276,23 @@ let sandboxInitialized: Promise<void> | null = null;
  * need arbitrary outbound access; a headless session has no human to answer
  * an approval prompt for a blocked domain), filesystem left to each call's
  * own `customConfig`.
+ *
+ * `enableWeakerNestedSandbox` mirrors `claude.ts`'s identical setting: set
+ * only inside dilna's own Docker image (`DILNA_CONTAINERIZED=true` in the
+ * Dockerfile) — bwrap can't mount a fresh `/proc` inside an already-
+ * unprivileged container, so it bind-mounts the container's existing one
+ * instead. Only safe when an outer container already provides the real
+ * isolation boundary (true in the reference deployment, not for bare-host
+ * dev). `sandbox-runtime`'s `SandboxRuntimeConfig` has this exact field
+ * (confirmed in the installed `dist/sandbox/sandbox-config.d.ts`) — without
+ * it, every sandboxed bash call would fail outright inside the container.
  */
 function ensureSandboxInitialized(): Promise<void> {
 	if (!sandboxInitialized) {
 		sandboxInitialized = SandboxManager.initialize({
 			network: { allowedDomains: ["*"], deniedDomains: [] },
 			filesystem: { denyRead: [], allowWrite: [], denyWrite: [] },
+			enableWeakerNestedSandbox: process.env.DILNA_CONTAINERIZED === "true",
 		});
 	}
 	return sandboxInitialized;

@@ -4,8 +4,9 @@ set -e
 # The container starts as root only to fix up ownership of the /data volume
 # (a named volume from a prior image version, or a fresh bind mount, may not
 # be owned by the unprivileged `node` user yet) before dropping privileges.
-# Claude Code's bypassPermissions mode (ADR-0003/0010) refuses to run as
-# root, so the actual server process must not run as root.
+# bwrap's unprivileged-user-namespace sandboxing model (ADR-0010, driven by
+# `apps/server/src/agents/pi.ts` via `@anthropic-ai/sandbox-runtime`) assumes
+# a non-root caller, so the actual server process must not run as root.
 if [ "$(id -u)" = "0" ]; then
 	# Let operators align the container user with their host UID/GID (e.g.
 	# so a bind-mounted ~/.ssh with tight key permissions stays readable)
