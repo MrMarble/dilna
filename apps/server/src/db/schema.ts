@@ -1,5 +1,5 @@
 import { relations } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -66,6 +66,30 @@ export const rateLimits = sqliteTable("rate_limits", {
 	utilizationPct: integer("utilization_pct").notNull(),
 	resetsAt: integer("resets_at").notNull(),
 	updatedAt: integer("updated_at").notNull().$defaultFn(now),
+});
+
+/**
+ * One row per turn (not per internal assistant round — see
+ * `SessionManager.accumulateSessionUsage`'s `agent_end`-sourced
+ * `cumulative` usage), for the dashboard's time-series/cost breakdown
+ * (`sessions/usageStats.ts`). Deliberately outlives its `sessionId`/`repoId`:
+ * `sessions.delete` hard-deletes `messages` but must not erase historical
+ * spend, so there's no FK/cascade here — a dangling id after a session or
+ * repo is removed just renders as "unknown" client-side.
+ */
+export const usageEvents = sqliteTable("usage_events", {
+	id: text("id").primaryKey(),
+	sessionId: text("session_id").notNull(),
+	repoId: text("repo_id").notNull(),
+	provider: text("provider").notNull(),
+	model: text("model").notNull(),
+	inputTokens: integer("input_tokens").notNull().default(0),
+	outputTokens: integer("output_tokens").notNull().default(0),
+	cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+	cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+	reasoningTokens: integer("reasoning_tokens").notNull().default(0),
+	costUsd: real("cost_usd").notNull().default(0),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 
 export const sessionsRelations = relations(sessions, ({ many }) => ({

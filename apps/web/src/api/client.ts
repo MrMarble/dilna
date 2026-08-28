@@ -10,6 +10,7 @@ import type {
 	RepoSyncStatus,
 	SessionListEvent,
 	SessionView,
+	UsageSummary,
 } from "@dilna/shared";
 
 export type {
@@ -24,6 +25,7 @@ export type {
 	RepoSyncStatus,
 	SessionListEvent,
 	SessionView,
+	UsageSummary,
 };
 
 export type CloneRepoInput = {
@@ -272,6 +274,14 @@ export const api = {
 				onEvent,
 				onOpen,
 				onConnectionChange,
+			),
+	},
+	usage: {
+		/** `days` selects the lookback window; omit (or pass `"all"`) for
+		 * all-time. Backs the Metrics page's range selector. */
+		summary: (days?: number | "all") =>
+			request<{ summary: UsageSummary }>(
+				`/api/usage${days !== undefined ? `?days=${days}` : ""}`,
 			),
 	},
 };

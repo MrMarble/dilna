@@ -7,6 +7,7 @@ import type {
 import {
 	ArrowDown,
 	ArrowUp,
+	BarChart3,
 	ChevronRight,
 	FolderGit2,
 	PanelLeftClose,
@@ -88,6 +89,8 @@ type Props = {
 	 * can't be collapsed, squeezing the chat on non-mobile narrow viewports).
 	 * Absent in the sheet variant, which closes via the drawer instead. */
 	onCollapse?: () => void;
+	/** Opens the usage/cost dashboard (`MetricsPage`) in place of the chat. */
+	onOpenMetrics: () => void;
 };
 
 export function Sidebar({
@@ -112,6 +115,7 @@ export function Sidebar({
 	currentSession,
 	onDeleteCurrentSession,
 	onCollapse,
+	onOpenMetrics,
 }: Props) {
 	const isSheet = variant === "sheet";
 	return (
@@ -165,6 +169,14 @@ export function Sidebar({
 						<span className="ml-auto text-xs font-normal text-primary-foreground/60">
 							{NEW_SESSION_SHORTCUT}
 						</span>
+					</button>
+					<button
+						type="button"
+						onClick={onOpenMetrics}
+						className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground"
+					>
+						<BarChart3 className="size-3.5 shrink-0" />
+						Usage &amp; cost
 					</button>
 				</div>
 

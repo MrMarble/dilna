@@ -507,21 +507,33 @@ export type NormalizeState = {
 	 * to the right assistant message for `tool_call_end`. */
 	toolCallMessageId: Map<string, string>;
 	/**
-	 * Running total of this turn's usage, summed across every internal
-	 * assistant round's `message_end` (a `prompt()` call can span several —
-	 * see `currentMessageId`'s doc comment). Reported as the turn-end
-	 * reconciling `usage_update`'s `cumulative` field on `agent_end` — the
-	 * only place `SessionManager.accumulateSessionUsage` looks for it to fold
-	 * into the session's persisted lifetime total. Reset on `agent_end`.
+	 * Running total of this turn's usage — tokens, cache tokens, reasoning
+	 * tokens, and cost — summed across every internal assistant round's
+	 * `message_end` (a `prompt()` call can span several — see
+	 * `currentMessageId`'s doc comment). Reported as the turn-end reconciling
+	 * `usage_update`'s `cumulative` field on `agent_end`.
+	 * `SessionManager.accumulateSessionUsage` folds the token fields into the
+	 * session's persisted lifetime total, and inserts the full totals
+	 * (including cache/cost) as one `usage_events` row for the usage
+	 * dashboard. Reset on `agent_end`.
 	 */
 	turnUsage: UsageTotals;
+};
+
+const ZERO_TURN_USAGE: UsageTotals = {
+	inputTokens: 0,
+	outputTokens: 0,
+	cacheReadTokens: 0,
+	cacheWriteTokens: 0,
+	reasoningTokens: 0,
+	costUsd: 0,
 };
 
 export function createNormalizeState(): NormalizeState {
 	return {
 		currentMessageId: null,
 		toolCallMessageId: new Map(),
-		turnUsage: { inputTokens: 0, outputTokens: 0 },
+		turnUsage: { ...ZERO_TURN_USAGE },
 	};
 }
 
@@ -537,7 +549,14 @@ function contentBlocksToText(
 
 function extractUsageTotals(usage: Usage | undefined): UsageTotals | null {
 	if (!usage) return null;
-	return { inputTokens: usage.input, outputTokens: usage.output };
+	return {
+		inputTokens: usage.input,
+		outputTokens: usage.output,
+		cacheReadTokens: usage.cacheRead,
+		cacheWriteTokens: usage.cacheWrite,
+		reasoningTokens: usage.reasoning ?? 0,
+		costUsd: usage.cost.total,
+	};
 }
 
 /**
@@ -633,6 +652,14 @@ export function normalizePiEvent(
 			state.turnUsage = {
 				inputTokens: state.turnUsage.inputTokens + usage.inputTokens,
 				outputTokens: state.turnUsage.outputTokens + usage.outputTokens,
+				cacheReadTokens:
+					(state.turnUsage.cacheReadTokens ?? 0) + (usage.cacheReadTokens ?? 0),
+				cacheWriteTokens:
+					(state.turnUsage.cacheWriteTokens ?? 0) +
+					(usage.cacheWriteTokens ?? 0),
+				reasoningTokens:
+					(state.turnUsage.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
+				costUsd: (state.turnUsage.costUsd ?? 0) + (usage.costUsd ?? 0),
 			};
 			return [
 				{ type: "usage_update", messageId: state.currentMessageId, usage },
@@ -657,7 +684,7 @@ export function normalizePiEvent(
 					: [];
 			state.currentMessageId = null;
 			state.toolCallMessageId.clear();
-			state.turnUsage = { inputTokens: 0, outputTokens: 0 };
+			state.turnUsage = { ...ZERO_TURN_USAGE };
 			return events;
 		}
 		default:
