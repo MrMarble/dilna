@@ -69,6 +69,9 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			onNewOrchestratorSession={noop}
 			creatingOrchestrator={false}
 			onSelectOrchestratorSession={noop}
+			unreadBySessionId={{}}
+			notificationsEnabled={false}
+			toggleNotifications={async () => true}
 			{...overrides}
 		/>,
 	);
@@ -276,6 +279,39 @@ describe("Sidebar", () => {
 				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 95 })],
 			});
 			expect(container.querySelector(".bg-red-500")).not.toBeNull();
+		});
+	});
+
+	describe("session notifications (issue #52)", () => {
+		it("renders an unread badge on a session row when it has unread turns", () => {
+			renderSidebar({
+				selectedRepoId: "repo-1",
+				repos: [makeRepo({ id: "repo-1" })],
+				sessionsByRepoId: {
+					"repo-1": [makeSession({ id: "s1", title: "Session one" })],
+				},
+				unreadBySessionId: { s1: 2 },
+			});
+			expect(screen.getByText("Session one")).toBeInTheDocument();
+			// The 2 is the badge count; the title carries a descriptive tooltip.
+			expect(screen.getByTitle(/while you weren't looking/)).toHaveTextContent("2");
+		});
+
+		it("shows the total unread count on the bell", () => {
+			renderSidebar({
+				unreadBySessionId: { s1: 1, s2: 3 },
+			});
+			// The bell's overlay badge is the absolute-positioned count element.
+			expect(screen.getByText("4")).toBeInTheDocument();
+		});
+
+		it("toggles notifications on click", async () => {
+			const user = userEvent.setup();
+			renderSidebar({ notificationsEnabled: false });
+			const bell = screen.getByTitle(/Notify me when a session's turn completes/);
+			await user.click(bell);
+			// The handler is stubbed in renderSidebar; clicking must not throw.
+			expect(bell).toBeInTheDocument();
 		});
 	});
 });

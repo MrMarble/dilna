@@ -22,6 +22,7 @@ import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
 import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
+import { useSessionNotifications } from "@/hooks/useSessionNotifications";
 
 // Keeps the URL shareable/bookmarkable as /<repo-slug>/<session-id> — see
 // the App component's history hydration/popstate effects for the read side.
@@ -74,6 +75,14 @@ export function App() {
 	// twice alongside the mobile sheet's own instances — see issue #12.
 	const isDesktop = useIsDesktop();
 	const mobileSheet = useMobileSheet();
+	const {
+		handleSessionStatus,
+		unreadBySessionId,
+		markRead,
+		forgetSession,
+		notificationsEnabled,
+		toggleNotifications,
+	} = useSessionNotifications({ selectedSessionId });
 	// Desktop-only: the Sidebar/ContextPanel are otherwise always-open fixed
 	// columns that eat most of the width on a laptop-size (not phone-size)
 	// viewport, squeezing the chat. Collapsing is per-panel and persisted so
@@ -189,6 +198,10 @@ export function App() {
 		const unsubscribe = api.sessionList.stream((ev: SessionListEvent) => {
 			if (ev.type === "session_status") {
 				setSessionsById((prev) => ({ ...prev, [ev.session.id]: ev.session }));
+				// Feed the turn-completion watcher (issue #52) — fires system
+				// notifications and bumps the sidebar's unread badges for
+				// sessions that finished while not focused.
+				handleSessionStatus(ev.session);
 			} else if (ev.type === "session_deleted") {
 				setSessionsById((prev) => {
 					if (!(ev.sessionId in prev)) return prev;
@@ -196,11 +209,20 @@ export function App() {
 					delete next[ev.sessionId];
 					return next;
 				});
+				// A deleted session shouldn't keep a stale unread badge or keep
+				// the bell's aggregate count inflated (issue #52).
+				forgetSession(ev.sessionId);
 			} else if (ev.type === "rate_limits") {
 				setRateLimitWindows(ev.windows);
 			}
 		});
 		return unsubscribe;
+		// The cross-session stream is opened exactly once (empty deps).
+		// `handleSessionStatus` is closed over deliberately:
+		// it reads selectedSessionId and the notifications toggle through refs,
+		// so it never needs to be re-created (and a fresh handle would force
+		// this effect to drop/reconnect the SSE stream on every re-render).
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
 	// Read the initial /<repo-slug>/<session-id> from the URL once repos are
@@ -303,6 +325,9 @@ export function App() {
 				.filter((s) => s.repoId === id)
 				.sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
 			setSelectedSessionId(latest?.id ?? null);
+			// Selecting a repo jumps to its latest session — treat that as
+			// reading its unread badge (issue #52).
+			if (latest) markRead(latest.id);
 			const repo = repos.find((r) => r.id === id);
 			if (repo) pushSessionPath(repo.slug, latest?.id ?? null);
 			// Only close the mobile sheet when the repo has a session to land
@@ -311,18 +336,20 @@ export function App() {
 			// sheet just to tap the button that's already right here.
 			if (latest) mobileSheet.close();
 		},
-		[sessionsById, repos, mobileSheet.close],
+		[sessionsById, repos, mobileSheet.close, markRead],
 	);
 
 	const handleSelectSession = useCallback(
 		(session: SessionView) => {
 			setSelectedRepoId(session.repoId);
 			setSelectedSessionId(session.id);
+			// Reading the session clears its completed-turn badge (issue #52).
+			markRead(session.id);
 			const repo = repos.find((r) => r.id === session.repoId);
 			if (repo) pushSessionPath(repo.slug, session.id);
 			mobileSheet.close();
 		},
-		[repos, mobileSheet.close],
+		[repos, mobileSheet.close, markRead],
 	);
 
 	// Same as handleSelectSession, but never sets selectedRepoId to the
@@ -333,9 +360,10 @@ export function App() {
 		(session: SessionView) => {
 			setSelectedRepoId(null);
 			setSelectedSessionId(session.id);
+			markRead(session.id);
 			mobileSheet.close();
 		},
-		[mobileSheet.close],
+		[mobileSheet.close, markRead],
 	);
 
 	const handleSessionCreated = useCallback(
@@ -465,6 +493,9 @@ export function App() {
 		onNewOrchestratorSession: handleNewOrchestratorSession,
 		creatingOrchestrator,
 		onSelectOrchestratorSession: handleSelectOrchestratorSession,
+		unreadBySessionId,
+		notificationsEnabled,
+		toggleNotifications,
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
 		currentSession: selectedSession,
 		onDeleteCurrentSession: handleDeleteSession,
