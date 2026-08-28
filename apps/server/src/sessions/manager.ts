@@ -681,6 +681,20 @@ class SessionManager {
 		return this.turnsInProgress.has(id);
 	}
 
+	/**
+	 * The session's most recent `turn_failed`, best-effort only: in-memory
+	 * (per ADR-0016 §2, deliberately not persisted), cleared by the next
+	 * accepted turn or lost on server restart. Callers that need failure
+	 * detail to survive past that window must capture it while it's here —
+	 * e.g. a transcript export taken before the session's next turn runs.
+	 */
+	getLastTurnFailed(
+		id: string,
+	): Extract<AgentStreamEvent, { type: "turn_failed" }> | undefined {
+		const ev = this.lastTurnFailed.get(id);
+		return ev?.type === "turn_failed" ? ev : undefined;
+	}
+
 	async getMessages(id: string): Promise<Message[]> {
 		const db = getDb();
 		const rows = db

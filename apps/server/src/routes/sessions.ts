@@ -8,7 +8,9 @@ import type {
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
+import { repoManager } from "../repos/manager";
 import { SessionNotFoundError, sessionManager } from "../sessions/manager";
+import { renderTranscript } from "../sessions/transcript";
 import { runSseLoop } from "./sse";
 
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
@@ -69,6 +71,21 @@ sessionsRoute.get("/:id/messages", async (c) => {
 	const messages = await sessionManager.getMessages(id);
 	const body: { messages: Message[] } = { messages };
 	return c.json(body);
+});
+
+// Full durable transcript as plain text — for the "copy this link, hand it
+// to another agent" export flow. Unauthenticated, like every other route
+// here: dilna has no auth model to plug into (self-hosted, single user).
+sessionsRoute.get("/:id/transcript", async (c) => {
+	const id = c.req.param("id");
+	const session = await sessionManager.get(id);
+	if (!session) throw new HTTPException(404, { message: "session not found" });
+	const repo = await repoManager.get(session.repoId);
+	if (!repo) throw new HTTPException(404, { message: "repo not found" });
+	const messages = await sessionManager.getMessages(id);
+	const lastTurnFailed = sessionManager.getLastTurnFailed(id);
+	const body = renderTranscript(session, repo, messages, lastTurnFailed);
+	return c.text(body, 200, { "Content-Type": "text/markdown; charset=utf-8" });
 });
 
 // Initial snapshot for the "Changed files" panel — mirrors GET
