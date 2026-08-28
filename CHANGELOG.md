@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/MrMarble/dilna/compare/v0.11.0...v0.12.0) (2026-08-28)
+
+
+### Features
+
+* **sessions:** export full transcript as a shareable link ([#107](https://github.com/MrMarble/dilna/issues/107)) ([af4a2c1](https://github.com/MrMarble/dilna/commit/af4a2c17d82c74d448252da6ccf88f1ee8d43a27))
+
 ## [0.11.0](https://github.com/MrMarble/dilna/compare/v0.10.0...v0.11.0) (2026-08-28)
 
 
