@@ -34,9 +34,12 @@ Set `DILNA_PROVIDER` and `DILNA_MODEL` (one global choice for the whole instance
 
 ```bash
 mise install       # node 24.18.0, pnpm 11.10.0
+cp .env.example .env   # fill in DILNA_PROVIDER/DILNA_MODEL + the matching API key
 pnpm install
 pnpm dev
 ```
+
+mise loads `.env` automatically (see `mise.toml`'s `_.file` directive) into every command it runs in this repo, so the tokens persist across `pnpm dev`/`pnpm test` invocations without re-exporting them each session.
 
 - `apps/server` — Hono API + the agent runtime
 - `apps/web` — the chat UI
