@@ -1,8 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
+import {
+	getDefaultWritePaths,
+	SandboxManager,
+} from "@anthropic-ai/sandbox-runtime";
 import type {
 	AgentStreamEvent,
 	Message,
@@ -143,6 +147,46 @@ const XDG_CONFIG_HOME = path.join(TOOLCHAIN_HOME, "xdg-config");
 const GH_CONFIG_DIR = path.join(TOOLCHAIN_HOME, "gh-config");
 const PNPM_STORE_DIR = path.join(TOOLCHAIN_HOME, "pnpm", "store");
 
+/**
+ * Own scratch parent for ad-hoc temp-file use (a one-off script, `mktemp`,
+ * etc.) when a bash call happens to run with the sandbox disabled — mirrors
+ * `claude.ts`'s identical `CLI_SCRATCH_PARENT_DIR`. Irrelevant to the
+ * sandboxed path below: bwrap's own `--setenv TMPDIR ...` (baked into the
+ * wrapped command by `sandbox-runtime` itself, from its
+ * `CLAUDE_CODE_TMPDIR`/`CLAUDE_TMPDIR` env var or else its hardcoded
+ * `/tmp/claude` default — see `generateProxyEnvVars` in the installed
+ * `sandbox-utils.js`) always wins over whatever `TMPDIR` this process's own
+ * env carries, so setting it here only helps the non-sandboxed fallback.
+ */
+const CLI_SCRATCH_PARENT_DIR = path.join(
+	os.tmpdir(),
+	`claude-${process.getuid?.() ?? 0}`,
+);
+
+/**
+ * `sandbox-runtime`'s own default write-path allowlist (`getDefaultWritePaths()`,
+ * e.g. `/tmp/claude`) is what it points `TMPDIR` at *inside* every sandboxed
+ * command via bwrap's `--setenv` — but it never creates that directory on
+ * the host itself, and bwrap silently skips binding a write path whose host
+ * source doesn't exist (confirmed in the installed
+ * `linux-sandbox-utils.js`'s write-path loop). Since nothing else in dilna
+ * ever creates `/tmp/claude` either, every sandboxed command inherits a
+ * `TMPDIR` that resolves to a nonexistent, unwritable path — and any tool
+ * that touches `$TMPDIR` at startup (pnpm's `temp-dir` package `lstat`s it
+ * before anything else runs) fails outright with an `ENOENT`/`EROFS` that
+ * reads nothing like a temp-dir problem. This dropped out when `claude.ts`
+ * (which had the equivalent gap for its own `CLAUDE_SCRATCH_WRITABLE_PATHS`,
+ * a *different* directory than sandbox-runtime's own default) was replaced
+ * by `pi.ts` and broke `pnpm install` for every session needing to install
+ * dependencies (issue debugged 2026-08-28: three orchestrator sessions all
+ * hit this via pnpm and misdiagnosed it as "no network"). Pre-creating
+ * sandbox-runtime's own default paths here — rather than trying to redirect
+ * `TMPDIR` — is what actually reaches the sandboxed child, since it's the
+ * exact path bwrap already binds writable and points `TMPDIR` at with no
+ * further config needed.
+ */
+const SANDBOX_DEFAULT_WRITE_PATHS = getDefaultWritePaths();
+
 const TOOLCHAIN_WRITABLE_PATHS = [
 	MISE_DATA_DIR,
 	MISE_CONFIG_DIR,
@@ -155,14 +199,23 @@ const TOOLCHAIN_WRITABLE_PATHS = [
 	GH_CONFIG_DIR,
 	path.join(XDG_CACHE_HOME, "gh"),
 	PNPM_STORE_DIR,
+	CLI_SCRATCH_PARENT_DIR,
 ];
 
 /** A writable-path grant only does anything once the host directory already
  * exists (see `claude.ts`'s identical note) — pre-create every leaf before
- * the sandboxed bash tool's first use. */
+ * the sandboxed bash tool's first use. Sandbox-runtime's own default write
+ * paths are included too (see `SANDBOX_DEFAULT_WRITE_PATHS`'s doc comment);
+ * a leaf irrelevant to this platform (e.g. `/private/tmp/claude` on Linux)
+ * fails harmlessly and is skipped rather than aborting the others. */
 function ensureWritablePathsExist(): void {
-	for (const dir of TOOLCHAIN_WRITABLE_PATHS) {
-		mkdirSync(dir, { recursive: true });
+	for (const dir of [
+		...TOOLCHAIN_WRITABLE_PATHS,
+		...SANDBOX_DEFAULT_WRITE_PATHS,
+	]) {
+		try {
+			mkdirSync(dir, { recursive: true });
+		} catch {}
 	}
 }
 
@@ -185,6 +238,10 @@ function toolchainEnv(worktreePath: string): NodeJS.ProcessEnv {
 		XDG_DATA_HOME: process.env.XDG_DATA_HOME ?? XDG_DATA_HOME,
 		XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? XDG_CONFIG_HOME,
 		GH_CONFIG_DIR: process.env.GH_CONFIG_DIR ?? GH_CONFIG_DIR,
+		// Only takes effect when a bash call runs with the sandbox disabled —
+		// see CLI_SCRATCH_PARENT_DIR's doc comment for why the sandboxed path
+		// needs a different fix (SANDBOX_DEFAULT_WRITE_PATHS).
+		TMPDIR: process.env.TMPDIR ?? CLI_SCRATCH_PARENT_DIR,
 	};
 }
 
