@@ -27,7 +27,9 @@ beforeEach(() => {
 
 describe("useSessionNotifications", () => {
 	it("marks a session unread when its turn completes while not focused", () => {
-		const { result } = renderHook(() => useSessionNotifications({ selectedSessionId: null }));
+		const { result } = renderHook(() =>
+			useSessionNotifications({ selectedSessionId: null }),
+		);
 
 		act(() => {
 			result.current.handleSessionStatus(makeSession("s1", "working"));
@@ -52,7 +54,9 @@ describe("useSessionNotifications", () => {
 	});
 
 	it("does not count a working→working (pause) as completion", () => {
-		const { result } = renderHook(() => useSessionNotifications({ selectedSessionId: null }));
+		const { result } = renderHook(() =>
+			useSessionNotifications({ selectedSessionId: null }),
+		);
 
 		act(() => {
 			result.current.handleSessionStatus(makeSession("s1", "working"));
@@ -63,7 +67,9 @@ describe("useSessionNotifications", () => {
 	});
 
 	it("markRead clears a session's unread count", () => {
-		const { result } = renderHook(() => useSessionNotifications({ selectedSessionId: null }));
+		const { result } = renderHook(() =>
+			useSessionNotifications({ selectedSessionId: null }),
+		);
 
 		act(() => {
 			result.current.handleSessionStatus(makeSession("s1", "working"));

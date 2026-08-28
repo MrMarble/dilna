@@ -294,7 +294,9 @@ describe("Sidebar", () => {
 			});
 			expect(screen.getByText("Session one")).toBeInTheDocument();
 			// The 2 is the badge count; the title carries a descriptive tooltip.
-			expect(screen.getByTitle(/while you weren't looking/)).toHaveTextContent("2");
+			expect(screen.getByTitle(/while you weren't looking/)).toHaveTextContent(
+				"2",
+			);
 		});
 
 		it("shows the total unread count on the bell", () => {
@@ -308,7 +310,9 @@ describe("Sidebar", () => {
 		it("toggles notifications on click", async () => {
 			const user = userEvent.setup();
 			renderSidebar({ notificationsEnabled: false });
-			const bell = screen.getByTitle(/Notify me when a session's turn completes/);
+			const bell = screen.getByTitle(
+				/Notify me when a session's turn completes/,
+			);
 			await user.click(bell);
 			// The handler is stubbed in renderSidebar; clicking must not throw.
 			expect(bell).toBeInTheDocument();

@@ -95,57 +95,53 @@ export function useSessionNotifications({
 		return true;
 	}, [enabled, setEnabled]);
 
-	const handleSessionStatus = useCallback(
-		(session: SessionView) => {
-			const prev = previousStatusRef.current[session.id];
-			previousStatusRef.current[session.id] = session.status;
+	const handleSessionStatus = useCallback((session: SessionView) => {
+		const prev = previousStatusRef.current[session.id];
+		previousStatusRef.current[session.id] = session.status;
 
-			// Only a transition out of an active phase into a terminal status is
-			// "task completion". First-connection snapshots (prev undefined) and
-			// idle→idle levels are ignored.
-			if (!prev || !ACTIVE.includes(prev) || !TERMINAL.includes(session.status)) {
-				return;
-			}
+		// Only a transition out of an active phase into a terminal status is
+		// "task completion". First-connection snapshots (prev undefined) and
+		// idle→idle levels are ignored.
+		if (!prev || !ACTIVE.includes(prev) || !TERMINAL.includes(session.status)) {
+			return;
+		}
 
-			// A session completing while it IS the one being viewed (and the tab
-			// is visible) needs no badge and no notification — the user is
-			// already looking at it.
-			const tabHidden = typeof document !== "undefined" && document.hidden;
-			const focused =
-				session.id === selectedSessionIdRef.current && !tabHidden;
-			if (focused) return;
+		// A session completing while it IS the one being viewed (and the tab
+		// is visible) needs no badge and no notification — the user is
+		// already looking at it.
+		const tabHidden = typeof document !== "undefined" && document.hidden;
+		const focused = session.id === selectedSessionIdRef.current && !tabHidden;
+		if (focused) return;
 
-			setUnreadBySessionId((prevMap) => ({
-				...prevMap,
-				[session.id]: (prevMap[session.id] ?? 0) + 1,
-			}));
+		setUnreadBySessionId((prevMap) => ({
+			...prevMap,
+			[session.id]: (prevMap[session.id] ?? 0) + 1,
+		}));
 
-			// System notification — only for a clean `idle` completion (a
-			// `crashed` session already stands out via the sidebar's red dot).
-			if (
-				enabledRef.current &&
-				session.status === "idle" &&
-				typeof Notification !== "undefined" &&
-				Notification.permission === "granted"
-			) {
-				const now = Date.now();
-				const last = lastNotifiedAtRef.current[session.id];
-				if (last === undefined || now - last > NOTIFY_COOLDOWN_MS) {
-					lastNotifiedAtRef.current[session.id] = now;
-					try {
-						new Notification(`dilna · ${session.title}`, {
-							body: "Agent finished the turn.",
-							tag: `dilna:${session.id}`,
-						});
-					} catch {
-						// Some engines throw on `new Notification` (e.g. older
-						// Safari) — treat as best-effort.
-					}
+		// System notification — only for a clean `idle` completion (a
+		// `crashed` session already stands out via the sidebar's red dot).
+		if (
+			enabledRef.current &&
+			session.status === "idle" &&
+			typeof Notification !== "undefined" &&
+			Notification.permission === "granted"
+		) {
+			const now = Date.now();
+			const last = lastNotifiedAtRef.current[session.id];
+			if (last === undefined || now - last > NOTIFY_COOLDOWN_MS) {
+				lastNotifiedAtRef.current[session.id] = now;
+				try {
+					new Notification(`dilna · ${session.title}`, {
+						body: "Agent finished the turn.",
+						tag: `dilna:${session.id}`,
+					});
+				} catch {
+					// Some engines throw on `new Notification` (e.g. older
+					// Safari) — treat as best-effort.
 				}
 			}
-		},
-		[],
-	);
+		}
+	}, []);
 
 	const markRead = useCallback((sessionId: string) => {
 		setUnreadBySessionId((prev) => {

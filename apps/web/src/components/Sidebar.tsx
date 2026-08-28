@@ -107,7 +107,7 @@ type Props = {
 	/** Whether browser Notifications are enabled (issue #52). Drives the
 	 * bell's state and tooltip. */
 	notificationsEnabled: boolean;
-	toggleNotifications: () => void | Promise<boolean>;
+	toggleNotifications: () => Promise<boolean>;
 };
 
 export function Sidebar({
@@ -454,7 +454,7 @@ function ReposSection({
 											selectedSessionId={selectedSessionId}
 											onSelect={onSelectSession}
 											unreadBySessionId={unreadBySessionId}
-											/>
+										/>
 									)}
 								</li>
 							);
@@ -571,7 +571,9 @@ function NotificationsToggle({
 }) {
 	const Icon = enabled ? Bell : BellOff;
 	const permission =
-		typeof Notification !== "undefined" ? Notification.permission : "unsupported";
+		typeof Notification !== "undefined"
+			? Notification.permission
+			: "unsupported";
 	let title = "Notify me when a session's turn completes";
 	if (enabled) title = "Turn off session-completion notifications";
 	else if (permission === "denied")
@@ -656,9 +658,7 @@ function BackgroundAgentsSection({
 								<span className="flex items-center gap-1.5 overflow-hidden">
 									<StatusDot status={session.status} />
 									<span className="truncate">{session.title}</span>
-									<UnreadBadge
-										count={unreadBySessionId[session.id] ?? 0}
-									/>
+									<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
 								</span>
 								<span className="truncate pl-3 text-xs text-muted-foreground">
 									{repoSlugById[session.repoId] ?? session.repoId}

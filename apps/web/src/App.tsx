@@ -194,6 +194,7 @@ export function App() {
 	// Single cross-session status subscription (per ADR-0008) — the source
 	// of truth for every session's live state, across every repo. Powers the
 	// header's session dropdown and the sidebar's Background Agents panel.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the stream is opened once; handleSessionStatus/forgetSession are referentially stable (useCallback with no deps) and read mutable/selected state through refs, so listing them would needlessly reconnect the SSE stream.
 	useEffect(() => {
 		const unsubscribe = api.sessionList.stream((ev: SessionListEvent) => {
 			if (ev.type === "session_status") {
@@ -217,12 +218,6 @@ export function App() {
 			}
 		});
 		return unsubscribe;
-		// The cross-session stream is opened exactly once (empty deps).
-		// `handleSessionStatus` is closed over deliberately:
-		// it reads selectedSessionId and the notifications toggle through refs,
-		// so it never needs to be re-created (and a fresh handle would force
-		// this effect to drop/reconnect the SSE stream on every re-render).
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
 	// Read the initial /<repo-slug>/<session-id> from the URL once repos are
