@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.11.0](https://github.com/MrMarble/dilna/compare/v0.10.0...v0.11.0) (2026-08-28)
+
+
+### Features
+
+* **agents:** replace claude-agent-sdk with pi-ai/pi-agent-core adapter ([#104](https://github.com/MrMarble/dilna/issues/104)) ([4167a92](https://github.com/MrMarble/dilna/commit/4167a9226f1b0f1a195d7b75daec4475d554a0cc))
+* **dev:** load local API tokens from .env via mise ([#105](https://github.com/MrMarble/dilna/issues/105)) ([265b553](https://github.com/MrMarble/dilna/commit/265b55305a929ef2e0d0d5bf88f7fff16e9cf688))
+* **usage:** add cost/token dashboard sourced from per-turn usage_events ([#106](https://github.com/MrMarble/dilna/issues/106)) ([4833d1a](https://github.com/MrMarble/dilna/commit/4833d1a178b6f570a88d7261a7945582a3db6cae))
+
+
+### Bug Fixes
+
+* **agents:** task-notification history rows, flat turn timeout, XDG sandbox grants ([#88](https://github.com/MrMarble/dilna/issues/88)) ([e844774](https://github.com/MrMarble/dilna/commit/e844774e3fb03ebfe8bae7950413a27f2dc68a38))
+
 ## [0.10.0](https://github.com/MrMarble/dilna/compare/v0.9.0...v0.10.0) (2026-08-21)
 
 
