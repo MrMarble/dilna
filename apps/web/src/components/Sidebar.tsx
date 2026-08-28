@@ -13,6 +13,7 @@ import {
 	PanelLeftClose,
 	Plus,
 	RefreshCw,
+	Sparkles,
 	Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -91,6 +92,12 @@ type Props = {
 	onCollapse?: () => void;
 	/** Opens the usage/cost dashboard (`MetricsPage`) in place of the chat. */
 	onOpenMetrics: () => void;
+	/** Orchestrator Sessions (ADR-0021), newest-active first — a top-level
+	 * section, not nested under a repo, since the orchestrator is global. */
+	orchestratorSessions: SessionView[];
+	onNewOrchestratorSession: () => void;
+	creatingOrchestrator: boolean;
+	onSelectOrchestratorSession: (session: SessionView) => void;
 };
 
 export function Sidebar({
@@ -116,6 +123,10 @@ export function Sidebar({
 	onDeleteCurrentSession,
 	onCollapse,
 	onOpenMetrics,
+	orchestratorSessions,
+	onNewOrchestratorSession,
+	creatingOrchestrator,
+	onSelectOrchestratorSession,
 }: Props) {
 	const isSheet = variant === "sheet";
 	return (
@@ -187,6 +198,14 @@ export function Sidebar({
 					/>
 				)}
 
+				<OrchestratorSection
+					sessions={orchestratorSessions}
+					selectedSessionId={selectedSessionId}
+					creating={creatingOrchestrator}
+					onNew={onNewOrchestratorSession}
+					onSelect={onSelectOrchestratorSession}
+				/>
+
 				<ReposSection
 					repos={repos}
 					loading={loadingRepos}
@@ -236,6 +255,58 @@ function CurrentSessionRow({
 			>
 				<Trash2 className="size-3.5" />
 			</button>
+		</div>
+	);
+}
+
+/**
+ * The orchestrator's own top-level section (ADR-0021) — not nested under a
+ * repo, since it's global rather than per-repo. Always visible (there's no
+ * per-repo grouping to collapse, unlike ReposSection's accordion); renders
+ * just the "+" and no list when there are no orchestrator Sessions yet.
+ */
+function OrchestratorSection({
+	sessions,
+	selectedSessionId,
+	creating,
+	onNew,
+	onSelect,
+}: {
+	sessions: SessionView[];
+	selectedSessionId: string | null;
+	creating: boolean;
+	onNew: () => void;
+	onSelect: (session: SessionView) => void;
+}) {
+	return (
+		<div className="border-b border-sidebar-border">
+			<SidebarSectionHeader
+				title="Orchestrator"
+				newTitle={creating ? "Creating…" : "New orchestrator chat"}
+				onNew={onNew}
+			/>
+			{sessions.length > 0 && (
+				<ul className="space-y-0.5 px-2 pb-2">
+					{sessions.map((session) => (
+						<li key={session.id}>
+							<button
+								type="button"
+								onClick={() => onSelect(session)}
+								className={cn(
+									"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+									session.id === selectedSessionId
+										? "bg-sidebar-accent font-medium text-foreground"
+										: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground",
+								)}
+							>
+								<StatusDot status={session.status} />
+								<Sparkles className="size-3.5 shrink-0" />
+								<span className="truncate">{session.title}</span>
+							</button>
+						</li>
+					))}
+				</ul>
+			)}
 		</div>
 	);
 }

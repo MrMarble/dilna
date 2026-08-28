@@ -12,6 +12,7 @@ import type {
 	RateLimitWindow,
 	RateLimitWindowKind,
 	Session,
+	SessionKind,
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
@@ -20,9 +21,11 @@ import { nanoid } from "nanoid";
 import {
 	chatPi,
 	dilnaMessagesToInitialState,
+	type OrchestratorDeps,
 	type PiHandle,
 	type PiStartOptions,
 	piMessagesToDilna,
+	startOrchestrator,
 	startPi,
 } from "../agents/pi";
 import {
@@ -55,6 +58,7 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		worktreeDirName: row.worktreeDirName,
 		branchName: row.branchName,
 		agentType: row.agentType as AgentType,
+		kind: row.kind as SessionKind,
 		title: row.title,
 		status: row.status as Session["status"],
 		usage: { inputTokens: row.inputTokens, outputTokens: row.outputTokens },
@@ -69,6 +73,7 @@ function toView(s: Session): SessionView {
 		repoId: s.repoId,
 		title: s.title,
 		agentType: s.agentType,
+		kind: s.kind,
 		status: s.status,
 		usage: s.usage,
 		createdAt: s.createdAt,
@@ -343,6 +348,78 @@ class SessionManager {
 		return rows.map(rowToSession).map(toView);
 	}
 
+	/** Token usage grouped by repo, across ordinary (non-orchestrator)
+	 * Sessions — backs the orchestrator's `dilna_usage_totals` tool. */
+	async usageTotalsByRepo(): Promise<
+		{ repoId: string; inputTokens: number; outputTokens: number }[]
+	> {
+		const db = getDb();
+		const rows = db
+			.select({
+				repoId: sessionsTable.repoId,
+				inputTokens: sql<number>`sum(${sessionsTable.inputTokens})`,
+				outputTokens: sql<number>`sum(${sessionsTable.outputTokens})`,
+			})
+			.from(sessionsTable)
+			.where(eq(sessionsTable.kind, "session"))
+			.groupBy(sessionsTable.repoId)
+			.all();
+		return rows.map((r) => ({
+			repoId: r.repoId,
+			inputTokens: Number(r.inputTokens) || 0,
+			outputTokens: Number(r.outputTokens) || 0,
+		}));
+	}
+
+	/**
+	 * The narrow dependency surface an orchestrator Agent's tools call back
+	 * into — passed down through `startOrchestrator` rather than
+	 * `agents/pi.ts` importing `sessionManager` directly, which would cycle
+	 * (this file already imports from `agents/pi.ts`). Every orchestrator
+	 * tool result excludes other orchestrator Sessions — they're not children,
+	 * and aren't what "ask about usage/sessions" means here.
+	 */
+	private buildOrchestratorDeps(): OrchestratorDeps {
+		return {
+			listSessions: async (repoId) => {
+				const views = repoId
+					? await this.listByRepo(repoId)
+					: await this.listAll();
+				return views.filter((v) => v.kind !== "orchestrator");
+			},
+			getSession: async (id) => {
+				const view = await this.getView(id);
+				if (!view || view.kind === "orchestrator") return null;
+				const messages = await this.getMessages(id);
+				const last = messages.at(-1);
+				const lastMessagePreview = last
+					? last.parts
+							.filter(
+								(p): p is Extract<MessagePart, { type: "text" }> =>
+									p.type === "text",
+							)
+							.map((p) => p.text)
+							.join(" ")
+							.trim()
+							.slice(0, 240) || null
+					: null;
+				return { ...view, lastMessagePreview };
+			},
+			createChildSession: async (repoId, prompt) => {
+				const view = await this.create(repoId, "pi");
+				this.beginTurn(view.id, prompt);
+				this.runTurn(view.id, prompt).catch((err) => {
+					console.error(
+						`[sessions] orchestrator-spawned runTurn failed for ${view.id}:`,
+						err,
+					);
+				});
+				return view;
+			},
+			usageTotalsByRepo: () => this.usageTotalsByRepo(),
+		};
+	}
+
 	async get(id: string): Promise<Session | null> {
 		const db = getDb();
 		const row = db
@@ -361,6 +438,7 @@ class SessionManager {
 	async create(
 		repoId: string,
 		agentType: AgentType = "pi",
+		kind: SessionKind = "session",
 	): Promise<SessionView> {
 		// Anything other than "pi" is rejected outright — including a legacy
 		// "claude" value on a pre-migration row passed in by a caller that
@@ -411,11 +489,13 @@ class SessionManager {
 			worktreeDirName,
 			branchName,
 			agentType,
+			kind,
 			// dilna's own generic placeholder — pi has no auto-derived-title
 			// equivalent (no CLI, no transcript summary), so sessions keep this
 			// indefinitely rather than syncing to something the agent picked;
 			// see CONTEXT.md's Session entry.
-			title: `Session ${id.slice(0, 4)}`,
+			title:
+				kind === "orchestrator" ? "Orchestrator" : `Session ${id.slice(0, 4)}`,
 			status: "idle",
 			usage: { inputTokens: 0, outputTokens: 0 },
 			createdAt: now,
@@ -431,6 +511,7 @@ class SessionManager {
 				worktreeDirName: session.worktreeDirName,
 				branchName: session.branchName,
 				agentType: session.agentType,
+				kind: session.kind,
 				title: session.title,
 				status: session.status,
 				createdAt: session.createdAt,
@@ -441,6 +522,17 @@ class SessionManager {
 		const view = toView(session);
 		this.broadcastGlobal({ type: "session_status", session: view });
 		return view;
+	}
+
+	/**
+	 * The only way an orchestrator Session ever gets created — `repoId` is
+	 * always the meta-repo, never a caller-supplied value (see ADR-0021's
+	 * "why not nullable repoId" and routes/sessions.ts's dedicated
+	 * `POST /orchestrator`, which is what makes this the only entry point).
+	 */
+	async createOrchestrator(): Promise<SessionView> {
+		const metaRepo = await repoManager.ensureOrchestratorRepo();
+		return this.create(metaRepo.id, "pi", "orchestrator");
 	}
 
 	async delete(id: string): Promise<void> {
@@ -1330,13 +1422,20 @@ class SessionManager {
 		);
 		const initialMessages = dilnaMessagesToInitialState(history);
 
-		const startOpts: PiStartOptions = {
-			sessionId: id,
-			worktreePath: session.worktreePath,
-			repoId: session.repoId,
-			initialMessages,
-		};
-		const handle: PiHandle = await startPi(startOpts);
+		const handle: PiHandle =
+			session.kind === "orchestrator"
+				? await startOrchestrator({
+						sessionId: id,
+						worktreePath: session.worktreePath,
+						initialMessages,
+						deps: this.buildOrchestratorDeps(),
+					})
+				: await startPi({
+						sessionId: id,
+						worktreePath: session.worktreePath,
+						repoId: session.repoId,
+						initialMessages,
+					} satisfies PiStartOptions);
 
 		const active: ActiveAgent = {
 			handle,

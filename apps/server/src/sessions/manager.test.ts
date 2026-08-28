@@ -92,6 +92,34 @@ describe("SessionManager", () => {
 		expect(stdout).not.toContain(".gitmodules");
 	});
 
+	it("creates an orchestrator session bound to the hidden meta-repo", async () => {
+		const session = await sessionManager.createOrchestrator();
+		expect(session.kind).toBe("orchestrator");
+		expect(session.title).toBe("Orchestrator");
+
+		const metaRepo = await repoManager.ensureOrchestratorRepo();
+		expect(session.repoId).toBe(metaRepo.id);
+
+		// A real worktree, same as any other Session — it just has no
+		// filesystem tools registered against it (see agents/pi.ts).
+		const full = await sessionManager.get(session.id);
+		expect(full).not.toBeNull();
+		expect(existsSync(full?.worktreePath ?? "")).toBe(true);
+
+		// The meta-repo itself never shows up in the normal repo list.
+		const repos = await repoManager.list();
+		expect(repos.find((r) => r.id === metaRepo.id)).toBeUndefined();
+	});
+
+	it('ordinary create() defaults to kind "session"', async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`kind-default-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		expect(session.kind).toBe("session");
+	});
+
 	it("gives worktree git working tracking refs and @{u} (fetch refspec on the bare repo)", async () => {
 		const repo = await repoManager.clone(fixtureRepo, `upstream-${Date.now()}`);
 		const session = await sessionManager.create(repo.id);

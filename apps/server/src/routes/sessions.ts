@@ -60,6 +60,20 @@ sessionsRoute.post("/", async (c) => {
 	}
 });
 
+// A dedicated endpoint rather than a `kind` field on the body above (ADR-0021):
+// an orchestrator Session's repoId is always dilna's own reserved meta-repo,
+// never caller-supplied, so there's no body to validate here at all.
+sessionsRoute.post("/orchestrator", async (c) => {
+	try {
+		const session = await sessionManager.createOrchestrator();
+		const res: OneResponse = { session };
+		return c.json(res, 201);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : "create failed";
+		throw new HTTPException(500, { message: msg });
+	}
+});
+
 sessionsRoute.delete("/:id", async (c) => {
 	const id = c.req.param("id");
 	await sessionManager.delete(id);

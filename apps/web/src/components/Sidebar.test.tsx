@@ -24,6 +24,7 @@ function makeSession(overrides: Partial<SessionView> = {}): SessionView {
 		repoId: "repo-1",
 		title: "New session",
 		agentType: "pi",
+		kind: "session",
 		status: "working",
 		usage: { inputTokens: 0, outputTokens: 0 },
 		createdAt: 1,
@@ -64,6 +65,10 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			primaryLanguageByRepoId={{}}
 			syncStatusByRepoId={{}}
 			onOpenMetrics={noop}
+			orchestratorSessions={[]}
+			onNewOrchestratorSession={noop}
+			creatingOrchestrator={false}
+			onSelectOrchestratorSession={noop}
 			{...overrides}
 		/>,
 	);

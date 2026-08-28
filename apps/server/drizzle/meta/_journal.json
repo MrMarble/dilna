@@ -50,6 +50,13 @@
 			"when": 1787922167714,
 			"tag": "0006_nostalgic_northstar",
 			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "6",
+			"when": 1787940081765,
+			"tag": "0007_remarkable_zodiak",
+			"breakpoints": true
 		}
 	]
 }

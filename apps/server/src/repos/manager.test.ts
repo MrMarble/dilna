@@ -198,4 +198,31 @@ describe("RepoManager", () => {
 
 		await repoManager.delete(repo.id);
 	});
+
+	describe("ensureOrchestratorRepo", () => {
+		it("creates the meta-repo on first call with a real defaultBranch ref", async () => {
+			const repo = await repoManager.ensureOrchestratorRepo();
+			expect(repo.slug).toBe("_dilna-orchestrator");
+			expect(repo.defaultBranch).toBe("main");
+			const { stdout } = await git(["rev-parse", "refs/heads/main"], {
+				cwd: repo.path,
+			});
+			expect(stdout.trim()).toBeTruthy();
+		});
+
+		it("is idempotent — returns the same repo on a second call", async () => {
+			const first = await repoManager.ensureOrchestratorRepo();
+			const second = await repoManager.ensureOrchestratorRepo();
+			expect(second.id).toBe(first.id);
+			expect(second.path).toBe(first.path);
+		});
+
+		it("is excluded from list()", async () => {
+			await repoManager.ensureOrchestratorRepo();
+			const repos = await repoManager.list();
+			expect(
+				repos.find((r) => r.slug === "_dilna-orchestrator"),
+			).toBeUndefined();
+		});
+	});
 });

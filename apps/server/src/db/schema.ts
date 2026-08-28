@@ -19,6 +19,9 @@ export const sessions = sqliteTable("sessions", {
 	worktreeDirName: text("worktree_dir_name").notNull(),
 	branchName: text("branch_name").notNull(),
 	agentType: text("agent_type").notNull().default("pi"),
+	/** "session" | "orchestrator" (packages/shared's SessionKind) — see
+	 * ADR-0021. Every pre-existing row defaults to "session". */
+	kind: text("kind").notNull().default("session"),
 	title: text("title").notNull().default("New session"),
 	status: text("status").notNull().default("idle"),
 	/** Session-lifetime token totals, accumulated turn by turn (see
