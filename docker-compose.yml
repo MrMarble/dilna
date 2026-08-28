@@ -4,12 +4,20 @@ services:
     ports:
       - "${PORT:-3001}:3001"
     environment:
-      # Claude backend auth (ADR-0005 host-passthrough, extended to the
-      # Claude Agent SDK): generate with `claude setup-token` on a machine
-      # with a Pro/Max subscription, then set it here (or in a .env file).
-      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}
-      # Alternative to CLAUDE_CODE_OAUTH_TOKEN: a metered API key.
+      # Selects the LLM provider/model for every session on this instance —
+      # one global choice for the whole dilna instance, not a per-session
+      # setting (ADR-0020). Both are required: the server refuses to start
+      # if either is unset or invalid, and there is no default. Valid
+      # DILNA_PROVIDER values: anthropic, deepseek, moonshotai, zai.
+      - DILNA_PROVIDER=${DILNA_PROVIDER:-}
+      - DILNA_MODEL=${DILNA_MODEL:-}
+      # Provider API keys (ADR-0005 host-passthrough): every provider,
+      # including Anthropic, authenticates via a plain API key — set only
+      # the one matching DILNA_PROVIDER.
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - ZAI_API_KEY=${ZAI_API_KEY:-}
       # GitHub CLI auth (ADR-0013, extends ADR-0005 host-passthrough):
       # generate with `gh auth login` then `gh auth token` on a machine
       # where you already have `gh` set up, or create a classic PAT at
@@ -18,7 +26,7 @@ services:
       # repos). gh reads this directly on every invocation — no
       # `gh auth login` inside the container, no mount needed. Shared by
       # every session/repo, same single-tenant model as the SSH key and
-      # Claude token above.
+      # provider API keys above.
       - GH_TOKEN=${GH_TOKEN:-}
       # Set these to your host user's `id -u`/`id -g` if the SSH mount below
       # fails to authenticate — the container runs as an unprivileged user

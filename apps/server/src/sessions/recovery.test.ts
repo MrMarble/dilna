@@ -3,25 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
-import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getDb } from "../db";
-import {
-	messages as messagesTable,
-	sessions as sessionsTable,
-} from "../db/schema";
+import { messages as messagesTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
 import { sessionManager } from "./manager";
-
-// The transcript reader is the only SDK surface boot recovery touches; mock
-// it rather than hand-crafting Claude's on-disk JSONL layout (an SDK
-// internal that has no compatibility contract).
-vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
-	const actual =
-		await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
-	return { ...actual, getSessionMessages: vi.fn() };
-});
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -52,7 +38,7 @@ afterAll(() => {
 	rmSync(fixtureRepo, { recursive: true, force: true });
 });
 
-/** Insert the same placeholder row sendMessage writes at send time. */
+/** Insert the same placeholder row `beginTurn` writes at send time. */
 function insertPendingPlaceholder(sessionId: string, text: string): string {
 	const id = `pending-user-${sessionId}`;
 	getDb()
@@ -68,59 +54,23 @@ function insertPendingPlaceholder(sessionId: string, text: string): string {
 	return id;
 }
 
-const transcriptEntry = (
-	type: "user" | "assistant",
-	uuid: string,
-	text: string,
-) => ({
-	type,
-	uuid,
-	message: { role: type, content: [{ type: "text", text }] },
-});
-
 /**
- * Boot-time recovery of turns interrupted by a server death (ADR-0014):
- * resetAllToIdle must backfill from the agent's transcript and never delete
- * the user's message.
+ * Boot-time recovery of turns interrupted by a server death (ADR-0014). pi's
+ * in-process `Agent` keeps no independent record of an interrupted turn (no
+ * transcript file to backfill from, unlike Claude — an accepted regression,
+ * see ADR-0020's Consequences), so `resetAllToIdle` always promotes the
+ * pending placeholder rather than conditionally backfilling.
  */
 describe("resetAllToIdle recovery", () => {
-	it("backfills an interrupted turn from the transcript and drops the placeholder", async () => {
-		const repo = await repoManager.clone(fixtureRepo, `recover-${Date.now()}`);
-		const session = await sessionManager.create(repo.id);
-		getDb()
-			.update(sessionsTable)
-			.set({ agentSessionId: "11111111-1111-4111-8111-111111111111" })
-			.where(eq(sessionsTable.id, session.id))
-			.run();
-		const pendingId = insertPendingPlaceholder(session.id, "add a healthcheck");
-		await sessionManager.setStatus(session.id, "working");
-
-		vi.mocked(getSessionMessages).mockResolvedValueOnce([
-			transcriptEntry("user", "u-1", "add a healthcheck"),
-			transcriptEntry("assistant", "a-1", "Added it to routes."),
-		] as never);
-
-		await sessionManager.resetAllToIdle();
-
-		expect((await sessionManager.get(session.id))?.status).toBe("idle");
-		const messages = await sessionManager.getMessages(session.id);
-		expect(messages.map((m) => m.id)).toEqual(["u-1", "a-1"]);
-		expect(messages.map((m) => m.id)).not.toContain(pendingId);
-
-		await sessionManager.delete(session.id);
-		await repoManager.delete(repo.id);
-	});
-
-	it("promotes the placeholder when the turn died before the init handshake", async () => {
+	it("promotes the pending placeholder to a permanent row, preserving its content", async () => {
 		const repo = await repoManager.clone(fixtureRepo, `promote-${Date.now()}`);
-		// No agentSessionId — the interrupted turn never got its init message,
-		// so there is no transcript to backfill from.
 		const session = await sessionManager.create(repo.id);
 		const pendingId = insertPendingPlaceholder(session.id, "hello there");
 		await sessionManager.setStatus(session.id, "working");
 
 		await sessionManager.resetAllToIdle();
 
+		expect((await sessionManager.get(session.id))?.status).toBe("idle");
 		const messages = await sessionManager.getMessages(session.id);
 		expect(messages).toHaveLength(1);
 		const [msg] = messages;
@@ -135,29 +85,15 @@ describe("resetAllToIdle recovery", () => {
 		await repoManager.delete(repo.id);
 	});
 
-	it("keeps the placeholder content even when the transcript is unreadable", async () => {
-		const repo = await repoManager.clone(fixtureRepo, `unread-${Date.now()}`);
+	it("is a no-op for a session with no pending placeholder", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `noop-${Date.now()}`);
 		const session = await sessionManager.create(repo.id);
-		getDb()
-			.update(sessionsTable)
-			.set({ agentSessionId: "22222222-2222-4222-8222-222222222222" })
-			.where(eq(sessionsTable.id, session.id))
-			.run();
-		const pendingId = insertPendingPlaceholder(session.id, "refactor auth");
-		await sessionManager.setStatus(session.id, "working");
-
-		vi.mocked(getSessionMessages).mockRejectedValueOnce(
-			new Error("ENOENT: transcript gone"),
-		);
+		await sessionManager.setStatus(session.id, "starting");
 
 		await sessionManager.resetAllToIdle();
 
-		const messages = await sessionManager.getMessages(session.id);
-		expect(messages).toHaveLength(1);
-		expect(messages[0]?.parts).toEqual([
-			{ type: "text", text: "refactor auth" },
-		]);
-		expect(messages[0]?.id).not.toBe(pendingId);
+		expect((await sessionManager.get(session.id))?.status).toBe("idle");
+		expect(await sessionManager.getMessages(session.id)).toEqual([]);
 
 		await sessionManager.delete(session.id);
 		await repoManager.delete(repo.id);

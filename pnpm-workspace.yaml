@@ -3,6 +3,12 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  # Transitive deps of pi-ai's google/google-vertex provider support
+  # (unused — dilna's provider allowlist is anthropic/deepseek/moonshotai/
+  # zai only, see agents/providerConfig.ts). Their build scripts aren't
+  # needed for anything dilna actually imports.
+  '@google/genai': false
+  protobufjs: false
   better-sqlite3: true
   esbuild: true
 

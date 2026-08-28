@@ -37,22 +37,6 @@ export function getDataDir(): string {
 	return resolveDataDir();
 }
 
-// Claude Code's own session/config storage (`~/.claude` by default: its
-// transcripts, resumable-session index, etc. — see claude.ts's
-// CLAUDE_SCRATCH_WRITABLE_PATHS) must live inside dilna's own persistent
-// volume, not under $HOME. In the reference Docker/Kubernetes deployment
-// only DILNA_DATA_DIR is a mounted volume (ADR-0009); anything under $HOME
-// is wiped on every pod restart while dilna's own SQLite rows (which
-// persist `agentSessionId` — see SessionManager.ensureStarted) still point
-// at a now-nonexistent transcript, producing "No conversation found with
-// session ID: ..." forever after. Set here, at this module's load time
-// rather than in index.ts, because every other module that needs this
-// (claude.ts, via its `../db` import) transitively imports this file
-// first, guaranteeing the env var is set before anything reads it. `??=`
-// respects an operator who's already set CLAUDE_CONFIG_DIR explicitly
-// (host-passthrough per ADR-0005/0009).
-process.env.CLAUDE_CONFIG_DIR ??= path.join(getDataDir(), "claude-home");
-
 export function getDbPath(): string {
 	return path.join(getDataDir(), "db", "dilna.sqlite");
 }

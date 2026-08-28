@@ -17,7 +17,7 @@ dilna is a self-hosted, web-based workspace for running AI coding agents against
 
 Coding agents are great until you close the lid. dilna moves the agent, the worktree, and the chat onto a server you control, so work continues whether or not your machine is on.
 
-- 🖥️ **Server-side agents** — powered by the Claude Agent SDK, running against real git worktrees
+- 🖥️ **Server-side agents** — powered by pi-ai/pi-agent-core, running against real git worktrees
 - 🌿 **One worktree per session** — parallel sessions, parallel branches, zero collisions
 - 💬 **Resumable chat** — pick up any session from any browser, any time
 - 🔒 **Self-hosted** — your repos, your data, your infra
@@ -28,7 +28,7 @@ Coding agents are great until you close the lid. dilna moves the agent, the work
 docker compose up
 ```
 
-Set `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) in your environment or a `.env` file, mount your SSH keys, and you're driving agents from a browser tab. Set `GH_TOKEN` too if you want agents to open PRs or read/comment on issues via the `gh` CLI — generate one with `gh auth login` then `gh auth token` on a machine where you already have `gh` set up, or create a classic PAT at https://github.com/settings/tokens with `repo` scope (add `workflow` if agents need to edit workflow files, `read:org` for org-owned repos).
+Set `DILNA_PROVIDER` and `DILNA_MODEL` (one global choice for the whole instance — valid providers are `anthropic`, `deepseek`, `moonshotai`, `zai`) plus the matching API key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, or `ZAI_API_KEY`) in your environment or a `.env` file, mount your SSH keys, and you're driving agents from a browser tab. Set `GH_TOKEN` too if you want agents to open PRs or read/comment on issues via the `gh` CLI — generate one with `gh auth login` then `gh auth token` on a machine where you already have `gh` set up, or create a classic PAT at https://github.com/settings/tokens with `repo` scope (add `workflow` if agents need to edit workflow files, `read:org` for org-owned repos).
 
 ## Local development
 

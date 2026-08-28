@@ -13,15 +13,15 @@ A git worktree linked to one branch of a **Repo**, created from the Repo's defau
 _Avoid_: checkout, working copy, clone (a clone makes a Repo, not a Worktree)
 
 **Session**:
-A resumable chat conversation with an AI agent, bound 1:1 to a single **Worktree**. A Session targets one feature or bugfix. Parallel work is done by opening parallel Sessions, each on its own Worktree. A Session has a **title** shown in the UI; until the first message is sent the title is generic, afterwards it is taken from the agent's auto-derived title. The git branch underlying a Session is internal plumbing — the user never sees or names it; the user asks the agent to push to whatever remote branch they choose.
+A resumable chat conversation with an AI agent, bound 1:1 to a single **Worktree**. A Session targets one feature or bugfix. Parallel work is done by opening parallel Sessions, each on its own Worktree. A Session has a **title** shown in the UI. The prior Claude-CLI-backed Agent auto-derived a title from the transcript after the first message; the current pi-agent-core-based Agent has no equivalent (no CLI, no transcript summary — see ADR-0020), so a Session's title stays generic indefinitely under it. The git branch underlying a Session is internal plumbing — the user never sees or names it; the user asks the agent to push to whatever remote branch they choose.
 _Avoid_: conversation, thread, run
 
 **Agent**:
-The process that executes AI work for a **Session** against its **Worktree**, independent of which **Provider**/**Model** it talks to. Today an Agent is still the Claude Agent SDK (`apps/server/src/agents/claude.ts`); see ADR-0011 for why dilna standardized on a single backend. ADR-0020 has decided to replace it with a pi-ai/pi-agent-core-based adapter (`pi.ts`) — not yet built, so this sentence still describes `claude.ts` until that execution lands.
+The process that executes AI work for a **Session** against its **Worktree**, independent of which **Provider**/**Model** it talks to. An Agent is a pi-ai/pi-agent-core-based adapter (`apps/server/src/agents/pi.ts`), built on `pi-agent-core`'s bare `Agent` class; see ADR-0011 for why dilna standardizes on a single backend file (not a `handle.kind` union) and ADR-0020 for the decision to replace the prior Claude-Agent-SDK-backed Agent with this one.
 _Avoid_: model, assistant, bot, backend (ambiguous between Agent and Provider — see Provider)
 
 **Provider**:
-The LLM vendor an Agent talks to — Anthropic, DeepSeek, Kimi (Moonshot), or Zhipu (GLM). Selected via a single global env var for the whole dilna instance, not a per-session choice; see ADR-0020 (not yet built — see the Agent entry). Distinct from the **Agent** itself: one Agent implementation is meant to serve any configured Provider, rather than one adapter per Provider.
+The LLM vendor an Agent talks to — Anthropic, DeepSeek, Kimi (Moonshot), or Zhipu (GLM). Selected via a single global env var for the whole dilna instance, not a per-session choice; see ADR-0020. Distinct from the **Agent** itself: one Agent implementation is meant to serve any configured Provider, rather than one adapter per Provider.
 _Avoid_: backend (see Agent)
 
 **Model**:

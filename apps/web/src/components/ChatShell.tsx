@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
 import { AgentIcon } from "@/lib/agent-icons";
-import { AGENT_LABELS } from "@/lib/agent-labels";
+import { agentLabel } from "@/lib/agent-labels";
 import { getToolMeta } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -646,7 +646,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 						placeholder={
 							working
 								? `${thinkingWord}…`
-								: `Message ${AGENT_LABELS[session.agentType]}…`
+								: `Message ${agentLabel(session.agentType)}…`
 						}
 						rows={2}
 						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-base outline-none"
@@ -729,7 +729,7 @@ function ChatMessageRow({
 	thinkingChunk?: string;
 	turnActivity?: TurnActivity | null;
 }) {
-	const name = role === "user" ? "You" : AGENT_LABELS[agentType];
+	const name = role === "user" ? "You" : agentLabel(agentType);
 
 	// Group consecutive tool call parts into collapsible sections.
 	const rows: React.ReactNode[] = [];

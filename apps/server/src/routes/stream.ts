@@ -39,17 +39,9 @@ streamRoute.get("/", (c) => {
 
 		// 2. Subscribe to live cross-session status changes, then pump.
 		await runSseLoop(stream, c.req.raw.signal, (push) => {
-			const unsubscribe = sessionManager.subscribeAll((ev) => {
+			return sessionManager.subscribeAll((ev) => {
 				push({ event: ev.type, data: JSON.stringify(ev) });
 			});
-			// 2b. Kick a background account-usage pull (throttled inside the
-			//     manager) so a tab opened after the server sat idle gets real
-			//     windows shortly after connect instead of waiting for the next
-			//     turn to finish. Placed after subscribeAll so the resulting
-			//     `rate_limits` broadcast can't fall between snapshot and
-			//     subscription.
-			sessionManager.pokeRateLimitRefresh();
-			return unsubscribe;
 		});
 	});
 });

@@ -5,12 +5,25 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { validateProviderConfig } from "./agents/providerConfig";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
 import { repoManager } from "./repos/manager";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
 import { streamRoute } from "./routes/stream";
 import { sessionManager } from "./sessions/manager";
+
+// Fail fast (ADR-0020): every session on this instance talks to whichever
+// LLM provider/model DILNA_PROVIDER/DILNA_MODEL select — a misconfiguration
+// here used to only surface on a user's first message (claude.ts inherited
+// process.env wholesale and never validated ANTHROPIC_API_KEY/CLI auth
+// existed before spawning); refusing to start with a specific error is a
+// strict improvement, not just parity.
+const providerConfig = validateProviderConfig(process.env);
+if (!providerConfig.ok) {
+	console.error(`[dilna] startup configuration error: ${providerConfig.error}`);
+	process.exit(1);
+}
 
 const app = new Hono();
 app.use(logger());
