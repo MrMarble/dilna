@@ -8,6 +8,8 @@ import {
 	ArrowDown,
 	ArrowUp,
 	BarChart3,
+	Bell,
+	BellOff,
 	ChevronRight,
 	FolderGit2,
 	PanelLeftClose,
@@ -98,6 +100,14 @@ type Props = {
 	onNewOrchestratorSession: () => void;
 	creatingOrchestrator: boolean;
 	onSelectOrchestratorSession: (session: SessionView) => void;
+	/** Per-session completed-turn counts (issue #52) — session id → how many
+	 * turns finished while that session wasn't focused. Rendered as small
+	 * badges on the session rows. Absent ids mean 0/read. */
+	unreadBySessionId: Record<string, number>;
+	/** Whether browser Notifications are enabled (issue #52). Drives the
+	 * bell's state and tooltip. */
+	notificationsEnabled: boolean;
+	toggleNotifications: () => Promise<boolean>;
 };
 
 export function Sidebar({
@@ -127,8 +137,15 @@ export function Sidebar({
 	onNewOrchestratorSession,
 	creatingOrchestrator,
 	onSelectOrchestratorSession,
+	unreadBySessionId,
+	notificationsEnabled,
+	toggleNotifications,
 }: Props) {
 	const isSheet = variant === "sheet";
+	const totalUnread = Object.values(unreadBySessionId).reduce(
+		(a, b) => a + b,
+		0,
+	);
 	return (
 		<aside
 			className={cn(
@@ -143,7 +160,13 @@ export function Sidebar({
 					<FolderGit2 className="size-5 text-muted-foreground" />
 					<span className="font-semibold tracking-tight">dilna</span>
 					<AppVersion />
-					<ThemeToggle className="ml-auto" />
+					<NotificationsToggle
+						onClick={toggleNotifications}
+						enabled={notificationsEnabled}
+						unreadTotal={totalUnread}
+						className="ml-auto"
+					/>
+					<ThemeToggle />
 					{onCollapse && (
 						<button
 							type="button"
@@ -198,12 +221,28 @@ export function Sidebar({
 					/>
 				)}
 
+				{isSheet && (
+					<div className="flex items-center justify-between border-b border-sidebar-border px-4 py-2">
+						<NotificationsToggle
+							onClick={toggleNotifications}
+							enabled={notificationsEnabled}
+							unreadTotal={totalUnread}
+						/>
+						<span className="text-xs text-muted-foreground">
+							{totalUnread > 0
+								? `${totalUnread} finished turn${totalUnread === 1 ? "" : "s"}`
+								: "no new turns"}
+						</span>
+					</div>
+				)}
+
 				<OrchestratorSection
 					sessions={orchestratorSessions}
 					selectedSessionId={selectedSessionId}
 					creating={creatingOrchestrator}
 					onNew={onNewOrchestratorSession}
 					onSelect={onSelectOrchestratorSession}
+					unreadBySessionId={unreadBySessionId}
 				/>
 
 				<ReposSection
@@ -219,6 +258,7 @@ export function Sidebar({
 					onNew={onNewRepo}
 					primaryLanguageByRepoId={primaryLanguageByRepoId}
 					syncStatusByRepoId={syncStatusByRepoId}
+					unreadBySessionId={unreadBySessionId}
 					isSheet={isSheet}
 				/>
 
@@ -226,6 +266,7 @@ export function Sidebar({
 					sessions={backgroundSessions}
 					repoSlugById={repoSlugById}
 					onSelect={onSelectSession}
+					unreadBySessionId={unreadBySessionId}
 				/>
 			</div>
 
@@ -271,12 +312,14 @@ function OrchestratorSection({
 	creating,
 	onNew,
 	onSelect,
+	unreadBySessionId,
 }: {
 	sessions: SessionView[];
 	selectedSessionId: string | null;
 	creating: boolean;
 	onNew: () => void;
 	onSelect: (session: SessionView) => void;
+	unreadBySessionId: Record<string, number>;
 }) {
 	return (
 		<div className="border-b border-sidebar-border">
@@ -302,6 +345,7 @@ function OrchestratorSection({
 								<StatusDot status={session.status} />
 								<Sparkles className="size-3.5 shrink-0" />
 								<span className="truncate">{session.title}</span>
+								<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
 							</button>
 						</li>
 					))}
@@ -333,6 +377,7 @@ function ReposSection({
 	onNew,
 	primaryLanguageByRepoId,
 	syncStatusByRepoId,
+	unreadBySessionId,
 	isSheet,
 }: {
 	repos: Repo[];
@@ -347,6 +392,7 @@ function ReposSection({
 	onNew: () => void;
 	primaryLanguageByRepoId: Record<string, string | undefined>;
 	syncStatusByRepoId: Record<string, RepoSyncStatus | undefined>;
+	unreadBySessionId: Record<string, number>;
 	isSheet: boolean;
 }) {
 	return (
@@ -407,6 +453,7 @@ function ReposSection({
 											sessions={sessionsByRepoId[repo.id] ?? []}
 											selectedSessionId={selectedSessionId}
 											onSelect={onSelectSession}
+											unreadBySessionId={unreadBySessionId}
 										/>
 									)}
 								</li>
@@ -423,10 +470,12 @@ function RepoSessionsSubmenu({
 	sessions,
 	selectedSessionId,
 	onSelect,
+	unreadBySessionId,
 }: {
 	sessions: SessionView[];
 	selectedSessionId: string | null;
 	onSelect: (session: SessionView) => void;
+	unreadBySessionId: Record<string, number>;
 }) {
 	if (sessions.length === 0) {
 		return (
@@ -451,6 +500,7 @@ function RepoSessionsSubmenu({
 					>
 						<StatusDot status={session.status} />
 						<span className="truncate">{session.title}</span>
+						<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
 					</button>
 				</li>
 			))}
@@ -484,6 +534,70 @@ function SyncBadge({ status }: { status: RepoSyncStatus | undefined }) {
 	);
 }
 
+/**
+ * Small count chip rendered against a session row (issue #52) when turns
+ * finished while that session wasn't focused. Renders nothing when there are
+ * none, so a read session stays visually clean.
+ */
+function UnreadBadge({ count }: { count: number }) {
+	if (count <= 0) return null;
+	return (
+		<span
+			className="ml-auto shrink-0 rounded-full bg-primary px-1.5 py-0.5 text-[0.6875rem] font-semibold leading-none text-primary-foreground"
+			title={`${count} finished turn${count === 1 ? "" : "s"} while you weren't looking`}
+		>
+			{count}
+		</span>
+	);
+}
+
+/**
+ * The header bell + notifications toggle (issue #52). Bell icon reflects
+ * whether system Notifications are enabled; the badge shows the aggregate
+ * unread count (also rendered, for mobile, next to the bell in the sheet
+ * variant). Clicking fires the toggle, which requests OS permission on first
+ * enable.
+ */
+function NotificationsToggle({
+	onClick,
+	enabled,
+	unreadTotal,
+	className,
+}: {
+	onClick: () => void;
+	enabled: boolean;
+	unreadTotal: number;
+	className?: string;
+}) {
+	const Icon = enabled ? Bell : BellOff;
+	const permission =
+		typeof Notification !== "undefined"
+			? Notification.permission
+			: "unsupported";
+	let title = "Notify me when a session's turn completes";
+	if (enabled) title = "Turn off session-completion notifications";
+	else if (permission === "denied")
+		title = "Notifications blocked in the browser — allow them to enable";
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			title={title}
+			className={cn(
+				"relative rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground",
+				className,
+			)}
+		>
+			<Icon className="size-4" />
+			{unreadTotal > 0 && (
+				<span className="absolute -right-0.5 -top-0.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-1 text-[0.625rem] font-semibold leading-none text-primary-foreground">
+					{unreadTotal}
+				</span>
+			)}
+		</button>
+	);
+}
+
 /** Shape-matched placeholder rows shown while the initial repo list loads. */
 function RepoListSkeleton() {
 	return (
@@ -513,10 +627,12 @@ function BackgroundAgentsSection({
 	sessions,
 	repoSlugById,
 	onSelect,
+	unreadBySessionId,
 }: {
 	sessions: SessionView[];
 	repoSlugById: Record<string, string>;
 	onSelect: (session: SessionView) => void;
+	unreadBySessionId: Record<string, number>;
 }) {
 	if (sessions.length === 0) return null;
 
@@ -542,6 +658,7 @@ function BackgroundAgentsSection({
 								<span className="flex items-center gap-1.5 overflow-hidden">
 									<StatusDot status={session.status} />
 									<span className="truncate">{session.title}</span>
+									<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
 								</span>
 								<span className="truncate pl-3 text-xs text-muted-foreground">
 									{repoSlugById[session.repoId] ?? session.repoId}
