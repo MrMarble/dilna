@@ -273,6 +273,17 @@ Found a workaround for an environment quirk or a project-specific gotcha (a flak
 OUTPUT STYLE
 Everything you write between tool calls lands as a chat message in dilna's UI, read back asynchronously — not a terminal someone is watching live. Skip narration ("Let me check X", "Now I'll look at Y") and preamble ("Great question!", "Sure, I can help with that") — the tool call already shows the step, so start with the answer. Match length to what happened: a one-line fix gets a one-line summary. Save detail for where it's actually read afterward — a PR description, a commit message, a code comment on a non-obvious choice — not chat narration.`;
 
+/**
+ * Appended to the system prompt only when `SessionManager.create`'s
+ * best-effort `codegraph init --yes` actually produced a `.codegraph/` dir
+ * in this Worktree (checked in `startPi`) — never asserted unconditionally,
+ * so a Session where init failed or the binary is missing doesn't get
+ * pointed at a tool that isn't there. Kept to one short paragraph: pi.ts's
+ * system prompt was already trimmed twice (#115, #117) for overstepping and
+ * verbosity, and this shouldn't reopen that.
+ */
+const CODEGRAPH_SYSTEM_PROMPT_NOTE = `\n\nCODEGRAPH\nThis worktree has a codegraph index (\`.codegraph/\`, built at Session creation and kept in sync automatically). For "who calls X" / "what does X touch" questions on unfamiliar code, prefer \`codegraph explore <symbol-or-path>\` over grep — one call returns source plus callers/callees instead of several rounds of grep. Fall back to grep/read when codegraph doesn't have what you need.`;
+
 function repoMemorySystemPromptSection(memoryContent: string): string {
 	if (!memoryContent) return "";
 	return `\n\n## Repo memory\n\nFacts a previous session recorded about this Repo (not this Worktree — every Session gets an isolated Worktree, but memory carries over since it's scoped to the Repo). Use the \`update_repo_memory\` tool to add, edit, or remove entries; that tool replaces this whole section, so read it here before editing it.\n\n${memoryContent}`;
@@ -429,12 +440,15 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 	const nestedInCheckout = dataDir.startsWith(`${workspaceRoot}${path.sep}`);
 	const repoMemoryContent = await getRepoMemory(opts.repoId);
 
+	const hasCodegraph = existsSync(path.join(opts.worktreePath, ".codegraph"));
+
 	const systemPrompt =
 		DILNA_AGENT_CONTEXT +
 		repoMemorySystemPromptSection(repoMemoryContent) +
 		(nestedInCheckout
 			? `\n\nNote: this worktree happens to live nested inside dilna's own checkout on the host filesystem — the read/grep/find/ls tools are confined to this worktree regardless, so dilna's own project files are not reachable from here.`
-			: "");
+			: "") +
+		(hasCodegraph ? CODEGRAPH_SYSTEM_PROMPT_NOTE : "");
 
 	const bashWritablePaths = [
 		opts.worktreePath,
