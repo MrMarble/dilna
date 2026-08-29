@@ -239,7 +239,9 @@ describe("extractTitleFromReply", () => {
 			"Fix the login flow",
 		);
 		expect(extractTitleFromReply("'Add billing'")).toBe("Add billing");
-		expect(extractTitleFromReply("\u201cAdd billing\u201d")).toBe("Add billing");
+		expect(extractTitleFromReply("\u201cAdd billing\u201d")).toBe(
+			"Add billing",
+		);
 	});
 
 	it("preserves the body when the reply is already clean", () => {
