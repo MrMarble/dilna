@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.14.0](https://github.com/MrMarble/dilna/compare/v0.13.1...v0.14.0) (2026-08-29)
+
+
+### Features
+
+* **agents:** index each Worktree with codegraph for pi Sessions ([#119](https://github.com/MrMarble/dilna/issues/119)) ([1451687](https://github.com/MrMarble/dilna/commit/14516878d38fa164e6659e735980c3d0394749f1))
+* **web:** notify on turn completion (issue [#52](https://github.com/MrMarble/dilna/issues/52)) ([#112](https://github.com/MrMarble/dilna/issues/112)) ([23f4071](https://github.com/MrMarble/dilna/commit/23f4071decd9355f3a52ff95aa604b8bc5eaf5af))
+
+
+### Bug Fixes
+
+* **agents:** curb pi's overstepping and trim its system prompt ([#117](https://github.com/MrMarble/dilna/issues/117)) ([600664b](https://github.com/MrMarble/dilna/commit/600664b8918c91ddd7fa7380555c429382e03795))
+* **sessions:** derive a short title from the first prompt for pi Sessions ([#111](https://github.com/MrMarble/dilna/issues/111)) ([9622d0e](https://github.com/MrMarble/dilna/commit/9622d0e404877b616a2c940f5b0abe6c22e6f848))
+
 ## [0.13.1](https://github.com/MrMarble/dilna/compare/v0.13.0...v0.13.1) (2026-08-28)
 
 
