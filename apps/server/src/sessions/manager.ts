@@ -21,6 +21,7 @@ import { nanoid } from "nanoid";
 import {
 	chatPi,
 	dilnaMessagesToInitialState,
+	generateSessionTitle,
 	type OrchestratorDeps,
 	type PiHandle,
 	type PiStartOptions,
@@ -65,6 +66,17 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		createdAt: row.createdAt,
 		lastActiveAt: row.lastActiveAt,
 	};
+}
+
+/**
+ * The framework-generated placeholder every ordinary (non-orchestrator)
+ * Session is created with, before its first turn's title derivation runs
+ * (see {@link SessionManager.maybeDeriveTitle}). `create()` and the
+ * first-turn guard share this so they can stay in lockstep about what
+ * "still needs a derived title" means.
+ */
+function defaultSessionTitle(id: string): string {
+	return `Session ${id.slice(0, 4)}`;
 }
 
 function toView(s: Session): SessionView {
@@ -490,12 +502,13 @@ class SessionManager {
 			branchName,
 			agentType,
 			kind,
-			// dilna's own generic placeholder — pi has no auto-derived-title
-			// equivalent (no CLI, no transcript summary), so sessions keep this
-			// indefinitely rather than syncing to something the agent picked;
-			// see CONTEXT.md's Session entry.
-			title:
-				kind === "orchestrator" ? "Orchestrator" : `Session ${id.slice(0, 4)}`,
+			// Framework-generated placeholder (orchestrator Sessions keep their
+			// fixed "Orchestrator" title forever). For ordinary pi Sessions this is
+			// temporary: it's replaced on the Session's first turn by
+			// maybeDeriveTitle, which asks the pi agent itself for a short title
+			// from the user's first prompt (pi has no auto-derived-title
+			// equivalent, unlike the retired Claude backend — see ADR-0020).
+			title: kind === "orchestrator" ? "Orchestrator" : defaultSessionTitle(id),
 			status: "idle",
 			usage: { inputTokens: 0, outputTokens: 0 },
 			createdAt: now,
@@ -588,6 +601,39 @@ class SessionManager {
 			.run();
 		const view = await this.getView(id);
 		if (view) this.broadcastGlobal({ type: "session_status", session: view });
+	}
+
+	/**
+	 * Replace a Session's generic placeholder title with a short, meaningful one
+	 * derived from its very first prompt — best-effort, and only for the first
+	 * turn of an ordinary (non-orchestrator) pi Session.
+	 *
+	 * This closes the title gap left when the retired Claude backend (which
+	 * auto-derived a title from its transcript summary) was replaced with the
+	 * pi stack (no CLI, no transcript summary — see ADR-0020): the framework
+	 * still only ever writes the generic placeholder at creation time, so
+	 * without this the title would stay generic forever. Rather than have the
+	 * framework invent a title from rules, it calls the pi agent itself via
+	 * `generateSessionTitle` — a small, isolated model round-trip on the
+	 * Session's own provider/model.
+	 *
+	 * Guarded so it only fires once: it's a no-op for anything that isn't a
+	 * `session`-kind Session (an orchestrator Session keeps its fixed
+	 * "Orchestrator" title) and for any Session whose title has already been
+	 * replaced (i.e. is no longer the `defaultSessionTitle` placeholder).
+	 * Because the placeholder guard is what makes it idempotent, a failed
+	 * derivation on the first turn naturally retries on a later turn — it merely
+	 * stays on the placeholder until one succeeds.
+	 */
+	private async maybeDeriveTitle(
+		session: Session,
+		firstPrompt: string,
+	): Promise<void> {
+		if (session.kind !== "session") return;
+		if (session.title !== defaultSessionTitle(session.id)) return;
+		const title = await generateSessionTitle(session.id, firstPrompt);
+		if (!title) return;
+		await this.setTitle(session.id, title);
 	}
 
 	async setStatus(id: string, status: Session["status"]): Promise<void> {
@@ -923,6 +969,19 @@ class SessionManager {
 		try {
 			const session = await this.get(id);
 			if (!session) return; // beginTurn already checked this exists
+
+			// Best-effort, fire-and-forget: on a Session's very first turn, ask
+			// the pi agent itself for a short title derived from this first
+			// prompt, replacing the generic framework placeholder the moment it's
+			// ready. Fired without awaiting so it never delays the real turn
+			// (`maybeDeriveTitle`'s tiny isolated model call runs in parallel to
+			// it), and any failure is logged and swallowed — the Session simply
+			// keeps its placeholder until a later turn retries it.
+			this.maybeDeriveTitle(session, text).catch((err) => {
+				console.error(
+					`[sessions] title derivation for ${id} failed: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
 
 			let active: ActiveAgent;
 			try {
