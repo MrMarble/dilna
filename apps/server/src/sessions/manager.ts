@@ -51,6 +51,29 @@ async function git(args: string[], opts: { cwd?: string } = {}) {
 	return execFileAsync("git", args, { ...opts, maxBuffer: 50 * 1024 * 1024 });
 }
 
+/**
+ * Best-effort `codegraph init --yes` against a freshly created Worktree
+ * (see Dockerfile's `codegraph` install comment for why this is a plain CLI
+ * call, not an MCP wire-up). Failure — binary missing, unsupported repo,
+ * whatever — never blocks Session creation; it just means `startPi` won't
+ * find a `.codegraph/` dir and skips the codegraph note in the system
+ * prompt. Runs once per Worktree, not once per Repo: each Worktree checks
+ * out its own branch, and the graph is derived from that checkout's files.
+ */
+async function initCodegraph(worktreePath: string): Promise<void> {
+	try {
+		await execFileAsync("codegraph", ["init", "--yes"], {
+			cwd: worktreePath,
+			maxBuffer: 50 * 1024 * 1024,
+		});
+	} catch (err) {
+		console.error(
+			`[sessions] codegraph init failed for ${worktreePath} (continuing without it):`,
+			err,
+		);
+	}
+}
+
 function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 	return {
 		id: row.id,
@@ -492,6 +515,8 @@ class SessionManager {
 				`git worktree add failed: ${e.stderr?.trim() || e.message}`,
 			);
 		}
+
+		await initCodegraph(worktreePath);
 
 		const now = Math.floor(Date.now() / 1000);
 		const session: Session = {

@@ -145,6 +145,21 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 	&& apt-get update && apt-get install -y --no-install-recommends gh \
 	&& rm -rf /var/lib/apt/lists/*
 
+# codegraph: pre-indexes each Session's Worktree into a local code graph
+# (symbols, call graphs, imports) that pi.ts's sandboxed bash tool queries via
+# the `codegraph` CLI instead of grep-only exploration. Wired in as a plain
+# CLI rather than its documented MCP server: pi-agent-core has no MCP client,
+# and pi-coding-agent's README states this is deliberate ("No MCP. Build CLI
+# tools with READMEs, or build an extension that adds MCP support"). Installed
+# via npm rather than the project's shell installer script, since npm's global
+# bin dir is already on PATH from the base node image and the installer
+# script's own target directory isn't documented. `codegraph init --yes`
+# itself is NOT run here — it runs per-Worktree at Session creation
+# (SessionManager.create, apps/server/src/sessions/manager.ts) since the
+# graph is derived from each Worktree's own checked-out branch, not from the
+# image.
+RUN npm install -g @colbymchenry/codegraph
+
 # mise (ADR-0012): the static binary built in the build stage, copied rather
 # than re-running the installer here. Compiling a language from source (e.g.
 # mise's core `python` backend) still has no toolchain at runtime —
