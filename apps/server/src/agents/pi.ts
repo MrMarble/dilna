@@ -102,6 +102,14 @@ export type PiHandle = {
 	listeners: Set<Listener>;
 	stop: () => Promise<void>;
 	isAlive: () => boolean;
+	/** The concrete provider/model this `Agent` was constructed with (from
+	 * `resolveConfiguredModel`), captured at construction time so usage-event
+	 * recording can attribute a turn to the model the Session *actually ran
+	 * on, rather than whatever the global effective override/env happens to
+	 * be at record time — the provider/model is now web-configurable and can
+	 * change under a long-lived Session. */
+	provider: string;
+	model: string;
 	/** Always empty — pi has no subprocess to capture stderr from. Kept only
 	 * for shape-parity with `failTurn`'s `detail.stderrTail` field, which
 	 * every `turn_failed` broadcast (Claude- or pi-sourced) fills in the same
@@ -450,7 +458,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 	ensureWritablePathsExist();
 	await ensureSandboxInitialized();
 
-	const { model } = resolveConfiguredModel();
+	const { provider, modelId, model } = resolveConfiguredModel();
 
 	const gitCommonDir = resolveGitCommonDir(opts.worktreePath);
 	const workspaceRoot = findWorkspaceRoot(__dirname);
@@ -505,7 +513,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		beforeToolCall: createConfinementHook(opts.worktreePath),
 	});
 
-	return wirePiHandle(agent, opts.worktreePath);
+	return wirePiHandle(agent, opts.worktreePath, provider, modelId);
 }
 
 /**
@@ -514,7 +522,12 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
  * `startOrchestrator` so the two only differ in what actually varies
  * (system prompt, tool set, sandbox/confinement).
  */
-function wirePiHandle(agent: Agent, worktreePath: string): PiHandle {
+function wirePiHandle(
+	agent: Agent,
+	worktreePath: string,
+	provider: string,
+	model: string,
+): PiHandle {
 	const listeners = new Set<Listener>();
 	const state: NormalizeState = createNormalizeState();
 	agent.subscribe((event) => {
@@ -546,6 +559,8 @@ function wirePiHandle(agent: Agent, worktreePath: string): PiHandle {
 		listeners,
 		stop,
 		isAlive: () => !stopped,
+		provider,
+		model,
 		stderrTail: [],
 	};
 }
@@ -567,7 +582,7 @@ export type OrchestratorStartOptions = {
 export async function startOrchestrator(
 	opts: OrchestratorStartOptions,
 ): Promise<PiHandle> {
-	const { model } = resolveConfiguredModel();
+	const { provider, modelId, model } = resolveConfiguredModel();
 
 	const agent = new Agent({
 		initialState: {
@@ -581,7 +596,7 @@ export async function startOrchestrator(
 		getApiKey: (p) => getEnvApiKey(p, process.env as Record<string, string>),
 	});
 
-	return wirePiHandle(agent, opts.worktreePath);
+	return wirePiHandle(agent, opts.worktreePath, provider, modelId);
 }
 
 /**

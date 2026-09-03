@@ -30,10 +30,6 @@ import {
 	startPi,
 } from "../agents/pi";
 import {
-	effectiveModel,
-	effectiveProvider,
-} from "../agents/providerConfigStore";
-import {
 	IDLE_TIMEOUT_MS,
 	STOP_TIMEOUT_MS,
 	TURN_TIMEOUT_MS,
@@ -1074,7 +1070,7 @@ class SessionManager {
 					// replayed the turn-so-far (see subscribe).
 					active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
 				}
-				const outgoing = this.accumulateSessionUsage(id, ev);
+				const outgoing = this.accumulateSessionUsage(id, ev, handle);
 				if (outgoing.type === "turn_failed") {
 					this.lastTurnFailed.set(id, outgoing);
 				} else if (outgoing.type === "turn_activity") {
@@ -1318,6 +1314,7 @@ class SessionManager {
 	private accumulateSessionUsage(
 		sessionId: string,
 		ev: AgentStreamEvent,
+		handle: PiHandle,
 	): AgentStreamEvent {
 		if (ev.type !== "usage_update" || !ev.cumulative) return ev;
 
@@ -1345,8 +1342,8 @@ class SessionManager {
 				id: nanoid(),
 				sessionId,
 				repoId: row.repoId,
-				provider: effectiveProvider() || "unknown",
-				model: effectiveModel() || "unknown",
+				provider: handle.provider || "unknown",
+				model: handle.model || "unknown",
 				inputTokens: ev.cumulative.inputTokens,
 				outputTokens: ev.cumulative.outputTokens,
 				cacheReadTokens: ev.cumulative.cacheReadTokens ?? 0,

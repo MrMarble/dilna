@@ -75,6 +75,7 @@ export function getUsageSummary(since: number): UsageSummary {
 		.where(where)
 		.groupBy(usageEventsTable.provider, usageEventsTable.model)
 		.all() as UsageModelBreakdown[];
+	byModel.sort((a, b) => b.costUsd - a.costUsd);
 
 	return {
 		totals: totals ?? { ...ZERO_TOTALS },
