@@ -6,7 +6,10 @@ FROM node:24-bookworm-slim AS build
 ENV CI=true
 
 # python3/make/g++ are a fallback for native modules (better-sqlite3) that
-# lack a prebuilt binary for this exact node/arch combo.
+# lack a prebuilt binary for this exact node/arch combo. These packages are
+# duplicated (build-essential/python3/pkg-config/libssl-dev/zlib1g-dev) in
+# the runtime stage too, where sessions compile repos' own native modules —
+# this stage builds dilna itself.
 # git: build-info.ts shells out to it to bake the app version/commit hash/
 # commit date into the web bundle (see apps/web/vite.config.ts). Needs the
 # .git dir to actually be present in the build context too (see
@@ -118,9 +121,24 @@ FROM node:24-bookworm-slim AS runtime
 # "error while loading shared libraries: libatomic.so.1: cannot open shared
 # object file" — since node:*-bookworm-slim doesn't ship it and there's no
 # root/sudo at runtime for a session to install it itself.
+#
+# build-essential + python3 + pkg-config + dev headers (the same toolchain
+# the build stage uses to compile dilna's own native modules): ENDS the
+# "compile gap" ADR-0012 leaves open for a follow-up. Sessions run as the
+# unprivileged `node` user with no root/sudo (ADR-0010), so they can never
+# apt-get a compiler themselves, and a repo that pulls a node native module
+# (e.g. better-sqlite3) fails its `pnpm install` outright: node-gyp shells
+# out to the *system* `gcc`/`g++`/`make` and needs a `python3` on PATH,
+# none of which mise can supply (mise installs runtimes, not compilers).
+# mise's core `python` backend (per ADR-0012) has the same gap in another
+# form — `python-build` compiles CPython from source and needs
+# build-essential/libssl/zlib headers. This single addition fixes both: a
+# session pointed at such a repo can now `pnpm install`/`mise install`, not
+# just fetch runtimes.
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
 		curl unzip xz-utils jq ripgrep fd-find procps lsof libatomic1 \
+		build-essential python3 pkg-config libssl-dev zlib1g-dev \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
@@ -161,10 +179,10 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 RUN npm install -g @colbymchenry/codegraph
 
 # mise (ADR-0012): the static binary built in the build stage, copied rather
-# than re-running the installer here. Compiling a language from source (e.g.
-# mise's core `python` backend) still has no toolchain at runtime —
-# python3/make/g++ above are build-stage-only, a known follow-up if
-# requested.
+# than re-running the installer here. Runtime has a full compile toolchain
+# (build-essential/python3/pkg-config/libssl-dev/zlib1g-dev — see above) so
+# mise can now install from-source backends like its core `python` plugin
+# as well as fetch prebuilt runtimes.
 COPY --from=build /usr/local/bin/mise /usr/local/bin/mise
 
 WORKDIR /app
