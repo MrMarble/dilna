@@ -1,6 +1,50 @@
+import * as React from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
+import { Highlight, themes } from "prism-react-renderer";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+import { useIsDark } from "@/lib/use-is-dark";
+
+const LIGHT_THEME = themes.oneLight;
+const DARK_THEME = themes.oneDark;
+
+/** Extract a Prism language id from the `language-*` class react-markdown emits. */
+function languageFrom(source?: string): string | null | undefined {
+	if (!source) return null;
+	return source.match(/\blanguage-([\w-]+)/)?.[1];
+}
+
+/** Bodies of a fenced block rendered as prism-colored tokens, wrapped in a
+ *  semantic <code> whose container <pre> (below) owns the block chrome. */
+function PrismCode({
+	language,
+	code,
+}: {
+	language: string;
+	code: string;
+}) {
+	const dark = useIsDark();
+	const theme = dark ? DARK_THEME : LIGHT_THEME;
+
+	return (
+		<code lang={language}>
+			<Highlight code={code} language={language} theme={theme}>
+				{({ tokens, getTokenProps }) =>
+					tokens.map((line, lineIdx) => (
+						// Token lines carry no stable identity and grow during streaming,
+						// so index keys are the only choice.
+						<React.Fragment key={lineIdx}>
+							{line.map((token, tokenIdx) => (
+								<span key={tokenIdx} {...getTokenProps({ token })} />
+							))}
+							{"\n"}
+						</React.Fragment>
+					))
+				}
+			</Highlight>
+		</code>
+	);
+}
 
 const components: Components = {
 	p: ({ className, ...props }) => (
@@ -70,28 +114,39 @@ const components: Components = {
 			{...props}
 		/>
 	),
-	pre: ({ className, ...props }) => (
+	// A fenced block is the <pre>-wrapped <code> you see here; keep <pre> as
+	// the chrome/scroller and let the `code` below provide its own element.
+	pre: ({ className, children, ...props }) => (
 		<pre
 			className={cn(
-				"mb-2 overflow-x-auto rounded-md bg-muted/40 p-2 font-mono text-xs last:mb-0",
+				"mb-2 overflow-x-auto rounded-md border border-zinc-200 bg-muted/60 p-3 font-mono text-xs leading-relaxed text-foreground dark:border-zinc-800",
 				className,
 			)}
 			{...props}
-		/>
+		>
+			{children}
+		</pre>
 	),
-	code: ({ className, ...props }) => {
-		// Fenced blocks land inside <pre>, which already provides the block
-		// container/background — style only the inline (bare, non-fenced) case.
-		const isFenced = className?.includes("language-");
+	// Fenced (lang tagged) blocks get Prism token coloring; bare inline code
+	// keeps the familiar pill. Distinguish by the language-* class.
+	code: ({ className, children, ...props }) => {
+		const language = languageFrom(className);
+		// react-markdown keeps one trailing newline on a fenced body; strip it
+		// so Prism sees exactly the block's own text.
+		const text =
+			typeof children === "string" ? children.replace(/\n$/, "") : "";
+		if (language)
+			return <PrismCode language={language} code={text} />;
 		return (
 			<code
 				className={cn(
-					!isFenced &&
-						"rounded bg-muted/60 px-1 py-0.5 font-mono text-[0.85em]",
+					"rounded bg-muted/60 px-1 py-0.5 font-mono text-[0.85em]",
 					className,
 				)}
 				{...props}
-			/>
+			>
+				{children}
+			</code>
 		);
 	},
 };
