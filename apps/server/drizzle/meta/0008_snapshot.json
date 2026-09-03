@@ -206,9 +206,7 @@
 			"indexes": {
 				"repos_slug_unique": {
 					"name": "repos_slug_unique",
-					"columns": [
-						"slug"
-					],
+					"columns": ["slug"],
 					"isUnique": true
 				}
 			},
