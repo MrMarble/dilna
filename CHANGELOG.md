@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.15.0](https://github.com/MrMarble/dilna/compare/v0.14.0...v0.15.0) (2026-09-03)
+
+
+### Features
+
+* **server+web:** configure LLM provider/model via a web Settings form ([#123](https://github.com/MrMarble/dilna/issues/123)) ([8964e08](https://github.com/MrMarble/dilna/commit/8964e085f09866ef908317ce608fa720d885672d))
+* **web:** syntax-highlight chat code blocks with prism-react-renderer (issue [#55](https://github.com/MrMarble/dilna/issues/55)) ([#120](https://github.com/MrMarble/dilna/issues/120)) ([77d1a1a](https://github.com/MrMarble/dilna/commit/77d1a1abe3a3e8d7efb23799045622c80369319c))
+
+
+### Bug Fixes
+
+* **docker:** give runtime sessions a native compile toolchain ([#122](https://github.com/MrMarble/dilna/issues/122)) ([f633546](https://github.com/MrMarble/dilna/commit/f633546dccee987dcee7fd0d0db96e8885c768da))
+* **server:** format drizzle 0008 snapshot to satisfy lint ([#124](https://github.com/MrMarble/dilna/issues/124)) ([8f94ede](https://github.com/MrMarble/dilna/commit/8f94ede54f2fa8f6fc0d22bc91a86147494f5e67))
+
 ## [0.14.0](https://github.com/MrMarble/dilna/compare/v0.13.1...v0.14.0) (2026-08-29)
 
 
