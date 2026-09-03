@@ -1034,6 +1034,17 @@ class SessionManager {
 				// this completes the spawn but skips prompt dispatch entirely,
 				// leaving the process warm rather than sending the message and
 				// racing to abort it.
+				//
+				// The turn never dispatched to the agent, so the user's message
+				// exists only as the `pending-user-<id>` placeholder written by
+				// `beginTurn`. Promote it to a permanent row (same rule as the
+				// `spawn_failure` path and the normal-end `persistedUserMessage`
+				// fallback): dropping it here would violate ADR-0014's
+				// "never delete the user's message". Leaving the stable
+				// `pending-user-<id>` id in place is what makes the *next*
+				// turn's `beginTurn` INSERT collide on the messages primary key,
+				// rejecting the user's next send.
+				this.promotePendingUserMessage(id);
 				await this.transitionStatus(id, "idle");
 				this.armIdleTimer(id, active);
 				return;
