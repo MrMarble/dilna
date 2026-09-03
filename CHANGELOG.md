@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/MrMarble/dilna/compare/v0.15.0...v0.16.0) (2026-09-03)
+
+
+### Features
+
+* **usage:** attribute usage to the model a session actually ran on ([#127](https://github.com/MrMarble/dilna/issues/127)) ([b473e29](https://github.com/MrMarble/dilna/commit/b473e29ce6925a0c303fb0670f982274b8affec0))
+
+
+### Bug Fixes
+
+* **sessions:** promote the pending user message when a cold-spawn turn is stopped ([#125](https://github.com/MrMarble/dilna/issues/125)) ([578526c](https://github.com/MrMarble/dilna/commit/578526cbe81bd4e6fb489825b3014f01f79c1ae6))
+
 ## [0.15.0](https://github.com/MrMarble/dilna/compare/v0.14.0...v0.15.0) (2026-09-03)
 
 
