@@ -30,6 +30,10 @@ import {
 	startPi,
 } from "../agents/pi";
 import {
+	effectiveModel,
+	effectiveProvider,
+} from "../agents/providerConfigStore";
+import {
 	IDLE_TIMEOUT_MS,
 	STOP_TIMEOUT_MS,
 	TURN_TIMEOUT_MS,
@@ -1341,8 +1345,8 @@ class SessionManager {
 				id: nanoid(),
 				sessionId,
 				repoId: row.repoId,
-				provider: process.env.DILNA_PROVIDER ?? "unknown",
-				model: process.env.DILNA_MODEL ?? "unknown",
+				provider: effectiveProvider() || "unknown",
+				model: effectiveModel() || "unknown",
 				inputTokens: ev.cumulative.inputTokens,
 				outputTokens: ev.cumulative.outputTokens,
 				cacheReadTokens: ev.cumulative.cacheReadTokens ?? 0,

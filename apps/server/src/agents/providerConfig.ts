@@ -18,6 +18,21 @@ export const PROVIDER_ALLOWLIST = [
 ] as const;
 export type DilnaProvider = (typeof PROVIDER_ALLOWLIST)[number];
 
+export function isDilnaProvider(value: string): value is DilnaProvider {
+	return (PROVIDER_ALLOWLIST as readonly string[]).includes(value);
+}
+
+/**
+ * Model ids available for a provider, straight from pi-ai's generated
+ * catalog. Pure and exportable so the config store can validate a proposed
+ * override's model against what actually exists for its provider without
+ * importing the catalog directly there. The Settings *route* pulls the
+ * richer id+name options separately (it wants a display label too).
+ */
+export function catalogModelIds(provider: DilnaProvider): string[] {
+	return getBuiltinModels(provider).map((m) => m.id);
+}
+
 export type ProviderConfigResult =
 	| { ok: true; provider: DilnaProvider; model: string }
 	| { ok: false; error: string };
@@ -79,8 +94,4 @@ export function validateProviderConfig(
 	}
 
 	return { ok: true, provider, model };
-}
-
-function isDilnaProvider(value: string): value is DilnaProvider {
-	return (PROVIDER_ALLOWLIST as readonly string[]).includes(value);
 }

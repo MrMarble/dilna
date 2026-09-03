@@ -57,7 +57,8 @@ import {
 
 export type { OrchestratorDeps };
 
-import type { DilnaProvider } from "./providerConfig";
+import { isDilnaProvider } from "./providerConfig";
+import { effectiveModel, effectiveProvider } from "./providerConfigStore";
 import type { AgentChatOptions } from "./types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -412,6 +413,33 @@ function findWorkspaceRoot(start: string): string {
 }
 
 /**
+ * Resolve the concrete provider/model pi should run on for a Session.
+ * Provider/model come from the instance override if one is set, else from
+ * `DILNA_PROVIDER`/`DILNA_MODEL` env (see providerConfigStore.ts) — this is
+ * the one place every session-starting call goes through. Returns the
+ * validated catalog `Model` for the active combination, throwing a
+ * descriptive error if there's no usable provider/model (only reachable when
+ * the override/env were changed out from under a running server — the
+ * override write path and boot check validate first).
+ */
+function resolveConfiguredModel() {
+	const provider = effectiveProvider();
+	const modelId = effectiveModel();
+	if (!isDilnaProvider(provider) || !modelId) {
+		throw new Error(
+			`no usable provider/model configured (effective provider=${provider || "<unset>"}, model=${modelId || "<unset>"}). Set DILNA_PROVIDER/DILNA_MODEL in the environment or configure one in Settings.`,
+		);
+	}
+	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
+	if (!model) {
+		throw new Error(
+			`provider=${provider}/model=${modelId} is no longer a valid combination.`,
+		);
+	}
+	return { provider, modelId, model };
+}
+
+/**
  * Construct a fresh `pi-agent-core` `Agent` for a session, seeded with dilna's
  * own persisted history (`opts.initialMessages`). Every cold start — first
  * turn ever, post-idle-kill respawn, post-server-restart — goes through this
@@ -422,17 +450,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 	ensureWritablePathsExist();
 	await ensureSandboxInitialized();
 
-	const provider = process.env.DILNA_PROVIDER as DilnaProvider;
-	const modelId = process.env.DILNA_MODEL as string;
-	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
-	if (!model) {
-		// Server startup validation (providerConfig.ts) already guarantees
-		// this; only reachable if DILNA_PROVIDER/DILNA_MODEL changed after
-		// boot without a restart.
-		throw new Error(
-			`DILNA_PROVIDER=${provider}/DILNA_MODEL=${modelId} is no longer a valid combination`,
-		);
-	}
+	const { model } = resolveConfiguredModel();
 
 	const gitCommonDir = resolveGitCommonDir(opts.worktreePath);
 	const workspaceRoot = findWorkspaceRoot(__dirname);
@@ -549,14 +567,7 @@ export type OrchestratorStartOptions = {
 export async function startOrchestrator(
 	opts: OrchestratorStartOptions,
 ): Promise<PiHandle> {
-	const provider = process.env.DILNA_PROVIDER as DilnaProvider;
-	const modelId = process.env.DILNA_MODEL as string;
-	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
-	if (!model) {
-		throw new Error(
-			`DILNA_PROVIDER=${provider}/DILNA_MODEL=${modelId} is no longer a valid combination`,
-		);
-	}
+	const { model } = resolveConfiguredModel();
 
 	const agent = new Agent({
 		initialState: {
@@ -988,8 +999,8 @@ export function dilnaMessagesToInitialState(
 			role: "assistant",
 			content,
 			api: "anthropic-messages",
-			provider: (process.env.DILNA_PROVIDER as DilnaProvider) ?? "anthropic",
-			model: process.env.DILNA_MODEL ?? "unknown",
+			provider: effectiveProvider() || "anthropic",
+			model: effectiveModel() || "unknown",
 			usage: EMPTY_USAGE,
 			stopReason: "stop",
 			timestamp,
@@ -1061,10 +1072,14 @@ export async function generateSessionTitle(
 	sessionId: string,
 	userPrompt: string,
 ): Promise<string | null> {
-	const provider = process.env.DILNA_PROVIDER as DilnaProvider;
-	const modelId = process.env.DILNA_MODEL as string;
-	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
-	if (!model) return null;
+	let model: ReturnType<typeof resolveConfiguredModel>["model"];
+	try {
+		model = resolveConfiguredModel().model;
+	} catch {
+		// No usable provider/model (override unset and env not configured) —
+		// best-effort per the doc comment: keep the placeholder title.
+		return null;
+	}
 
 	// Title derivation carries no tools — just the bare model call described in
 	// the doc comment above. Uses the same explicit `AgentTool<any>` alias

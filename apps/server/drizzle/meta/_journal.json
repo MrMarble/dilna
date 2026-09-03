@@ -57,6 +57,13 @@
 			"when": 1787940081765,
 			"tag": "0007_remarkable_zodiak",
 			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "6",
+			"when": 1788453870179,
+			"tag": "0008_burly_raza",
+			"breakpoints": true
 		}
 	]
 }

@@ -33,6 +33,21 @@ export type CloneRepoInput = {
 	slug?: string;
 };
 
+/** A single model option shown in the LLM Settings dropdown. */
+export type ProviderModelOption = {
+	id: string;
+	name: string;
+};
+
+/** Server `/api/config` GET response — see apps/server/src/routes/config.ts. */
+export type LlmConfig = {
+	override: { provider: string; model: string } | null;
+	envDefault: { provider: string; model: string };
+	effective: { provider: string; model: string };
+	apiKeysConfigured: Record<string, boolean>;
+	modelsByProvider: Record<string, ProviderModelOption[]>;
+};
+
 const SESSION_EVENT_TYPES: AgentStreamEvent["type"][] = [
 	"session_status",
 	"changed_files",
@@ -295,5 +310,23 @@ export const api = {
 			request<{ summary: UsageSummary }>(
 				`/api/usage${days !== undefined ? `?days=${days}` : ""}`,
 			),
+	},
+	config: {
+		/** Current provider/model + override state for the Settings view. */
+		get: () => request<LlmConfig>("/api/config"),
+		/** Persist a single provider/model override (replaces any existing). */
+		setOverride: (provider: string, model: string) =>
+			request<{
+				ok: boolean;
+				override: { provider: string; model: string } | null;
+			}>("/api/config", {
+				method: "PUT",
+				body: JSON.stringify({ provider, model }),
+			}),
+		/** Drop the override so provider/model fall back to the env vars. */
+		clearOverride: () =>
+			request<{ ok: boolean; override: null }>("/api/config", {
+				method: "DELETE",
+			}),
 	},
 };
