@@ -1,4 +1,9 @@
-import type { Repo, UsageDailyPoint, UsageSummary } from "@dilna/shared";
+import type {
+	Repo,
+	UsageDailyPoint,
+	UsageModelBreakdown,
+	UsageSummary,
+} from "@dilna/shared";
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/api/client";
@@ -115,6 +120,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 					<>
 						<SummaryCards summary={summary} />
 						<DailyUsageChart daily={summary.daily} />
+						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 					</>
 				)}
@@ -222,6 +228,52 @@ function DailyUsageChart({ daily }: { daily: UsageDailyPoint[] }) {
 					);
 				})}
 			</svg>
+		</div>
+	);
+}
+
+/**
+ * Per-model breakdown — the model/provider attribution that makes sense now
+ * that the provider+model is web-configurable (a single instance can run
+ * turns under several models over time). Each row is one `provider`/`model`
+ * combination seen in `usage_events` over the selected range, sorted by cost
+ * descending (already sorted server-side in `usageStats.ts`).
+ */
+function ModelBreakdownTable({ models }: { models: UsageModelBreakdown[] }) {
+	if (models.length === 0) return null;
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				By model
+			</div>
+			<table className="w-full text-sm">
+				<thead>
+					<tr className="border-b border-border text-left text-xs text-muted-foreground">
+						<th className="px-4 py-2 font-medium">Model</th>
+						<th className="px-4 py-2 text-right font-medium">Tokens</th>
+						<th className="px-4 py-2 text-right font-medium">Cost</th>
+					</tr>
+				</thead>
+				<tbody>
+					{models.map((m, i) => (
+						<tr
+							key={`${m.provider}/${m.model}`}
+							className={cn("tabular-nums", i > 0 && "border-t border-border")}
+						>
+							<td className="px-4 py-2">
+								<span className="font-mono text-xs">{m.model}</span>
+								<span className="ml-1 text-xs text-muted-foreground">
+									· {m.provider}
+								</span>
+							</td>
+							<td className="px-4 py-2 text-right">
+								{formatTokenCount(m.inputTokens + m.outputTokens)}
+							</td>
+							<td className="px-4 py-2 text-right">{formatUsd(m.costUsd)}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
 		</div>
 	);
 }
