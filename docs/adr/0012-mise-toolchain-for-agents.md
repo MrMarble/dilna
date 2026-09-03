@@ -86,10 +86,11 @@ Deliberately left out for now, as a bigger tradeoff than the above rather
 than an oversight:
 
 - **`build-essential` + headers** (`libssl-dev`, `zlib1g-dev`, etc.): the
-  actual fix for the Python-compile gap noted below, but a meaningfully
-  bigger image/attack-surface addition than the single-binary tools above.
-  Left for a follow-up specifically requested, rather than bundled
-  speculatively into this change.
+  actual fix for the native-compile gap noted below. Deliberately NOT bundled
+  into this change (a meaningfully bigger image/attack-surface addition than
+  the single-binary tools above) — added later to the runtime stage when a
+  session actually hit it compiling a repo's native module, so it's no
+  longer a gap.
 - **`gh` (GitHub CLI)**: useful for PR/issue workflows, but has no
   credential story yet — ADR-0005's host-passthrough only covers git SSH and
   the Claude token, not a `gh auth` flow. Adding it without auth wired up
@@ -151,14 +152,15 @@ before this change.
   picks up whatever version file the cloned repo ships, then linting/testing
   that repo works with its own tools rather than whatever dilna happened to
   bake in.
-- Not solved by this change: some mise backends (e.g. the core `python`
-  plugin, which builds via `python-build`) compile from source and need a
-  toolchain (`build-essential`, headers, `libssl-dev`, etc.) the runtime
-  image doesn't currently carry — `python3`/`make`/`g++` are only present in
-  the *build* stage, for dilna's own native modules. A session asking to
-  install Python today will hit that gap; adding the missing apt packages
-  to the runtime stage is a follow-up if/when that's actually needed, not
-  done speculatively here.
+- Native compilation in sessions is now supported: the runtime stage's
+  `apt-get install` carries `build-essential`, `python3`, `pkg-config`, and
+  the `libssl-dev`/`zlib1g-dev` headers, alongside dilna's own build-stage
+  copy of `python3`/`make`/`g++`. This ended the gap where a session pointed
+  at a repo that pulls a node native module (e.g. better-sqlite3) failed its
+  install — node-gyp needs a *system* `gcc`/`g++`/`make` plus `python3` on
+  PATH, none of which mise (runtime fetchers, not compilers) or a no-root
+  session could provide — and the same toolchain covers mise's core `python`
+  backend, which compiles CPython from source.
 - No new trust boundary: sessions already run headless with unrestricted
   outbound network access and no per-tool approval (ADR-0003/0010) — mise
   fetching and executing arbitrary release tarballs on a session's behalf is
