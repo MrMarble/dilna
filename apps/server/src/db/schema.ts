@@ -3,6 +3,21 @@ import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 const now = () => Math.floor(Date.now() / 1000);
 
+/**
+ * Instance-wide LLM provider/model override, set via the web Settings form
+ * and served by the /api/config route (see providerConfigStore.ts for how it
+ * combines with the env fallback). A single row (congruence key `id =
+ * "instance"`); a null provider means "no override — fall back to
+ * DILNA_PROVIDER/DILNA_MODEL env". Env stays the default/fallback; this
+ * table is only consulted when the override row exists.
+ */
+export const llmConfig = sqliteTable("llm_config", {
+	id: text("id").primaryKey(),
+	provider: text("provider"),
+	model: text("model"),
+	updatedAt: integer("updated_at").notNull().$defaultFn(now),
+});
+
 export const repos = sqliteTable("repos", {
 	id: text("id").primaryKey(),
 	slug: text("slug").notNull().unique(),

@@ -17,6 +17,7 @@ import { ChatShell } from "@/components/ChatShell";
 import { ContextPanel } from "@/components/ContextPanel";
 import { MetricsPage } from "@/components/MetricsPage";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
+import { SettingsPage } from "@/components/SettingsPage";
 import { Sidebar } from "@/components/Sidebar";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
@@ -42,6 +43,14 @@ function pushMetricsPath() {
 	}
 }
 
+// The LLM provider/model Settings view — same standalone-view treatment as
+// Metrics (above): top-level /settings path, orthogonal to repo/session.
+function pushSettingsPath() {
+	if (window.location.pathname !== "/settings") {
+		window.history.pushState(null, "", "/settings");
+	}
+}
+
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
 	const [sessionsById, setSessionsById] = useState<Record<string, SessionView>>(
@@ -54,10 +63,15 @@ export function App() {
 		null,
 	);
 	// "metrics" replaces the chat area with the usage/cost dashboard
-	// (MetricsPage) — orthogonal to which repo/session is selected, which
-	// stays put underneath so "back" restores it.
-	const [view, setView] = useState<"chat" | "metrics">(
-		window.location.pathname === "/metrics" ? "metrics" : "chat",
+	// (MetricsPage) and "settings" with the provider/model Settings view —
+	// both orthogonal to which repo/session is selected, which stays put
+	// underneath so "back" restores it.
+	const [view, setView] = useState<"chat" | "metrics" | "settings">(
+		window.location.pathname === "/metrics"
+			? "metrics"
+			: window.location.pathname === "/settings"
+				? "settings"
+				: "chat",
 	);
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
@@ -227,7 +241,11 @@ export function App() {
 	useEffect(() => {
 		if (hydratedFromUrl.current || loadingRepos) return;
 		hydratedFromUrl.current = true;
-		if (window.location.pathname === "/metrics") return;
+		if (
+			window.location.pathname === "/metrics" ||
+			window.location.pathname === "/settings"
+		)
+			return;
 		const [repoSlug, sessionId] = window.location.pathname
 			.split("/")
 			.filter(Boolean);
@@ -247,6 +265,10 @@ export function App() {
 		function onPopState() {
 			if (window.location.pathname === "/metrics") {
 				setView("metrics");
+				return;
+			}
+			if (window.location.pathname === "/settings") {
+				setView("settings");
 				return;
 			}
 			setView("chat");
@@ -446,10 +468,16 @@ export function App() {
 		mobileSheet.close();
 	}, [mobileSheet.close]);
 
-	// Restores whatever repo/session path was showing before Metrics was
-	// opened (or "/" if none was selected) — the selection itself was never
-	// cleared, just visually replaced.
-	const handleBackFromMetrics = useCallback(() => {
+	const handleOpenSettings = useCallback(() => {
+		setView("settings");
+		pushSettingsPath();
+		mobileSheet.close();
+	}, [mobileSheet.close]);
+
+	// Restores whatever repo/session path was showing before the standalone
+	// Metrics/Settings views were opened (or "/" if none was selected) — the
+	// selection itself was never cleared, just visually replaced.
+	const handleBackFromStandalone = useCallback(() => {
 		setView("chat");
 		const repo = repos.find((r) => r.id === selectedRepoId);
 		if (repo) pushSessionPath(repo.slug, selectedSessionId);
@@ -495,6 +523,7 @@ export function App() {
 		currentSession: selectedSession,
 		onDeleteCurrentSession: handleDeleteSession,
 		onOpenMetrics: handleOpenMetrics,
+		onOpenSettings: handleOpenSettings,
 	};
 
 	return (
@@ -509,7 +538,9 @@ export function App() {
 				)}
 				<main className="flex flex-1 flex-col overflow-hidden">
 					{view === "metrics" ? (
-						<MetricsPage repos={repos} onBack={handleBackFromMetrics} />
+						<MetricsPage repos={repos} onBack={handleBackFromStandalone} />
+					) : view === "settings" ? (
+						<SettingsPage onBack={handleBackFromStandalone} />
 					) : selectedRepo ? (
 						<ChatHeader
 							repo={selectedRepo}
@@ -534,7 +565,8 @@ export function App() {
 							<AppVersion className="ml-1 max-w-none" />
 						</header>
 					)}
-					{view === "metrics" ? null : selectedSession ? (
+					{view === "metrics" ||
+					view === "settings" ? null : selectedSession ? (
 						<div className="flex flex-1 overflow-hidden">
 							<div className="flex flex-1 flex-col overflow-hidden">
 								<ChatShell

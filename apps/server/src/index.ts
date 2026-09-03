@@ -6,24 +6,36 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { validateProviderConfig } from "./agents/providerConfig";
+import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
 import { repoManager } from "./repos/manager";
+import { configRoute } from "./routes/config";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
 import { streamRoute } from "./routes/stream";
 import { usageRoute } from "./routes/usage";
 import { sessionManager } from "./sessions/manager";
 
-// Fail fast (ADR-0020): every session on this instance talks to whichever
-// LLM provider/model DILNA_PROVIDER/DILNA_MODEL select — a misconfiguration
-// here used to only surface on a user's first message (claude.ts inherited
-// process.env wholesale and never validated ANTHROPIC_API_KEY/CLI auth
-// existed before spawning); refusing to start with a specific error is a
-// strict improvement, not just parity.
-const providerConfig = validateProviderConfig(process.env);
-if (!providerConfig.ok) {
-	console.error(`[dilna] startup configuration error: ${providerConfig.error}`);
-	process.exit(1);
+// The instance's provider/model is resolved as: web-settable override (from
+// the `llm_config` row) ?? DILNA_PROVIDER/DILNA_MODEL env fallback (see
+// providerConfigStore.ts). At boot we prime the override cache so agent-start
+// reads don't hit the DB, then sanity-check the *environment* config that
+// applies when no override is set.
+//
+// Fail fast (ADR-0020) applied to the env path only: a misconfigured
+// env-only deployment should surface at boot rather than on the user's first
+// message. We deliberately warn (not `process.exit`), because unlike the
+// pre-web-config era an unset env is now recoverable in place — the Settings
+// view can provide a provider/model override without a restart — and booting
+// is what makes that view reachable.
+primeOverrideFromDb();
+const envProviderConfig = validateProviderConfig(process.env);
+if (!envProviderConfig.ok && !getOverride()) {
+	console.warn(
+		`[dilna] no override set and environment config is incomplete: ${envProviderConfig.error}. ` +
+			"Every session will fail until you set DILNA_PROVIDER/DILNA_MODEL (+ API key) or " +
+			"configure a provider/model in the Settings view.",
+	);
 }
 
 const app = new Hono();
@@ -36,6 +48,7 @@ app.use(
 	}),
 );
 
+app.route("/api/config", configRoute);
 app.route("/api/repos", reposRoute);
 app.route("/api/sessions", sessionsRoute);
 app.route("/api/stream", streamRoute);

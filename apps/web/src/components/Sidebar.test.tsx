@@ -65,6 +65,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			primaryLanguageByRepoId={{}}
 			syncStatusByRepoId={{}}
 			onOpenMetrics={noop}
+			onOpenSettings={noop}
 			orchestratorSessions={[]}
 			onNewOrchestratorSession={noop}
 			creatingOrchestrator={false}
