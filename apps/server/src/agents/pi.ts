@@ -1386,6 +1386,55 @@ export async function checkSessionContext(
 	};
 }
 
+/**
+ * Final summary for a Session about to be deleted (ADR-0024) — reuses the
+ * same `generateSummary` call `checkSessionContext` makes, but produces one
+ * summary covering the *entire* Session (no retained tail: there's no live
+ * `Agent` left to keep serving one to). If the Session already has a stored
+ * compaction, only the tail after its cutoff needs summarizing, passed as
+ * `previousSummary` (an update, not a from-scratch re-summarization) — or,
+ * if nothing happened since that cutoff, the existing summary is returned
+ * verbatim with no LLM call at all. Returns `null` when there's nothing to
+ * archive (`history` empty) or the provider/model can no longer be resolved;
+ * the caller treats both as "skip archiving, delete anyway."
+ */
+export async function summarizeSessionForArchive(
+	provider: string,
+	modelId: string,
+	history: Message[],
+	priorCompaction: SessionCompaction,
+): Promise<string | null> {
+	if (history.length === 0) return null;
+	const model = resolveModelById(provider, modelId);
+	if (!model) return null;
+
+	const cutFrom = priorCompaction
+		? Math.max(
+				0,
+				history.findIndex((m) => m.id === priorCompaction.throughMessageId) + 1,
+			)
+		: 0;
+	const tailHistory = history.slice(cutFrom);
+	if (tailHistory.length === 0) return priorCompaction?.summary ?? null;
+
+	const result = await generateSummary(
+		dilnaMessagesToInitialState(tailHistory),
+		summarizationModels,
+		model,
+		DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+		undefined,
+		undefined,
+		priorCompaction?.summary,
+	);
+	if (!result.ok) {
+		console.error(
+			`[pi] archive summarization failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`,
+		);
+		return null;
+	}
+	return result.value;
+}
+
 // ---- Session title derivation -----------------------------------------------
 
 /**

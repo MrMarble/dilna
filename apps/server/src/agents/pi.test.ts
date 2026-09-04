@@ -16,6 +16,7 @@ import {
 	normalizePiEvent,
 	pickCutPoint,
 	piMessagesToDilna,
+	summarizeSessionForArchive,
 } from "./pi";
 
 const EMPTY_USAGE = {
@@ -578,5 +579,39 @@ describe("estimateSessionContext", () => {
 		expect(
 			estimateSessionContext("anthropic", "not-a-real-model-id", [], null),
 		).toBeNull();
+	});
+});
+
+describe("summarizeSessionForArchive", () => {
+	it("returns null for a session with no messages, without resolving a model", async () => {
+		expect(
+			await summarizeSessionForArchive("anthropic", "claude-opus-5", [], null),
+		).toBeNull();
+	});
+
+	it("returns null for a provider/model no longer in dilna's catalog", async () => {
+		const history = [dilnaMessage("m1", "user", "hi", 1)];
+		expect(
+			await summarizeSessionForArchive(
+				"anthropic",
+				"not-a-real-model-id",
+				history,
+				null,
+			),
+		).toBeNull();
+	});
+
+	it("returns the prior compaction's summary verbatim, with no LLM call, when nothing happened after its cutoff", async () => {
+		const history = [
+			dilnaMessage("m1", "user", "hi", 1),
+			dilnaMessage("m2", "assistant", "hello", 2),
+		];
+		const summary = await summarizeSessionForArchive(
+			"anthropic",
+			"claude-opus-5",
+			history,
+			{ summary: "already fully summarized", throughMessageId: "m2" },
+		);
+		expect(summary).toBe("already fully summarized");
 	});
 });

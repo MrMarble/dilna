@@ -32,6 +32,7 @@ import {
 	type SessionCompaction,
 	startOrchestrator,
 	startPi,
+	summarizeSessionForArchive,
 } from "../agents/pi";
 import {
 	effectiveModel,
@@ -50,6 +51,11 @@ import {
 	usageEvents as usageEventsTable,
 } from "../db/schema";
 import { repoManager } from "../repos/manager";
+import {
+	archiveSession as archiveSessionRow,
+	getArchivedSession,
+	listArchivedSessions,
+} from "./archive";
 import { computeChangedFiles } from "./diff";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
 
@@ -477,6 +483,10 @@ class SessionManager {
 				return view;
 			},
 			usageTotalsByRepo: () => this.usageTotalsByRepo(),
+			listArchivedSessions: (repoId) =>
+				Promise.resolve(listArchivedSessions(repoId)),
+			getArchivedSession: (sessionId) =>
+				Promise.resolve(getArchivedSession(sessionId)),
 		};
 	}
 
@@ -639,11 +649,27 @@ class SessionManager {
 	}
 
 	async delete(id: string): Promise<void> {
+		const session = await this.get(id);
+		if (!session) return;
+
+		// Captured before `stopSession` below, which removes this Session's
+		// `ActiveAgent` entry (and with it, its live `PiHandle.provider`/
+		// `.model`) — an idle Session falls back to the currently-effective
+		// config, same resolution `getContextUsageEstimate` uses.
+		const active = this.active.get(id);
+		const provider = active ? active.handle.provider : effectiveProvider();
+		const model = active ? active.handle.model : effectiveModel();
+
 		// Kill any running agent first.
 		await this.stopSession(id);
 
-		const session = await this.get(id);
-		if (!session) return;
+		// Archive before destroying (ADR-0024) — ordinary Sessions only;
+		// orchestrator ones have no coding content worth referencing later,
+		// same exclusion as ADR-0023's compaction.
+		if (session.kind === "session") {
+			await this.archiveBeforeDelete(session, provider, model);
+		}
+
 		const repo = await repoManager.get(session.repoId);
 		const db = getDb();
 
@@ -672,6 +698,42 @@ class SessionManager {
 		db.delete(messagesTable).where(eq(messagesTable.sessionId, id)).run();
 		db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
 		this.broadcastGlobal({ type: "session_deleted", sessionId: id });
+	}
+
+	/**
+	 * Best-effort (ADR-0024): a resolution or summarization failure is logged
+	 * and swallowed, not thrown — `delete` proceeds either way. A Session
+	 * delete failing outright because an LLM call failed would be worse than
+	 * an occasional un-archived Session. A Session with no messages (deleted
+	 * before its first turn) archives nothing, same as
+	 * `summarizeSessionForArchive`'s own empty-history guard.
+	 */
+	private async archiveBeforeDelete(
+		session: Session,
+		provider: string,
+		model: string,
+	): Promise<void> {
+		try {
+			const history = await this.getMessages(session.id);
+			const summary = await summarizeSessionForArchive(
+				provider,
+				model,
+				history,
+				sessionCompactionOf(session),
+			);
+			if (!summary) return;
+			archiveSessionRow({
+				sessionId: session.id,
+				repoId: session.repoId,
+				title: session.title,
+				summary,
+				createdAt: session.createdAt,
+			});
+		} catch (err) {
+			console.error(
+				`[sessions] archival failed for ${session.id}, deleting without an archive: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 	}
 
 	async touch(id: string): Promise<void> {

@@ -49,6 +49,23 @@ function makeDeps(overrides: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
 		usageTotalsByRepo: vi.fn(async () => [
 			{ repoId: "repo-1", inputTokens: 10, outputTokens: 20 },
 		]),
+		listArchivedSessions: vi.fn(async () => [
+			{
+				sessionId: "sess-old",
+				repoId: "repo-1",
+				title: "Old session",
+				createdAt: 1,
+				archivedAt: 2,
+			},
+		]),
+		getArchivedSession: vi.fn(async () => ({
+			sessionId: "sess-old",
+			repoId: "repo-1",
+			title: "Old session",
+			summary: "did some things",
+			createdAt: 1,
+			archivedAt: 2,
+		})),
 		...overrides,
 	};
 }
@@ -115,6 +132,39 @@ describe("createOrchestratorTools", () => {
 		expect(JSON.parse(textOf(result))).toEqual([
 			{ repoId: "repo-1", inputTokens: 10, outputTokens: 20 },
 		]);
+	});
+
+	it("dilna_list_archived_sessions forwards repoId to deps.listArchivedSessions", async () => {
+		const deps = makeDeps();
+		const tools = createOrchestratorTools(deps);
+		const result = await toolByName(
+			tools,
+			"dilna_list_archived_sessions",
+		).execute("call-1", { repoId: "repo-1" });
+		expect(deps.listArchivedSessions).toHaveBeenCalledWith("repo-1");
+		expect(JSON.parse(textOf(result))).toEqual([
+			{
+				sessionId: "sess-old",
+				repoId: "repo-1",
+				title: "Old session",
+				createdAt: 1,
+				archivedAt: 2,
+			},
+		]);
+	});
+
+	it("dilna_get_archived_session returns deps.getArchivedSession's result", async () => {
+		const deps = makeDeps();
+		const tools = createOrchestratorTools(deps);
+		const result = await toolByName(
+			tools,
+			"dilna_get_archived_session",
+		).execute("call-1", { sessionId: "sess-old" });
+		expect(deps.getArchivedSession).toHaveBeenCalledWith("sess-old");
+		expect(JSON.parse(textOf(result))).toMatchObject({
+			sessionId: "sess-old",
+			summary: "did some things",
+		});
 	});
 
 	it("dilna_create_session calls deps.createChildSession with repoId and prompt", async () => {

@@ -2,6 +2,10 @@ import type { Repo, SessionView } from "@dilna/shared";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai/compat";
 import { repoManager } from "../repos/manager";
+import type {
+	ArchivedSession,
+	ArchivedSessionSummary,
+} from "../sessions/archive";
 
 /**
  * The narrow dependency surface an orchestrator Session's tools call back
@@ -24,6 +28,13 @@ export type OrchestratorDeps = {
 	usageTotalsByRepo: () => Promise<
 		{ repoId: string; inputTokens: number; outputTokens: number }[]
 	>;
+	/** Deleted Sessions that were archived with a summary before removal
+	 * (ADR-0024), optionally filtered to one repo — metadata only, no summary
+	 * text (see `getArchivedSession` for that). */
+	listArchivedSessions: (repoId?: string) => Promise<ArchivedSessionSummary[]>;
+	/** One archived Session's full summary, or `null` if the id was never
+	 * archived (unknown, or deleted before it had any messages). */
+	getArchivedSession: (sessionId: string) => Promise<ArchivedSession | null>;
 };
 
 /**
@@ -40,6 +51,7 @@ Your job is to fan work out into ordinary dilna Sessions — each Session is an 
 - Use \`dilna_list_repos\` to see what repos exist and resolve a repo name/slug the user mentioned to its id.
 - Use \`dilna_create_session\` to spawn one Session per unit of work, each with a purpose-built prompt (e.g. "Read and implement GitHub issue #79 in this repo, then open a PR" — a spawned Session has its own bash/gh access to fetch the issue itself, you don't need to fetch it for it). Spawn immediately once you've decided what to create — do not ask for confirmation first, matching how every other tool call in dilna already runs autonomously. You are capped at ${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} \`dilna_create_session\` calls per turn.
 - Use \`dilna_list_sessions\`/\`dilna_get_session\`/\`dilna_usage_totals\` to answer questions about existing Sessions' status, activity, or token usage. You are not notified when a spawned Session finishes — check back with these tools if asked to follow up.
+- A Session that no longer shows up in \`dilna_list_sessions\` may have been deleted — deleted Sessions are archived with a summary, not erased. Use \`dilna_list_archived_sessions\`/\`dilna_get_archived_session\` to answer questions about past work that's no longer a live Session (e.g. "what did we do about the auth bug a few weeks ago").
 - Sessions you create show up in the normal UI like any other Session; nothing about them is hidden from the user.`;
 
 const emptySchema = Type.Object({});
@@ -49,6 +61,14 @@ const listSessionsSchema = Type.Object({
 });
 
 const getSessionSchema = Type.Object({
+	sessionId: Type.String(),
+});
+
+const listArchivedSessionsSchema = Type.Object({
+	repoId: Type.Optional(Type.String()),
+});
+
+const getArchivedSessionSchema = Type.Object({
 	sessionId: Type.String(),
 });
 
@@ -117,6 +137,26 @@ export function createOrchestratorTools(
 		execute: async () => jsonResult(await deps.usageTotalsByRepo()),
 	};
 
+	const listArchivedSessions: AgentTool<typeof listArchivedSessionsSchema> = {
+		name: "dilna_list_archived_sessions",
+		label: "List archived sessions",
+		description:
+			"List deleted Sessions that were archived with a summary before removal — id, title, repoId, timestamps (no summary text, to keep context bounded). Pass `repoId` to scope to one repo, omit for every archived Session. Use `dilna_get_archived_session` for the full summary.",
+		parameters: listArchivedSessionsSchema,
+		execute: async (_toolCallId, params) =>
+			jsonResult(await deps.listArchivedSessions(params.repoId)),
+	};
+
+	const getArchivedSession: AgentTool<typeof getArchivedSessionSchema> = {
+		name: "dilna_get_archived_session",
+		label: "Get archived session",
+		description:
+			"Get one archived (deleted) Session's full summary — what it worked on and its outcome. Returns null if the id is unknown or was never archived (e.g. deleted before it had any messages).",
+		parameters: getArchivedSessionSchema,
+		execute: async (_toolCallId, params) =>
+			jsonResult(await deps.getArchivedSession(params.sessionId)),
+	};
+
 	const createSession: AgentTool<typeof createSessionSchema> = {
 		name: "dilna_create_session",
 		label: "Create session",
@@ -142,5 +182,13 @@ export function createOrchestratorTools(
 		},
 	};
 
-	return [listRepos, listSessions, getSession, usageTotals, createSession];
+	return [
+		listRepos,
+		listSessions,
+		getSession,
+		usageTotals,
+		createSession,
+		listArchivedSessions,
+		getArchivedSession,
+	];
 }
