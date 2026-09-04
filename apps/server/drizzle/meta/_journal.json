@@ -64,6 +64,13 @@
 			"when": 1788453870179,
 			"tag": "0008_burly_raza",
 			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "6",
+			"when": 1788510316413,
+			"tag": "0009_swift_rictor",
+			"breakpoints": true
 		}
 	]
 }

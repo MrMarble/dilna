@@ -45,6 +45,16 @@ export const sessions = sqliteTable("sessions", {
 	 * idle-kill/resume and page reloads). */
 	inputTokens: integer("input_tokens").notNull().default(0),
 	outputTokens: integer("output_tokens").notNull().default(0),
+	/** Compaction (ADR-0023): summary text standing in for every `messages`
+	 * row up to and including `compactedThroughMessageId`, when the live
+	 * agent is re-seeded. Null until the Session's first compaction. */
+	compactedSummary: text("compacted_summary"),
+	/** id of the last `messages` row folded into `compactedSummary`
+	 * (inclusive) — an unenforced pointer (no FK), same tolerance as
+	 * `usageEvents`' dangling ids. Raw `messages` rows are never deleted or
+	 * rewritten by compaction; this only marks where a freshly-seeded
+	 * `Agent`'s context should switch from the summary to verbatim history. */
+	compactedThroughMessageId: text("compacted_through_message_id"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 	lastActiveAt: integer("last_active_at").notNull().$defaultFn(now),
 });

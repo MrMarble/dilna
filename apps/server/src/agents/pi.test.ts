@@ -1,11 +1,15 @@
 import type { Message } from "@dilna/shared";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
+import type { PiHandle } from "./pi";
 import {
+	buildInitialMessages,
 	createNormalizeState,
 	dilnaMessagesToInitialState,
 	extractTitleFromReply,
+	maybeCompactSession,
 	normalizePiEvent,
+	pickCutPoint,
 	piMessagesToDilna,
 } from "./pi";
 
@@ -393,5 +397,112 @@ describe("normalizePiEvent", () => {
 		);
 		expect(state.currentMessageId).toBeNull();
 		expect(state.toolCallMessageId.size).toBe(0);
+	});
+});
+
+function dilnaMessage(
+	id: string,
+	role: "user" | "assistant",
+	text: string,
+	createdAt: number,
+): Message {
+	return {
+		id,
+		sessionId: "s1",
+		role,
+		parts: [{ type: "text", text }],
+		createdAt,
+	};
+}
+
+describe("buildInitialMessages", () => {
+	const history = [
+		dilnaMessage("m1", "user", "first", 1),
+		dilnaMessage("m2", "assistant", "reply one", 2),
+		dilnaMessage("m3", "user", "second", 3),
+		dilnaMessage("m4", "assistant", "reply two", 4),
+	];
+
+	it("returns the plain reconstructed history when there is no compaction", () => {
+		expect(buildInitialMessages(history, null)).toEqual(
+			dilnaMessagesToInitialState(history),
+		);
+	});
+
+	it("replaces everything up to and including throughMessageId with a leading summary message", () => {
+		const out = buildInitialMessages(history, {
+			summary: "user asked two things, both answered",
+			throughMessageId: "m2",
+		});
+		expect(out[0]).toMatchObject({
+			role: "user",
+			content: expect.stringContaining("user asked two things, both answered"),
+		});
+		expect(out.slice(1)).toEqual(dilnaMessagesToInitialState(history.slice(2)));
+	});
+
+	it("falls back to the full raw history (plus the summary) when throughMessageId isn't found", () => {
+		const out = buildInitialMessages(history, {
+			summary: "stale summary",
+			throughMessageId: "does-not-exist",
+		});
+		expect(out).toHaveLength(1 + dilnaMessagesToInitialState(history).length);
+		expect(out.slice(1)).toEqual(dilnaMessagesToInitialState(history));
+	});
+});
+
+describe("pickCutPoint", () => {
+	it("keeps the entire history when it all fits inside keepRecentTokens", () => {
+		const history = [
+			dilnaMessage("m1", "user", "hi", 1),
+			dilnaMessage("m2", "assistant", "hello", 2),
+		];
+		expect(pickCutPoint(history, 1_000_000)).toBe(0);
+	});
+
+	it("cuts older messages once the recent-token budget is exceeded, snapped to a message boundary", () => {
+		const long = "x".repeat(2_000);
+		const history = [
+			dilnaMessage("m1", "user", long, 1),
+			dilnaMessage("m2", "assistant", long, 2),
+			dilnaMessage("m3", "user", long, 3),
+			dilnaMessage("m4", "assistant", long, 4),
+		];
+		// Small enough that only the last couple of ~2000-char messages fit.
+		const cutIndex = pickCutPoint(history, 700);
+		expect(cutIndex).toBeGreaterThan(0);
+		expect(cutIndex).toBeLessThan(history.length);
+	});
+});
+
+describe("maybeCompactSession", () => {
+	it("returns null and leaves the live agent state untouched when nowhere near the budget threshold", async () => {
+		const messages = [{ role: "user", content: "hi", timestamp: 1 }];
+		const handle = {
+			kind: "pi",
+			provider: "anthropic",
+			model: "claude-opus-5", // 1,000,000-token context window
+			agent: { state: { messages } },
+		} as unknown as PiHandle;
+
+		const history = [dilnaMessage("m1", "user", "hi", 1)];
+		const result = await maybeCompactSession(handle, history);
+
+		expect(result).toBeNull();
+		expect(handle.agent.state.messages).toBe(messages);
+	});
+
+	it("returns null for a provider/model no longer in dilna's catalog, without throwing", async () => {
+		const handle = {
+			kind: "pi",
+			provider: "anthropic",
+			model: "not-a-real-model-id",
+			agent: { state: { messages: [] } },
+		} as unknown as PiHandle;
+
+		const result = await maybeCompactSession(handle, [
+			dilnaMessage("m1", "user", "hi", 1),
+		]);
+		expect(result).toBeNull();
 	});
 });

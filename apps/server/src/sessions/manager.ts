@@ -19,9 +19,10 @@ import type {
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
+	buildInitialMessages,
 	chatPi,
-	dilnaMessagesToInitialState,
 	generateSessionTitle,
+	maybeCompactSession,
 	type OrchestratorDeps,
 	type PiHandle,
 	type PiStartOptions,
@@ -86,6 +87,8 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		title: row.title,
 		status: row.status as Session["status"],
 		usage: { inputTokens: row.inputTokens, outputTokens: row.outputTokens },
+		compactedSummary: row.compactedSummary,
+		compactedThroughMessageId: row.compactedThroughMessageId,
 		createdAt: row.createdAt,
 		lastActiveAt: row.lastActiveAt,
 	};
@@ -536,6 +539,8 @@ class SessionManager {
 			title: kind === "orchestrator" ? "Orchestrator" : defaultSessionTitle(id),
 			status: "idle",
 			usage: { inputTokens: 0, outputTokens: 0 },
+			compactedSummary: null,
+			compactedThroughMessageId: null,
 			createdAt: now,
 			lastActiveAt: now,
 		};
@@ -1211,6 +1216,42 @@ class SessionManager {
 						);
 					}
 
+					// Compaction (ADR-0023): only for ordinary Sessions — orchestrator
+					// Sessions (ADR-0021) are meant to stay short/fire-and-forget.
+					// Failure here is logged and swallowed, not routed through
+					// failTurn — the turn itself already completed successfully;
+					// a missed compaction check just gets retried at the next
+					// turn's `agent_end`.
+					if (session.kind === "session") {
+						try {
+							const compaction = await maybeCompactSession(
+								handle,
+								await this.getMessages(id),
+							);
+							if (compaction) {
+								// `maybeCompactSession` replaced `handle.agent.state.messages`
+								// wholesale with a reconstruction of already-persisted dilna
+								// rows (plus a synthetic summary message) — none of it is new
+								// data to persist, so the high-water mark must track the
+								// replacement array's own length, not grow from its prior
+								// value (see `ActiveAgent.persistedCount`'s doc comment).
+								active.persistedCount = handle.agent.state.messages.length;
+								getDb()
+									.update(sessionsTable)
+									.set({
+										compactedSummary: compaction.summary,
+										compactedThroughMessageId: compaction.throughMessageId,
+									})
+									.where(eq(sessionsTable.id, id))
+									.run();
+							}
+						} catch (err) {
+							console.error(
+								`[sessions] compaction check failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+							);
+						}
+					}
+
 					await this.transitionStatus(id, "idle");
 					this.armIdleTimer(id, active);
 				}
@@ -1516,7 +1557,15 @@ class SessionManager {
 		const history = (await this.getMessages(id)).filter(
 			(m) => m.id !== pendingId,
 		);
-		const initialMessages = dilnaMessagesToInitialState(history);
+		const initialMessages = buildInitialMessages(
+			history,
+			session.compactedSummary && session.compactedThroughMessageId
+				? {
+						summary: session.compactedSummary,
+						throughMessageId: session.compactedThroughMessageId,
+					}
+				: null,
+		);
 
 		const handle: PiHandle =
 			session.kind === "orchestrator"

@@ -18,9 +18,22 @@ import {
 	type AgentEvent,
 	type AgentMessage,
 	type AgentTool,
+	DEFAULT_COMPACTION_SETTINGS,
+	estimateContextTokens,
+	estimateTokens,
+	generateSummary,
+	shouldCompact,
 } from "@earendil-works/pi-agent-core";
+import type {
+	Api,
+	Context,
+	Model,
+	Models,
+	SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
 import {
 	type AssistantMessage,
+	completeSimple,
 	getEnvApiKey,
 	type ImageContent,
 	streamSimple,
@@ -1101,6 +1114,187 @@ export function dilnaMessagesToInitialState(
 		}
 	}
 	return out;
+}
+
+// ---- Compaction (ADR-0023) --------------------------------------------------
+
+/**
+ * Prefix wrapped around a compaction summary before it's seeded as the
+ * leading message of a Session's context — framed as prior context rather
+ * than a fresh instruction, since it stands in for everything up to
+ * `compactedThroughMessageId` rather than something the user just said.
+ */
+const COMPACTION_SUMMARY_PREFACE =
+	"The following is a summary of earlier conversation history that was " +
+	"compacted to stay within the model's context window. Treat it as prior " +
+	"context, not a new instruction:\n\n";
+
+/**
+ * `generateSummary`'s `models: Models` parameter only ever calls
+ * `completeSimple` on it (confirmed by reading pi-agent-core's
+ * `completeSimpleWithRetries`, the only place `generateSummary` touches
+ * `models`) — so rather than build a full `Models` registry (provider list,
+ * auth resolution, model catalogs, the way `pi-coding-agent`'s harness does)
+ * this satisfies just that one method, delegating to pi-ai's bare
+ * `completeSimple` function with the same env-var API key lookup `startPi`'s
+ * `Agent` construction already uses for its `streamFn`. Only `completeSimple`
+ * is ever called on the result (see doc comment above) — the rest of the
+ * `Models` interface (provider registry, auth, streaming) is intentionally
+ * unused, hence the cast below.
+ */
+const summarizationModels = {
+	completeSimple: async (
+		model: Model<Api>,
+		context: Context,
+		options?: SimpleStreamOptions,
+	) => {
+		const apiKey = await getEnvApiKey(
+			model.provider,
+			process.env as Record<string, string>,
+		);
+		return completeSimple(model, context, { ...options, apiKey });
+	},
+	// biome-ignore lint/suspicious/noExplicitAny: partial `Models` shim, see doc comment above
+} as any as Models;
+
+/**
+ * Resolve a `Model` by the exact provider/model a Session's `Agent` was
+ * constructed with (`PiHandle.provider`/`.model`), not whatever's currently
+ * configured — mirrors `resolveConfiguredModel` but for a possibly-different,
+ * already-running Session (the effective provider/model is web-configurable
+ * and can change under a long-lived Session; see `PiHandle`'s doc comment).
+ */
+function resolveModelById(provider: string, modelId: string) {
+	if (!isDilnaProvider(provider)) return undefined;
+	return getBuiltinModels(provider).find((m) => m.id === modelId);
+}
+
+/**
+ * Walk dilna's own message rows backward from the end, accumulating each
+ * one's estimated token size (its own `dilnaMessagesToInitialState`
+ * expansion, summed via pi-agent-core's `estimateTokens`) until
+ * `keepRecentTokens` is reached. dilna's rows are already turn-granular —
+ * one row per user/assistant turn, with any tool calls merged in (the
+ * inverse of pi's per-tool-call transcript entries, see
+ * `dilnaMessagesToInitialState`'s doc comment) — so this doubles as
+ * pi-agent-core's own `findCutPoint` "snap to a turn boundary" requirement,
+ * without needing pi's `Entry[]` session-log wrapper this function's inputs
+ * never had in the first place.
+ *
+ * Returns the index of the first message to keep verbatim; everything
+ * before it is the summarization candidate.
+ */
+export function pickCutPoint(
+	history: Message[],
+	keepRecentTokens: number,
+): number {
+	let kept = 0;
+	let index = history.length;
+	for (let i = history.length - 1; i >= 0; i--) {
+		const size = dilnaMessagesToInitialState([history[i] as Message]).reduce(
+			(sum, m) => sum + estimateTokens(m),
+			0,
+		);
+		if (kept > 0 && kept + size > keepRecentTokens) break;
+		kept += size;
+		index = i;
+	}
+	return index;
+}
+
+/** A Session's persisted compaction state ({@link sessions.compactedSummary}/
+ * `.compactedThroughMessageId}), or `null` for a Session never compacted. */
+export type SessionCompaction = {
+	summary: string;
+	throughMessageId: string;
+} | null;
+
+/**
+ * Build a fresh `Agent`'s `initialState.messages` from dilna's own message
+ * history, folding in a stored compaction when one exists — shared by every
+ * cold start (`SessionManager.startAgent`) and by
+ * {@link maybeCompactSession}'s own live-state rewrite, so both paths
+ * produce identical context for the same `(history, compaction)` pair.
+ */
+export function buildInitialMessages(
+	history: Message[],
+	compaction: SessionCompaction,
+): AgentMessage[] {
+	if (!compaction) return dilnaMessagesToInitialState(history);
+
+	const cutIndex = history.findIndex(
+		(m) => m.id === compaction.throughMessageId,
+	);
+	// A stale/missing pointer (shouldn't happen — messages are never deleted
+	// outside of session delete) degrades to the full raw history rather than
+	// silently dropping context.
+	const tail = cutIndex === -1 ? history : history.slice(cutIndex + 1);
+
+	const summaryMessage: AgentMessage = {
+		role: "user",
+		content: COMPACTION_SUMMARY_PREFACE + compaction.summary,
+		timestamp: Date.now(),
+	};
+	return [summaryMessage, ...dilnaMessagesToInitialState(tail)];
+}
+
+/**
+ * Run after a turn's messages are already durably persisted
+ * (`SessionManager.persistMessagesFromAgent`) — checks whether the live
+ * `Agent`'s context has crossed its model's budget threshold and, if so,
+ * summarizes everything but the most recent `keepRecentTokens` worth of
+ * turns, mutating `handle.agent.state.messages` in place so the *current*
+ * Session's context shrinks immediately rather than only on its next cold
+ * start. Returns the compaction for the caller to persist onto the
+ * `sessions` row, or `null` when compaction wasn't due or the summarization
+ * call failed (not fatal to the turn that just completed — simply retried
+ * at the next turn's check).
+ */
+export async function maybeCompactSession(
+	handle: PiHandle,
+	history: Message[],
+): Promise<SessionCompaction> {
+	const model = resolveModelById(handle.provider, handle.model);
+	if (!model) return null;
+
+	const estimate = estimateContextTokens(dilnaMessagesToInitialState(history));
+	if (
+		!shouldCompact(
+			estimate.tokens,
+			model.contextWindow,
+			DEFAULT_COMPACTION_SETTINGS,
+		)
+	) {
+		return null;
+	}
+
+	const cutIndex = pickCutPoint(
+		history,
+		DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
+	);
+	if (cutIndex <= 0) return null;
+
+	const prefix = history.slice(0, cutIndex);
+	const result = await generateSummary(
+		dilnaMessagesToInitialState(prefix),
+		summarizationModels,
+		model,
+		DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+	);
+	if (!result.ok) {
+		console.error(
+			`[pi] compaction summarization failed for session ${handle.worktreePath}: ${result.error instanceof Error ? result.error.message : String(result.error)}`,
+		);
+		return null;
+	}
+
+	const compaction: SessionCompaction = {
+		summary: result.value,
+		// Safe: `cutIndex > 0` was checked above, so `prefix` is non-empty.
+		throughMessageId: (prefix.at(-1) as Message).id,
+	};
+	handle.agent.state.messages = buildInitialMessages(history, compaction);
+	return compaction;
 }
 
 // ---- Session title derivation -----------------------------------------------
