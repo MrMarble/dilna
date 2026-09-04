@@ -213,18 +213,26 @@ VOLUME ["/data"]
 # resolve to whatever version a session has installed for its own worktree,
 # ahead of the node/pnpm baked in for building dilna itself.
 #
-# NOTE (unchanged by the pi migration, not re-verified here): as of ADR-0012/
-# issue #83, `apps/server/src/agents/pi.ts` (`toolchainEnv`) actually points
-# `MISE_DATA_DIR`/`MISE_CONFIG_DIR`/etc. — and therefore mise's real shims
-# dir — at `DILNA_DATA_DIR/toolchain-home/mise/...`, not at the
-# `/home/node/.local/share/mise` paths this block creates; `pi.ts`'s own
-# `ensureWritablePathsExist()` grants those DILNA_DATA_DIR-rooted paths
-# separately. Whether the plain `$HOME` dirs below (and this `ENV PATH`
-# prefix) still do anything useful, versus being inert leftovers from before
-# #83 redirected everything to DILNA_DATA_DIR, hasn't been re-confirmed —
-# same open question for `/home/node/.local/share/pnpm` below, vs.
-# `npm_config_store_dir`'s redirect (see `PNPM_STORE_DIR`'s doc comment in
-# pi.ts). Left as-is pending that.
+# CONFIRMED DEAD for sessions (the open question this comment used to raise):
+# as of ADR-0012/issue #83, `apps/server/src/agents/pi.ts` (`toolchainEnv`)
+# points `MISE_DATA_DIR`/`MISE_CONFIG_DIR`/etc. — and therefore mise's real
+# shims dir — at `DILNA_DATA_DIR/toolchain-home/mise/...`, not at the
+# `/home/node/.local/share/mise` paths this block creates. That left no shims
+# dir for a session's *actual* `MISE_DATA_DIR` on `PATH` at all: a bare
+# `pnpm`/`node`/etc. resolved to nothing, agents fell back to `mise exec --
+# pnpm ...`, which itself fell through to the mise-installed node's bundled
+# corepack shim instead of the real mise-installed pnpm binary, and corepack
+# then tried to download pnpm from registry.npmjs.org and failed outright in
+# network-restricted deployments (misread by several sessions as "no network
+# access" rather than a PATH bug). Fixed in `toolchainEnv` by prepending
+# `${MISE_DATA_DIR}/shims` there instead of trying to fix it via this
+# image-build-time `ENV`, since `MISE_DATA_DIR` is computed per-request from
+# `DILNA_DATA_DIR` and can't be known at image build time. This block and its
+# `ENV PATH` prefix are kept as a harmless fallback for any code path that
+# still uses plain `$HOME` (same open question survives for
+# `/home/node/.local/share/pnpm` below vs. `npm_config_store_dir`'s redirect —
+# see `PNPM_STORE_DIR`'s doc comment in pi.ts) but are no longer what makes
+# sessions resolve toolchain binaries.
 ENV PATH="/home/node/.local/share/mise/shims:${PATH}"
 RUN mkdir -p \
 		/home/node/.local/share/mise \

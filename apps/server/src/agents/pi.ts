@@ -231,13 +231,36 @@ function ensureWritablePathsExist(): void {
 }
 
 /** Toolchain env vars injected into every sandboxed bash call — see
- * `claude.ts`'s identical env block for why each one is needed. */
+ * `claude.ts`'s identical env block for why each one is needed.
+ *
+ * `PATH`: the Dockerfile bakes `/home/node/.local/share/mise/shims` onto
+ * `PATH` (ADR-0012's "shim-based activation"), but that's mise's *default*
+ * shims dir under plain `$HOME` — dead since issue #83 redirected
+ * `MISE_DATA_DIR` (and therefore mise's real shims dir) to
+ * `TOOLCHAIN_HOME`/`DILNA_DATA_DIR` instead, a gap `MISE_DATA_DIR`'s own doc
+ * comment above already flagged as unconfirmed. It's real: with no shims dir
+ * for the *actual* `MISE_DATA_DIR` ever on `PATH`, a bare `pnpm`/`node`/etc.
+ * resolves to nothing (`command not found`), pushing agents onto `mise exec
+ * -- pnpm ...` — which itself doesn't reliably pick the mise-installed
+ * binary either; observed live falling through to the *base* node install's
+ * bundled corepack shim instead (`installs/node/<version>/lib/node_modules/corepack`),
+ * which then tries to download pnpm from registry.npmjs.org and fails in a
+ * network-restricted deployment. Prepending the real shims dir here is the
+ * fix `mkdir -p`-side (`ensureWritablePathsExist` below creates the dir mise
+ * populates once a tool's `mise install` has actually run); it also sorts
+ * ahead of the corepack-shimmed `pnpm` in the mise-installed node's own bin
+ * dir, so once a real shim exists here it wins PATH resolution instead of
+ * corepack's.
+ */
 function toolchainEnv(worktreePath: string): NodeJS.ProcessEnv {
 	return {
 		MISE_TRUSTED_CONFIG_PATHS: [
 			process.env.MISE_TRUSTED_CONFIG_PATHS,
 			worktreePath,
 		]
+			.filter(Boolean)
+			.join(":"),
+		PATH: [path.join(MISE_DATA_DIR, "shims"), process.env.PATH]
 			.filter(Boolean)
 			.join(":"),
 		npm_config_store_dir: process.env.npm_config_store_dir ?? PNPM_STORE_DIR,
@@ -274,7 +297,7 @@ SHELL STATE
 Only the shell process resets between bash calls — exported env vars, shell functions, and sourced profile state don't carry over, so re-\`export\`/re-\`source\` what a later call needs. Disk state persists, including $HOME, shared across every session this dilna instance runs. Check \`command -v <tool>\` before installing — it may already be there from earlier in this session or a previous one.
 
 TOOLCHAIN
-Nothing runtime-specific is pre-installed. Use mise (already on PATH): \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. Covers node, pnpm (via corepack), go, python, rust, ruby, and more.
+Nothing runtime-specific is pre-installed. Use mise (already on PATH): \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. Covers node, pnpm, go, python, rust, ruby, and more. Never invoke \`corepack\` yourself (enable/prepare/etc.) — mise already resolves pnpm/yarn directly; running corepack instead makes it try to download the package manager from the npm registry, which fails in a network-restricted deployment and reads like "no network" when the real fix is just \`mise install\`/\`mise exec\`.
 
 REPO MEMORY
 Found a workaround for an environment quirk or a project-specific gotcha (a flaky suite, an env var a command needs, a generated file that shouldn't be hand-edited)? Save it immediately with the \`update_repo_memory\` tool — every Session gets a fresh Worktree, so nothing carries over unless you write it down. Check the "Repo memory" section below first, if present.
