@@ -120,6 +120,25 @@ export const usageEvents = sqliteTable("usage_events", {
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 
+/**
+ * A deleted ordinary Session's final summary (ADR-0024), written by
+ * `SessionManager.delete` just before it hard-deletes the Session's own
+ * `messages`/`sessions` rows — this is what survives that deletion, readable
+ * later via the orchestrator's `dilna_list_archived_sessions`/
+ * `dilna_get_archived_session` tools (`sessions/archive.ts`). `sessionId` is
+ * its own primary key (a Session is archived at most once); no FK to
+ * `sessions`/`repos` — deliberately outlives both, same as `usage_events`
+ * above.
+ */
+export const sessionArchive = sqliteTable("session_archive", {
+	sessionId: text("session_id").primaryKey(),
+	repoId: text("repo_id").notNull(),
+	title: text("title").notNull(),
+	summary: text("summary").notNull(),
+	createdAt: integer("created_at").notNull(),
+	archivedAt: integer("archived_at").notNull().$defaultFn(now),
+});
+
 export const sessionsRelations = relations(sessions, ({ many }) => ({
 	messages: many(messages),
 }));
