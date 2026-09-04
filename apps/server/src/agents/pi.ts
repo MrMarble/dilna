@@ -157,6 +157,23 @@ const XDG_DATA_HOME = path.join(TOOLCHAIN_HOME, "xdg-data");
 const XDG_CONFIG_HOME = path.join(TOOLCHAIN_HOME, "xdg-config");
 const GH_CONFIG_DIR = path.join(TOOLCHAIN_HOME, "gh-config");
 const PNPM_STORE_DIR = path.join(TOOLCHAIN_HOME, "pnpm", "store");
+// NOT redirected here on purpose: `PI_CODING_AGENT_DIR` (where
+// pi-coding-agent's grep/find tools self-download rg/fd if neither is on
+// PATH, per those tools' own `getBinDir()`) can't go through `toolchainEnv()`
+// below like the vars above do. `toolchainEnv()` only reaches the sandboxed
+// bash tool's own subprocess — a different process from this server, which
+// is what actually runs grep/find — and pi-coding-agent's `tools-manager.js`
+// caches its resolved bin dir as a module-level constant read once at import
+// time, before any of this file's own code (`toolchainEnv()` included) ever
+// runs. It has to be a real env var on the server process itself before
+// `node` starts: set in `docker-entrypoint.sh` (derived from
+// `DILNA_DATA_DIR`, mirroring `TOOLCHAIN_HOME` here). Not set for local dev
+// (no `mise.toml` `[env]` entry) — `pnpm --filter @dilna/server run dev`
+// runs with cwd `apps/server/`, not the repo root `getDataDir()` resolves
+// relative `DILNA_DATA_DIR` values against, and pi-coding-agent's own path
+// normalizer has no equivalent repo-root-walking logic, so a naive relative
+// value here would land in the wrong place; local dev's plain `$HOME`
+// doesn't need the redirect anyway; it only vanishes on a *pod* restart.
 
 /**
  * Own scratch parent for ad-hoc temp-file use (a one-off script, `mktemp`,
