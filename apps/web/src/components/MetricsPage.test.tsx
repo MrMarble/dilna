@@ -23,6 +23,9 @@ vi.mock("@/api/client", () => ({
 	api: {
 		usage: {
 			summary: async () => ({ summary: nextSummary }),
+			disk: async () => ({
+				disk: { totalBytes: 10_000, freeBytes: 4_000 },
+			}),
 		},
 	},
 }));

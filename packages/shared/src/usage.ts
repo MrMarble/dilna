@@ -29,3 +29,15 @@ export type UsageSummary = {
 	byRepo: UsageRepoBreakdown[];
 	byModel: UsageModelBreakdown[];
 };
+
+/**
+ * Filesystem capacity for the volume backing `DILNA_DATA_DIR` — total and
+ * free bytes, read live via `fs.statfs`. `usedPct` is free/available over
+ * the *currently reported available* bytes, not over `total`, because the
+ * filesystem can reserve blocks (e.g. ext4) that aren't usable by this
+ * process; basing the bar on `total` would understate real headroom.
+ */
+export type DiskUsage = {
+	totalBytes: number;
+	freeBytes: number;
+};
