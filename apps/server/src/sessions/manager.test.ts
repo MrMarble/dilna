@@ -77,6 +77,34 @@ describe("SessionManager", () => {
 		expect(view).not.toHaveProperty("agentSessionId");
 	});
 
+	it("leaves spawnedBy null for a Session created directly (not by an orchestrator)", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`spawned-null-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const full = await sessionManager.get(session.id);
+		expect(full?.spawnedBy).toBeNull();
+	});
+
+	it("records spawnedBy when a Session is created on an orchestrator's behalf (ADR-0025)", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`spawned-by-${Date.now()}`,
+		);
+		const child = await sessionManager.create(
+			repo.id,
+			"pi",
+			"session",
+			"orchestrator-session-1",
+		);
+		const full = await sessionManager.get(child.id);
+		expect(full?.spawnedBy).toBe("orchestrator-session-1");
+		// Not part of the client-facing view — internal to the orchestrator's
+		// own lineage bookkeeping (ADR-0025).
+		expect(child).not.toHaveProperty("spawnedBy");
+	});
+
 	it("hides the sandbox-injected .gitmodules from the worktree's git status", async () => {
 		const repo = await repoManager.clone(fixtureRepo, `exclude-${Date.now()}`);
 		const session = await sessionManager.create(repo.id);

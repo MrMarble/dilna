@@ -105,7 +105,16 @@ describe("createOrchestratorTools", () => {
 		await toolByName(tools, "dilna_list_sessions").execute("call-1", {
 			repoId: "repo-1",
 		});
-		expect(deps.listSessions).toHaveBeenCalledWith("repo-1");
+		expect(deps.listSessions).toHaveBeenCalledWith("repo-1", undefined);
+	});
+
+	it("dilna_list_sessions forwards spawnedByMe to deps.listSessions", async () => {
+		const deps = makeDeps();
+		const tools = createOrchestratorTools(deps);
+		await toolByName(tools, "dilna_list_sessions").execute("call-1", {
+			spawnedByMe: true,
+		});
+		expect(deps.listSessions).toHaveBeenCalledWith(undefined, true);
 	});
 
 	it("dilna_get_session returns deps.getSession's result", async () => {

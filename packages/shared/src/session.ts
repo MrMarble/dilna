@@ -23,6 +23,10 @@ export type Session = {
 	 * first compaction. */
 	compactedSummary: string | null;
 	compactedThroughMessageId: string | null;
+	/** ADR-0025: the orchestrator Session's own id, when this Session was
+	 * created via `dilna_create_session` — null otherwise. Internal to the
+	 * server (absent from SessionView), same as the compaction fields above. */
+	spawnedBy: string | null;
 	createdAt: number;
 	lastActiveAt: number;
 };
