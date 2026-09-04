@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.17.0](https://github.com/MrMarble/dilna/compare/v0.16.0...v0.17.0) (2026-09-04)
+
+
+### Features
+
+* **agents:** make repo memory reads a tool call, not a system-prompt injection ([#131](https://github.com/MrMarble/dilna/issues/131)) ([01223f9](https://github.com/MrMarble/dilna/commit/01223f963dd47acc0bc3377cf0521a9bffa756ae))
+* **server+web:** surface data-dir disk capacity on the Metrics view ([#132](https://github.com/MrMarble/dilna/issues/132)) ([07df6da](https://github.com/MrMarble/dilna/commit/07df6daaa0da941ff362346af788b6f13a65faa1))
+* **server:** archive a deleted session's summary, orchestrator-readable (ADR-0024) ([#134](https://github.com/MrMarble/dilna/issues/134)) ([d979bfb](https://github.com/MrMarble/dilna/commit/d979bfb152dde52ce9f927021367c34a0731bb3f))
+* **server:** budget-triggered session compaction (ADR-0023) ([#133](https://github.com/MrMarble/dilna/issues/133)) ([6ce972b](https://github.com/MrMarble/dilna/commit/6ce972b0a483115c497c0b5212d3347dc159a4fe))
+* **server:** track which sessions an orchestrator spawned (ADR-0025) ([#135](https://github.com/MrMarble/dilna/issues/135)) ([1350831](https://github.com/MrMarble/dilna/commit/1350831e0f767a1e2390b562a61daa05cf0102bf))
+
+
+### Bug Fixes
+
+* **agents:** put mise's real shims dir on sandboxed bash PATH ([#128](https://github.com/MrMarble/dilna/issues/128)) ([2a06ded](https://github.com/MrMarble/dilna/commit/2a06ded32a6a91eb1bffc8f013f8817e5fe1000a))
+* **agents:** root pi-coding-agent's rg/fd self-download dir under DILNA_DATA_DIR ([#130](https://github.com/MrMarble/dilna/issues/130)) ([3c8a85a](https://github.com/MrMarble/dilna/commit/3c8a85aea1763439c77c5075233e7ce58bb62cd9))
+
 ## [0.16.0](https://github.com/MrMarble/dilna/compare/v0.15.0...v0.16.0) (2026-09-03)
 
 
