@@ -3,6 +3,7 @@ import type {
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	ContextUsageEstimate,
 	DiskUsage,
 	Message,
 	RateLimitWindow,
@@ -226,7 +227,10 @@ export const api = {
 				`/api/sessions?repoId=${encodeURIComponent(repoId)}`,
 			),
 		get: (id: string) =>
-			request<{ session: SessionView }>(`/api/sessions/${id}`),
+			request<{
+				session: SessionView;
+				contextUsage: ContextUsageEstimate | null;
+			}>(`/api/sessions/${id}`),
 		create: (repoId: string, agentType?: AgentType) =>
 			request<{ session: SessionView }>("/api/sessions", {
 				method: "POST",

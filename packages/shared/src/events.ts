@@ -119,7 +119,16 @@ export type AgentStreamEvent =
 			 * `GET /api/sessions/:id` serves — see
 			 * SessionManager.accumulateSessionUsage. */
 			cumulative?: UsageTotals;
-	  };
+	  }
+	| ({
+			/** Live estimate of how much of the Session's context window is
+			 * occupied, broadcast after every turn (ADR-0023) so the UI can show
+			 * proximity to compaction — only ever emitted for ordinary Sessions,
+			 * never orchestrator ones. `GET /api/sessions/:id`'s `contextUsage`
+			 * field seeds the same shape for a page load/session switch, so
+			 * unlike `turn_activity` this isn't blank until the next turn. */
+			type: "context_usage";
+	  } & ContextUsageEstimate);
 
 export type SessionStatus =
 	| "idle"
@@ -145,4 +154,24 @@ export type UsageTotals = {
 	cacheWriteTokens?: number;
 	reasoningTokens?: number;
 	costUsd?: number;
+};
+
+/**
+ * How much of a Session's context window is currently occupied (ADR-0023's
+ * addendum) — the payload of the `context_usage` event, also served by
+ * `GET /api/sessions/:id` (`OneResponse.contextUsage`) so a page load or
+ * session switch doesn't have to wait for the next turn to know where a
+ * Session stands.
+ */
+export type ContextUsageEstimate = {
+	/** Estimated tokens the Session's context currently occupies. */
+	tokens: number;
+	/** The resolved model's context window — fixed for this Session's live
+	 * Agent (see `PiHandle`'s doc comment on why it can't just be read from
+	 * the currently-configured provider/model instead). */
+	contextWindow: number;
+	/** Tokens reserved for compaction's own summarization call
+	 * (`DEFAULT_COMPACTION_SETTINGS.reserveTokens`) — compaction fires once
+	 * `tokens` crosses `contextWindow - reserveTokens`. */
+	reserveTokens: number;
 };

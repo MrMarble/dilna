@@ -17,6 +17,12 @@ export type Session = {
 	 * reports per-turn usage, so dilna accumulates it itself — see
 	 * SessionManager.accumulateSessionUsage). */
 	usage: UsageTotals;
+	/** Compaction state (ADR-0023) — internal to the server's agent-seeding
+	 * path (SessionManager.startAgent/maybeCompactSession), not surfaced to
+	 * the web UI (absent from SessionView). Both null until the Session's
+	 * first compaction. */
+	compactedSummary: string | null;
+	compactedThroughMessageId: string | null;
 	createdAt: number;
 	lastActiveAt: number;
 };

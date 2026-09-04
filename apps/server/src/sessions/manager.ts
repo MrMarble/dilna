@@ -7,6 +7,7 @@ import type {
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	ContextUsageEstimate,
 	Message,
 	MessagePart,
 	RateLimitWindow,
@@ -19,16 +20,23 @@ import type {
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
+	buildInitialMessages,
 	chatPi,
-	dilnaMessagesToInitialState,
+	checkSessionContext,
+	estimateSessionContext,
 	generateSessionTitle,
 	type OrchestratorDeps,
 	type PiHandle,
 	type PiStartOptions,
 	piMessagesToDilna,
+	type SessionCompaction,
 	startOrchestrator,
 	startPi,
 } from "../agents/pi";
+import {
+	effectiveModel,
+	effectiveProvider,
+} from "../agents/providerConfigStore";
 import {
 	IDLE_TIMEOUT_MS,
 	STOP_TIMEOUT_MS,
@@ -86,6 +94,8 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		title: row.title,
 		status: row.status as Session["status"],
 		usage: { inputTokens: row.inputTokens, outputTokens: row.outputTokens },
+		compactedSummary: row.compactedSummary,
+		compactedThroughMessageId: row.compactedThroughMessageId,
 		createdAt: row.createdAt,
 		lastActiveAt: row.lastActiveAt,
 	};
@@ -100,6 +110,21 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
  */
 function defaultSessionTitle(id: string): string {
 	return `Session ${id.slice(0, 4)}`;
+}
+
+/** `Session`'s two compaction columns (ADR-0023), reshaped into pi.ts's
+ * `SessionCompaction` — the one place that pairing happens, so every caller
+ * (the turn-end check, the idle-session REST estimate) treats "only one of
+ * the two columns is set" the same way (falls back to `null`, i.e. no
+ * compaction — shouldn't happen since both are always written together, but
+ * there's no DB constraint enforcing that). */
+function sessionCompactionOf(session: Session): SessionCompaction {
+	return session.compactedSummary && session.compactedThroughMessageId
+		? {
+				summary: session.compactedSummary,
+				throughMessageId: session.compactedThroughMessageId,
+			}
+		: null;
 }
 
 function toView(s: Session): SessionView {
@@ -470,6 +495,44 @@ class SessionManager {
 		return s ? toView(s) : null;
 	}
 
+	/**
+	 * `GET /api/sessions/:id`'s `contextUsage` field (ADR-0023's addendum) —
+	 * lets a page load/session switch show a Session's context occupancy
+	 * immediately, rather than the sidebar meter staying blank until the next
+	 * `context_usage` broadcast (which only fires at an in-progress turn's
+	 * end). `null` for an orchestrator Session (no compaction, no model
+	 * concept meaningful to report) or one whose provider/model has since
+	 * fallen out of dilna's catalog.
+	 *
+	 * A live Session's already-running `Agent` captured its provider/model at
+	 * construction (`PiHandle.provider`/`.model`); an idle one has none, so
+	 * this falls back to whatever's currently configured — the same
+	 * resolution `startAgent` would use if the Session resumed right now (see
+	 * `PiHandle`'s doc comment on why a long-lived live Session can drift
+	 * from that).
+	 */
+	async getContextUsageEstimate(
+		id: string,
+	): Promise<ContextUsageEstimate | null> {
+		const session = await this.get(id);
+		if (session?.kind !== "session") return null;
+
+		const active = this.active.get(id);
+		const provider = active ? active.handle.provider : effectiveProvider();
+		const model = active ? active.handle.model : effectiveModel();
+
+		const pendingId = this.pendingUserMessageId(id);
+		const history = (await this.getMessages(id)).filter(
+			(m) => m.id !== pendingId,
+		);
+		return estimateSessionContext(
+			provider,
+			model,
+			history,
+			sessionCompactionOf(session),
+		);
+	}
+
 	async create(
 		repoId: string,
 		agentType: AgentType = "pi",
@@ -536,6 +599,8 @@ class SessionManager {
 			title: kind === "orchestrator" ? "Orchestrator" : defaultSessionTitle(id),
 			status: "idle",
 			usage: { inputTokens: 0, outputTokens: 0 },
+			compactedSummary: null,
+			compactedThroughMessageId: null,
 			createdAt: now,
 			lastActiveAt: now,
 		};
@@ -1211,6 +1276,51 @@ class SessionManager {
 						);
 					}
 
+					// Compaction + context-usage reporting (ADR-0023): only for
+					// ordinary Sessions — orchestrator Sessions (ADR-0021) are meant
+					// to stay short/fire-and-forget. Failure here is logged and
+					// swallowed, not routed through failTurn — the turn itself
+					// already completed successfully; a missed check just gets
+					// retried at the next turn's `agent_end`.
+					if (session.kind === "session") {
+						try {
+							const { estimate, compaction } = await checkSessionContext(
+								handle,
+								await this.getMessages(id),
+								sessionCompactionOf(session),
+							);
+							if (compaction) {
+								// `checkSessionContext` replaced `handle.agent.state.messages`
+								// wholesale with a reconstruction of already-persisted dilna
+								// rows (plus a synthetic summary message) — none of it is new
+								// data to persist, so the high-water mark must track the
+								// replacement array's own length, not grow from its prior
+								// value (see `ActiveAgent.persistedCount`'s doc comment).
+								active.persistedCount = handle.agent.state.messages.length;
+								getDb()
+									.update(sessionsTable)
+									.set({
+										compactedSummary: compaction.summary,
+										compactedThroughMessageId: compaction.throughMessageId,
+									})
+									.where(eq(sessionsTable.id, id))
+									.run();
+							}
+							if (estimate) {
+								this.broadcast(id, {
+									type: "context_usage",
+									tokens: estimate.tokens,
+									contextWindow: estimate.contextWindow,
+									reserveTokens: estimate.reserveTokens,
+								});
+							}
+						} catch (err) {
+							console.error(
+								`[sessions] compaction/context check failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+							);
+						}
+					}
+
 					await this.transitionStatus(id, "idle");
 					this.armIdleTimer(id, active);
 				}
@@ -1516,7 +1626,10 @@ class SessionManager {
 		const history = (await this.getMessages(id)).filter(
 			(m) => m.id !== pendingId,
 		);
-		const initialMessages = dilnaMessagesToInitialState(history);
+		const initialMessages = buildInitialMessages(
+			history,
+			sessionCompactionOf(session),
+		);
 
 		const handle: PiHandle =
 			session.kind === "orchestrator"
