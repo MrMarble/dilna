@@ -2,6 +2,7 @@ import type {
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	ContextUsageEstimate,
 	Message,
 	SessionView,
 } from "@dilna/shared";
@@ -16,7 +17,13 @@ import { runSseLoop } from "./sse";
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
 
 type ListResponse = { sessions: SessionView[] };
-type OneResponse = { session: SessionView };
+type OneResponse = {
+	session: SessionView;
+	/** ADR-0023's addendum — see `SessionManager.getContextUsageEstimate`'s
+	 * doc comment. `null` for an orchestrator Session or one whose
+	 * provider/model has fallen out of dilna's catalog. */
+	contextUsage: ContextUsageEstimate | null;
+};
 type CreateBody = { repoId: string; agentType?: AgentType };
 type SendBody = { text: string };
 
@@ -36,7 +43,8 @@ sessionsRoute.get("/:id", async (c) => {
 	const id = c.req.param("id");
 	const session = await sessionManager.getView(id);
 	if (!session) throw new HTTPException(404, { message: "session not found" });
-	const body: OneResponse = { session };
+	const contextUsage = await sessionManager.getContextUsageEstimate(id);
+	const body: OneResponse = { session, contextUsage };
 	return c.json(body);
 });
 
@@ -52,7 +60,8 @@ sessionsRoute.post("/", async (c) => {
 	}
 	try {
 		const session = await sessionManager.create(body.repoId, body.agentType);
-		const res: OneResponse = { session };
+		// A brand-new Session has no turns yet — nothing to estimate.
+		const res: OneResponse = { session, contextUsage: null };
 		return c.json(res, 201);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : "create failed";
@@ -66,7 +75,8 @@ sessionsRoute.post("/", async (c) => {
 sessionsRoute.post("/orchestrator", async (c) => {
 	try {
 		const session = await sessionManager.createOrchestrator();
-		const res: OneResponse = { session };
+		// Orchestrator Sessions never get compaction/context reporting.
+		const res: OneResponse = { session, contextUsage: null };
 		return c.json(res, 201);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : "create failed";

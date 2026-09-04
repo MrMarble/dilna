@@ -9,6 +9,7 @@ import {
 } from "@anthropic-ai/sandbox-runtime";
 import type {
 	AgentStreamEvent,
+	ContextUsageEstimate,
 	Message,
 	MessagePart,
 	UsageTotals,
@@ -1213,7 +1214,7 @@ export type SessionCompaction = {
  * Build a fresh `Agent`'s `initialState.messages` from dilna's own message
  * history, folding in a stored compaction when one exists — shared by every
  * cold start (`SessionManager.startAgent`) and by
- * {@link maybeCompactSession}'s own live-state rewrite, so both paths
+ * {@link checkSessionContext}'s own live-state rewrite, so both paths
  * produce identical context for the same `(history, compaction)` pair.
  */
 export function buildInitialMessages(
@@ -1239,62 +1240,150 @@ export function buildInitialMessages(
 }
 
 /**
- * Run after a turn's messages are already durably persisted
- * (`SessionManager.persistMessagesFromAgent`) — checks whether the live
- * `Agent`'s context has crossed its model's budget threshold and, if so,
- * summarizes everything but the most recent `keepRecentTokens` worth of
- * turns, mutating `handle.agent.state.messages` in place so the *current*
- * Session's context shrinks immediately rather than only on its next cold
- * start. Returns the compaction for the caller to persist onto the
- * `sessions` row, or `null` when compaction wasn't due or the summarization
- * call failed (not fatal to the turn that just completed — simply retried
- * at the next turn's check).
+ * Estimate against `model`'s window, folding in `compaction` the same way
+ * {@link buildInitialMessages} would seed a fresh `Agent` — so the number
+ * reported always matches what the model actually sees, not dilna's raw
+ * (never-shrinking) `messages` history.
  */
-export async function maybeCompactSession(
+function estimateFor(
+	model: NonNullable<ReturnType<typeof resolveModelById>>,
+	history: Message[],
+	compaction: SessionCompaction,
+): ContextUsageEstimate {
+	return {
+		tokens: estimateContextTokens(buildInitialMessages(history, compaction))
+			.tokens,
+		contextWindow: model.contextWindow,
+		reserveTokens: DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+	};
+}
+
+/**
+ * Same estimate as {@link checkSessionContext} computes, for a Session with
+ * no live `Agent` (idle, never started, or respawned since) — used by
+ * `GET /api/sessions/:id` so a page load/session switch shows the last-known
+ * occupancy immediately, instead of the sidebar meter staying blank until
+ * the Session's next turn (see `context_usage`'s doc comment in
+ * packages/shared/src/events.ts). `provider`/`modelId` should be the
+ * Session's live `PiHandle`'s captured values when one exists, or the
+ * currently-effective config otherwise (the same resolution `startAgent`
+ * would use if the Session resumed right now — see `PiHandle`'s doc comment
+ * on why this can drift from what a still-running Session actually used).
+ */
+export function estimateSessionContext(
+	provider: string,
+	modelId: string,
+	history: Message[],
+	compaction: SessionCompaction,
+): ContextUsageEstimate | null {
+	const model = resolveModelById(provider, modelId);
+	return model ? estimateFor(model, history, compaction) : null;
+}
+
+export type SessionContextCheck = {
+	/** `null` only when the Session's provider/model is no longer in dilna's
+	 * catalog (see `resolveModelById`) — nothing to report or compact
+	 * against. */
+	estimate: ContextUsageEstimate | null;
+	compaction: SessionCompaction;
+};
+
+/**
+ * Run after a turn's messages are already durably persisted
+ * (`SessionManager.persistMessagesFromAgent`) — estimates how much of the
+ * live `Agent`'s context window is occupied (against `priorCompaction`, the
+ * Session's already-stored compaction if any — estimating against raw
+ * history instead would ignore that the live `Agent`'s actual context is
+ * already the smaller, summarized one, and re-trigger compaction on
+ * essentially every subsequent turn) and, once that crosses the budget
+ * threshold, summarizes everything since `priorCompaction`'s cutoff but the
+ * most recent `keepRecentTokens` worth of turns, mutating
+ * `handle.agent.state.messages` in place so the *current* Session's context
+ * shrinks immediately rather than only on its next cold start.
+ *
+ * A second (or later) compaction passes `priorCompaction.summary` to
+ * `generateSummary` as its `previousSummary` — an *update* to the existing
+ * summary covering only what's newly being folded in, not a from-scratch
+ * re-summarization of everything before the new cutoff.
+ *
+ * Always returns an `estimate` (for the caller to broadcast as
+ * `context_usage`, ADR-0023's addendum on UI visibility) alongside a
+ * `compaction` to persist onto the `sessions` row — `compaction` is `null`
+ * when compaction wasn't due, or when the summarization call failed (not
+ * fatal to the turn that just completed; simply retried at the next turn's
+ * check).
+ */
+export async function checkSessionContext(
 	handle: PiHandle,
 	history: Message[],
-): Promise<SessionCompaction> {
+	priorCompaction: SessionCompaction,
+): Promise<SessionContextCheck> {
 	const model = resolveModelById(handle.provider, handle.model);
-	if (!model) return null;
+	if (!model) return { estimate: null, compaction: null };
 
-	const estimate = estimateContextTokens(dilnaMessagesToInitialState(history));
+	const estimate = estimateFor(model, history, priorCompaction);
+	const notDue: SessionContextCheck = { estimate, compaction: null };
 	if (
 		!shouldCompact(
 			estimate.tokens,
-			model.contextWindow,
+			estimate.contextWindow,
 			DEFAULT_COMPACTION_SETTINGS,
 		)
 	) {
-		return null;
+		return notDue;
 	}
 
-	const cutIndex = pickCutPoint(
-		history,
+	const cutFrom = priorCompaction
+		? Math.max(
+				0,
+				history.findIndex((m) => m.id === priorCompaction.throughMessageId) + 1,
+			)
+		: 0;
+	const tailHistory = history.slice(cutFrom);
+
+	const cutIndexInTail = pickCutPoint(
+		tailHistory,
 		DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
 	);
-	if (cutIndex <= 0) return null;
+	if (cutIndexInTail <= 0) return notDue;
 
-	const prefix = history.slice(0, cutIndex);
+	const newlySummarized = tailHistory.slice(0, cutIndexInTail);
 	const result = await generateSummary(
-		dilnaMessagesToInitialState(prefix),
+		dilnaMessagesToInitialState(newlySummarized),
 		summarizationModels,
 		model,
-		DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+		estimate.reserveTokens,
+		undefined,
+		undefined,
+		priorCompaction?.summary,
 	);
 	if (!result.ok) {
 		console.error(
 			`[pi] compaction summarization failed for session ${handle.worktreePath}: ${result.error instanceof Error ? result.error.message : String(result.error)}`,
 		);
-		return null;
+		return notDue;
 	}
 
 	const compaction: SessionCompaction = {
 		summary: result.value,
-		// Safe: `cutIndex > 0` was checked above, so `prefix` is non-empty.
-		throughMessageId: (prefix.at(-1) as Message).id,
+		// Safe: `cutIndexInTail > 0` was checked above, so `newlySummarized` is
+		// non-empty.
+		throughMessageId: (newlySummarized.at(-1) as Message).id,
 	};
-	handle.agent.state.messages = buildInitialMessages(history, compaction);
-	return compaction;
+	const newMessages = buildInitialMessages(history, compaction);
+	handle.agent.state.messages = newMessages;
+
+	// Report the *post*-compaction occupancy, not the stale pre-compaction
+	// number that triggered this — the whole point of compacting was to
+	// bring it back down.
+	return {
+		estimate: {
+			tokens: estimateContextTokens(newMessages).tokens,
+			contextWindow: estimate.contextWindow,
+			reserveTokens: estimate.reserveTokens,
+		},
+		compaction,
+	};
 }
 
 // ---- Session title derivation -----------------------------------------------

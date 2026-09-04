@@ -15,7 +15,13 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/api/client";
+import { useSessionContextUsage } from "@/hooks/useSessionContextUsage";
 import { useSessionUsage } from "@/hooks/useSessionUsage";
+import {
+	contextUsageBarColor,
+	contextUsagePct,
+	isNearCompaction,
+} from "@/lib/context-usage";
 import { LanguageIcon, languageColor } from "@/lib/languages";
 import { formatTokenCount } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
@@ -239,8 +245,52 @@ function SessionSection({
 				<FactRow label="Started" value={formatDateTime(session.createdAt)} />
 				<FactRow label="Last active" value={timeAgo(session.lastActiveAt)} />
 				{showTokens && <SessionTokensRow sessionId={session.id} />}
+				<SessionContextRow sessionId={session.id} />
 			</div>
 		</SectionCard>
+	);
+}
+
+/**
+ * Context-window occupancy meter (ADR-0023's addendum) — unlike
+ * `SessionTokensRow`, shown in both the panel and sheet variants: there's no
+ * desktop header badge for this the way `ChatHeader`'s `UsageBadge` covers
+ * lifetime tokens, so this is the only place it's ever shown. Renders
+ * nothing until the Session's first turn reports it (see
+ * `useSessionContextUsage`'s doc comment).
+ */
+function SessionContextRow({ sessionId }: { sessionId: string }) {
+	const usage = useSessionContextUsage(sessionId);
+	if (!usage) return null;
+	const pct = contextUsagePct(
+		usage.tokens,
+		usage.contextWindow,
+		usage.reserveTokens,
+	);
+	return (
+		<div className="flex flex-col gap-1 pt-0.5">
+			<div
+				className="flex items-baseline justify-between gap-2 text-sm"
+				title={`${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens`}
+			>
+				<span className="shrink-0 text-muted-foreground">Context</span>
+				<span className="truncate text-right">
+					{formatTokenCount(usage.tokens)} /{" "}
+					{formatTokenCount(usage.contextWindow)}
+				</span>
+			</div>
+			<div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+				<div
+					className={`h-full rounded-full ${contextUsageBarColor(pct)}`}
+					style={{ width: `${pct}%` }}
+				/>
+			</div>
+			{isNearCompaction(pct) && (
+				<span className="text-xs text-red-600 dark:text-red-500">
+					Nearing context limit — will compact soon
+				</span>
+			)}
+		</div>
 	);
 }
 

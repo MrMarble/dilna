@@ -72,11 +72,15 @@ dilna for logic that's a few dozen lines on its own.
 
 **Summarization — `generateSummary(messagesToSummarize, models, model,
 reserveTokens, ...)` called directly** against the prefix before the cut
-point, producing one summary string. This needs a `Models` registry (built
-via pi-ai's `createModels()`), which `pi.ts` doesn't otherwise construct
-today (it passes the bare `streamSimple` function as the `Agent`'s
-`streamFn`) — compaction is the first thing in `pi.ts` that needs the
-registry form.
+point, producing one summary string. `generateSummary`'s `models: Models`
+parameter turned out to only ever be used for one method call
+(`models.completeSimple`, confirmed by reading pi-agent-core's
+`completeSimpleWithRetries` source) — so rather than build a full `Models`
+registry (provider list, auth resolution, model catalogs, the way
+`pi-coding-agent`'s own harness does via pi-ai's `createModels()`), `pi.ts`'s
+`summarizationModels` is a narrow single-method shim satisfying just that
+one call, delegating to pi-ai's bare `completeSimple` function with the same
+env-var API key lookup `startPi`'s `Agent` construction already uses.
 
 **Live effect — mutate the running `Agent`'s state directly.**
 `agent.state.messages = [syntheticSummaryMessage, ...retainedTail]`, so the
@@ -128,9 +132,9 @@ short and fire-and-forget; revisit only if that assumption stops holding.
 - New `sessions.compactedSummary`/`sessions.compactedThroughMessageId`
   columns (migration); every existing row starts null — no Session has ever
   been compacted.
-- `pi.ts` gains a `Models` registry (via `createModels()`) alongside the bare
-  `streamSimple` function it already passes to `Agent` — used only by the
-  compaction path.
+- `pi.ts` gains a narrow single-method `Models` shim (`summarizationModels`)
+  alongside the bare `streamSimple` function it already passes to `Agent` —
+  used only by the compaction path.
 - A Session that never gets long enough to cross the threshold pays no cost
   beyond the token-estimate comparison already derivable from data `pi.ts`
   tracks.
@@ -145,3 +149,47 @@ short and fire-and-forget; revisit only if that assumption stops holding.
   compacted summary at Session-delete time for the orchestrator to
   reference — this decision's summary generation/persistence shape is meant
   to be reusable there without rework.
+
+## Addendum: sidebar visibility, and a re-check bug this surfaced
+
+The original cut only had compaction itself; the user asked to also
+"indicate the current context window size and usage" in the sidebar (where
+token usage and session time already show) and warn when compaction is
+close. Two additions, both small extensions of the same mechanism above,
+not a new architectural decision:
+
+- **New `context_usage` event** (`packages/shared/src/events.ts`), broadcast
+  alongside the existing compaction check at every turn's end — `{ tokens,
+  contextWindow, reserveTokens }`. `GET /api/sessions/:id` also serves the
+  same shape (`contextUsage` field, via a new
+  `SessionManager.getContextUsageEstimate`) so a page load or session switch
+  shows the last-known number immediately rather than waiting on the next
+  turn (unlike `turn_activity`, which does stay blank until its next event —
+  context usage is cheap enough to compute on demand that there's no reason
+  to accept that gap here). For an idle Session with no live `Agent`, the
+  REST path resolves the model via the currently-effective provider/model
+  config rather than a captured `PiHandle` value — the same approximation
+  `startAgent` would use if the Session resumed right now.
+- **Sidebar**: `ContextPanel`'s "Current session" card gets a token-count +
+  progress-bar row (mirroring the sidebar's existing rate-limit bars'
+  neutral/amber/red thresholds), plus explicit text ("Nearing context limit
+  — will compact soon") once usage crosses 80% of the compaction trigger
+  point (`contextWindow - reserveTokens`), not 80% of the raw window.
+
+**Bug caught while wiring the REST seed, fixed in the same change:** the
+original `checkSessionContext` estimated context usage from dilna's raw
+`messages` history on every turn, ignoring any compaction already recorded
+on the `sessions` row. After a Session's first compaction, its raw history
+keeps growing exactly as before (rows are never deleted), so every
+subsequent turn's check would see something close to the original
+uncompacted total again — reporting a wrong (too-high) number to the UI and
+re-triggering `shouldCompact` on essentially every following turn, even
+though the live `Agent`'s actual context was already small. Fixed by having
+`checkSessionContext` take the Session's prior compaction as an explicit
+parameter and estimate against `buildInitialMessages(history, prior)` (the
+same reconstruction a cold start would seed) instead of raw history. A
+second-or-later compaction now also passes the prior summary to
+`generateSummary` as `previousSummary` (a parameter the function already
+supported for exactly this), asking for an *updated* summary covering only
+what's newly being folded in, rather than re-summarizing everything before
+the new cutoff from scratch each time.
