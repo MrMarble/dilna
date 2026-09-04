@@ -317,7 +317,7 @@ TOOLCHAIN
 Nothing runtime-specific is pre-installed. Use mise (already on PATH): \`mise install\` picks up versions from the repo's own .tool-versions/.nvmrc/.python-version/mise.toml if present, or \`mise use <tool>@<version>\` to pick one yourself. Covers node, pnpm, go, python, rust, ruby, and more. Never invoke \`corepack\` yourself (enable/prepare/etc.) — mise already resolves pnpm/yarn directly; running corepack instead makes it try to download the package manager from the npm registry, which fails in a network-restricted deployment and reads like "no network" when the real fix is just \`mise install\`/\`mise exec\`.
 
 REPO MEMORY
-Found a workaround for an environment quirk or a project-specific gotcha (a flaky suite, an env var a command needs, a generated file that shouldn't be hand-edited)? Save it immediately with the \`update_repo_memory\` tool — every Session gets a fresh Worktree, so nothing carries over unless you write it down. Check the "Repo memory" section below first, if present.
+Before exploring an unfamiliar repo, call \`read_repo_memory\` to check for facts a previous session already saved about it (env quirks, flaky suites, generated files not to hand-edit) — every Session gets a fresh Worktree, so nothing carries over unless it was written down. Found a new one? Save it immediately with \`update_repo_memory\`.
 
 OUTPUT STYLE
 Everything you write between tool calls lands as a chat message in dilna's UI, read back asynchronously — not a terminal someone is watching live. Skip narration ("Let me check X", "Now I'll look at Y") and preamble ("Great question!", "Sure, I can help with that") — the tool call already shows the step, so start with the answer. Match length to what happened: a one-line fix gets a one-line summary. Save detail for where it's actually read afterward — a PR description, a commit message, a code comment on a non-obvious choice — not chat narration.`;
@@ -333,14 +333,36 @@ Everything you write between tool calls lands as a chat message in dilna's UI, r
  */
 const CODEGRAPH_SYSTEM_PROMPT_NOTE = `\n\nCODEGRAPH\nThis worktree has a codegraph index (\`.codegraph/\`, built at Session creation and kept in sync automatically). For "who calls X" / "what does X touch" questions on unfamiliar code, prefer \`codegraph explore <symbol-or-path>\` over grep — one call returns source plus callers/callees instead of several rounds of grep. Fall back to grep/read when codegraph doesn't have what you need.`;
 
-function repoMemorySystemPromptSection(memoryContent: string): string {
-	if (!memoryContent) return "";
-	return `\n\n## Repo memory\n\nFacts a previous session recorded about this Repo (not this Worktree — every Session gets an isolated Worktree, but memory carries over since it's scoped to the Repo). Use the \`update_repo_memory\` tool to add, edit, or remove entries; that tool replaces this whole section, so read it here before editing it.\n\n${memoryContent}`;
+const READ_REPO_MEMORY_TOOL_DESCRIPTION = `Read this Repo's persistent memory — short, durable facts a previous Session recorded (e.g. "tests need FOO_ENV set", "this suite is flaky on CI", "don't hand-edit the generated file, it's overwritten by build"). Scoped to the Repo, not this Worktree: every Session gets an isolated, throwaway Worktree, but memory carries over since it's scoped to the Repo. Returns an empty result if nothing has been saved yet. Call this before \`update_repo_memory\` too — that tool replaces the whole memory, so you need the current content in hand before editing it.`;
+
+const readRepoMemorySchema = Type.Object({});
+
+function createReadRepoMemoryTool(
+	repoId: string,
+): AgentTool<typeof readRepoMemorySchema> {
+	return {
+		name: "read_repo_memory",
+		label: "Read repo memory",
+		description: READ_REPO_MEMORY_TOOL_DESCRIPTION,
+		parameters: readRepoMemorySchema,
+		execute: async () => {
+			const content = await getRepoMemory(repoId);
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: content || "(no repo memory saved yet)",
+					},
+				],
+				details: {},
+			};
+		},
+	};
 }
 
 const UPDATE_REPO_MEMORY_TOOL_DESCRIPTION = `Replace this Repo's persistent memory with short, durable facts that should carry over to every future Session on this Repo (e.g. "tests need FOO_ENV set", "this suite is flaky on CI", "don't hand-edit the generated file, it's overwritten by build"). Every Session gets an isolated, throwaway Worktree, so without this a fact discovered in one Session is invisible to the next.
 
-This call REPLACES the entire memory, it does not append — read the current content from the "Repo memory" section of your system prompt (if present), then send back the full edited text (add/edit/remove entries as needed). Pass an empty string to clear it entirely.
+This call REPLACES the entire memory, it does not append — call \`read_repo_memory\` first to get the current content (if any), then send back the full edited text (add/edit/remove entries as needed). Pass an empty string to clear it entirely.
 
 Keep it to short, standalone facts, not procedures, task notes, or anything specific to the current conversation. Hard cap: ${REPO_MEMORY_MAX_CHARS} characters — an over-limit call is rejected with an error, so trim before resubmitting rather than getting truncated silently.`;
 
@@ -504,13 +526,11 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 	const workspaceRoot = findWorkspaceRoot(__dirname);
 	const dataDir = getDataDir();
 	const nestedInCheckout = dataDir.startsWith(`${workspaceRoot}${path.sep}`);
-	const repoMemoryContent = await getRepoMemory(opts.repoId);
 
 	const hasCodegraph = existsSync(path.join(opts.worktreePath, ".codegraph"));
 
 	const systemPrompt =
 		DILNA_AGENT_CONTEXT +
-		repoMemorySystemPromptSection(repoMemoryContent) +
 		(nestedInCheckout
 			? `\n\nNote: this worktree happens to live nested inside dilna's own checkout on the host filesystem — the read/grep/find/ls tools are confined to this worktree regardless, so dilna's own project files are not reachable from here.`
 			: "") +
@@ -537,6 +557,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 				nestedInCheckout ? [workspaceRoot] : [],
 			),
 		}),
+		createReadRepoMemoryTool(opts.repoId),
 		createUpdateRepoMemoryTool(opts.repoId),
 	];
 
