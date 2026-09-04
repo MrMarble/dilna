@@ -1,10 +1,11 @@
 import type {
+	DiskUsage,
 	Repo,
 	UsageDailyPoint,
 	UsageModelBreakdown,
 	UsageSummary,
 } from "@dilna/shared";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -34,6 +35,19 @@ function formatUsd(n: number): string {
 	if (n < 0.0001) return `$${n.toFixed(6)}`;
 	if (n < 0.01) return `$${n.toFixed(4)}`;
 	return `$${n.toFixed(2)}`;
+}
+
+/** Human-size bytes (base-1024) — "1.2 GB", "600 MB", "512 B". */
+function formatBytes(n: number): string {
+	if (n < 1024) return `${n} B`;
+	const units = ["KB", "MB", "GB", "TB"];
+	let value = n;
+	let unit = -1;
+	do {
+		value /= 1024;
+		unit++;
+	} while (value >= 1024 && unit < units.length - 1);
+	return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
 /**
@@ -83,7 +97,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 				<Button variant="ghost" size="icon" onClick={onBack} title="Back">
 					<ArrowLeft className="size-4" />
 				</Button>
-				<h1 className="font-semibold tracking-tight">Usage &amp; cost</h1>
+				<h1 className="font-semibold tracking-tight">Metrics</h1>
 				<div className="ml-auto flex items-center gap-1">
 					{RANGE_OPTIONS.map((opt) => (
 						<Button
@@ -124,6 +138,8 @@ export function MetricsPage({ repos, onBack }: Props) {
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 					</>
 				)}
+
+				<DiskUsageCard />
 			</div>
 		</div>
 	);
@@ -312,6 +328,81 @@ function RepoBreakdownTable({
 					))}
 				</tbody>
 			</table>
+		</div>
+	);
+}
+
+/**
+ * Live filesystem capacity for the volume backing `DILNA_DATA_DIR` (read via
+ * `fs.statfs` server-side — `api.usage.disk`). Shows used/total and a
+ * utilization bar; the bar turns primary→amber→destructive as free space
+ * crosses 50% / 85% used so a nearly-full disk (which stalls agent installs —
+ * see ENOSPC) is visible before it actually fails. Fetches once on mount;
+ * capacity changes slowly enough that a per-view refresh suffices.
+ */
+function DiskUsageCard() {
+	const [disk, setDisk] = useState<DiskUsage | null>(null);
+	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		let cancelled = false;
+		api.usage
+			.disk()
+			.then(({ disk: d }) => {
+				if (!cancelled) setDisk(d);
+			})
+			.catch((e) => {
+				if (!cancelled) {
+					setError(
+						e instanceof Error ? e.message : "failed to load disk usage",
+					);
+				}
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	if (error) return null;
+
+	const usedBytes = disk ? disk.totalBytes - disk.freeBytes : 0;
+	const usedPct = disk ? (usedBytes / disk.totalBytes) * 100 : 0;
+	const barColor =
+		usedPct >= 85
+			? "bg-destructive"
+			: usedPct >= 50
+				? "bg-amber-500"
+				: "bg-primary";
+
+	return (
+		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+			<div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+				<span className="flex items-center gap-1.5 font-medium">
+					<HardDrive className="size-3.5" />
+					Storage
+				</span>
+				<span className="tabular-nums">
+					{disk
+						? `${formatBytes(usedBytes)} of ${formatBytes(disk.totalBytes)} used`
+						: "Loading…"}
+				</span>
+			</div>
+			<div
+				className="h-2 w-full overflow-hidden rounded-full bg-muted"
+				role="progressbar"
+				aria-label="Disk usage"
+				aria-valuemin={0}
+				aria-valuemax={100}
+				aria-valuenow={Math.round(usedPct)}
+			>
+				<div
+					className={`h-full rounded-full transition-[background-color,width] ${barColor}`}
+					style={{ width: `${usedPct}%` }}
+				/>
+			</div>
+			<p className="mt-2 text-right text-xs text-muted-foreground tabular-nums">
+				{disk ? `${formatBytes(disk.freeBytes)} free` : "\u00a0"}
+			</p>
 		</div>
 	);
 }

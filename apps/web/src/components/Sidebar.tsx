@@ -93,7 +93,7 @@ type Props = {
 	 * can't be collapsed, squeezing the chat on non-mobile narrow viewports).
 	 * Absent in the sheet variant, which closes via the drawer instead. */
 	onCollapse?: () => void;
-	/** Opens the usage/cost dashboard (`MetricsPage`) in place of the chat. */
+	/** Opens the Metrics dashboard (`MetricsPage`) in place of the chat. */
 	onOpenMetrics: () => void;
 	/** Opens the LLM provider/model Settings view in place of the chat. */
 	onOpenSettings: () => void;
@@ -214,7 +214,7 @@ export function Sidebar({
 						className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground"
 					>
 						<BarChart3 className="size-3.5 shrink-0" />
-						Usage &amp; cost
+						Metrics
 					</button>
 					<button
 						type="button"

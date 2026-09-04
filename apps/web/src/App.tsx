@@ -34,7 +34,7 @@ function pushSessionPath(repoSlug: string, sessionId: string | null) {
 	}
 }
 
-// The usage/cost dashboard (MetricsPage) — a standalone view, not scoped to
+// The metrics dashboard (MetricsPage) — a standalone view, not scoped to
 // any repo/session, so it gets its own top-level path rather than nesting
 // under pushSessionPath's /<repo-slug> shape.
 function pushMetricsPath() {
@@ -62,7 +62,7 @@ export function App() {
 	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
 		null,
 	);
-	// "metrics" replaces the chat area with the usage/cost dashboard
+	// "metrics" replaces the chat area with the Metrics dashboard
 	// (MetricsPage) and "settings" with the provider/model Settings view —
 	// both orthogonal to which repo/session is selected, which stays put
 	// underneath so "back" restores it.

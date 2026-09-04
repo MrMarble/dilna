@@ -3,6 +3,7 @@ import type {
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	DiskUsage,
 	Message,
 	RateLimitWindow,
 	Repo,
@@ -18,6 +19,7 @@ export type {
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	DiskUsage,
 	Message,
 	RateLimitWindow,
 	Repo,
@@ -310,6 +312,9 @@ export const api = {
 			request<{ summary: UsageSummary }>(
 				`/api/usage${days !== undefined ? `?days=${days}` : ""}`,
 			),
+		/** Live filesystem capacity for the `DILNA_DATA_DIR` volume (read via
+		 * `fs.statfs` on the server) — backs the Metrics page's storage card. */
+		disk: () => request<{ disk: DiskUsage }>("/api/usage/disk"),
 	},
 	config: {
 		/** Current provider/model + override state for the Settings view. */
