@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `spawned_by` text;

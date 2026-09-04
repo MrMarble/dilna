@@ -14,8 +14,13 @@ import type {
  * circular import between `sessions/manager.ts` and `agents/pi.ts`).
  */
 export type OrchestratorDeps = {
-	/** Ordinary (non-orchestrator) Sessions, optionally filtered to one repo. */
-	listSessions: (repoId?: string) => Promise<SessionView[]>;
+	/** Ordinary (non-orchestrator) Sessions, optionally filtered to one repo
+	 * and/or (ADR-0025) to only those this specific orchestrator Session
+	 * itself created via `dilna_create_session`. */
+	listSessions: (
+		repoId?: string,
+		spawnedByMe?: boolean,
+	) => Promise<SessionView[]>;
 	/** Null for an unknown id *or* an orchestrator-kind session — those
 	 * aren't "children" and aren't what these tools are for inspecting. */
 	getSession: (
@@ -50,7 +55,7 @@ Your job is to fan work out into ordinary dilna Sessions — each Session is an 
 
 - Use \`dilna_list_repos\` to see what repos exist and resolve a repo name/slug the user mentioned to its id.
 - Use \`dilna_create_session\` to spawn one Session per unit of work, each with a purpose-built prompt (e.g. "Read and implement GitHub issue #79 in this repo, then open a PR" — a spawned Session has its own bash/gh access to fetch the issue itself, you don't need to fetch it for it). Spawn immediately once you've decided what to create — do not ask for confirmation first, matching how every other tool call in dilna already runs autonomously. You are capped at ${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} \`dilna_create_session\` calls per turn.
-- Use \`dilna_list_sessions\`/\`dilna_get_session\`/\`dilna_usage_totals\` to answer questions about existing Sessions' status, activity, or token usage. You are not notified when a spawned Session finishes — check back with these tools if asked to follow up.
+- Use \`dilna_list_sessions\`/\`dilna_get_session\`/\`dilna_usage_totals\` to answer questions about existing Sessions' status, activity, or token usage. You are not notified when a spawned Session finishes — check back with these tools if asked to follow up. \`dilna_list_sessions\`'s \`spawnedByMe: true\` filter scopes to only Sessions you yourself created — use it for "what did you create"/"how did those turn out" questions, including in a fresh conversation with no memory of the ids.
 - A Session that no longer shows up in \`dilna_list_sessions\` may have been deleted — deleted Sessions are archived with a summary, not erased. Use \`dilna_list_archived_sessions\`/\`dilna_get_archived_session\` to answer questions about past work that's no longer a live Session (e.g. "what did we do about the auth bug a few weeks ago").
 - Sessions you create show up in the normal UI like any other Session; nothing about them is hidden from the user.`;
 
@@ -58,6 +63,7 @@ const emptySchema = Type.Object({});
 
 const listSessionsSchema = Type.Object({
 	repoId: Type.Optional(Type.String()),
+	spawnedByMe: Type.Optional(Type.Boolean()),
 });
 
 const getSessionSchema = Type.Object({
@@ -112,10 +118,10 @@ export function createOrchestratorTools(
 		name: "dilna_list_sessions",
 		label: "List sessions",
 		description:
-			"List ordinary (non-orchestrator) Sessions — id, title, repoId, status, token usage, timestamps. Pass `repoId` to scope to one repo, omit for every Session across every repo.",
+			"List ordinary (non-orchestrator) Sessions — id, title, repoId, status, token usage, timestamps. Pass `repoId` to scope to one repo, omit for every Session across every repo. Pass `spawnedByMe: true` to scope to only the Sessions *you* (this orchestrator conversation) created via `dilna_create_session` — useful for following up on work you started earlier, including in a different conversation, without having to remember ids.",
 		parameters: listSessionsSchema,
 		execute: async (_toolCallId, params) =>
-			jsonResult(await deps.listSessions(params.repoId)),
+			jsonResult(await deps.listSessions(params.repoId, params.spawnedByMe)),
 	};
 
 	const getSession: AgentTool<typeof getSessionSchema> = {

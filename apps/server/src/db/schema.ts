@@ -55,6 +55,11 @@ export const sessions = sqliteTable("sessions", {
 	 * rewritten by compaction; this only marks where a freshly-seeded
 	 * `Agent`'s context should switch from the summary to verbatim history. */
 	compactedThroughMessageId: text("compacted_through_message_id"),
+	/** ADR-0025: the orchestrator Session's own id, when this Session was
+	 * created via `dilna_create_session` — null for every Session created
+	 * directly via the UI, or for an orchestrator Session itself. No FK
+	 * (same dangling-id tolerance as `usageEvents`/`sessionArchive`). */
+	spawnedBy: text("spawned_by"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 	lastActiveAt: integer("last_active_at").notNull().$defaultFn(now),
 });

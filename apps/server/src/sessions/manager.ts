@@ -102,6 +102,7 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		usage: { inputTokens: row.inputTokens, outputTokens: row.outputTokens },
 		compactedSummary: row.compactedSummary,
 		compactedThroughMessageId: row.compactedThroughMessageId,
+		spawnedBy: row.spawnedBy,
 		createdAt: row.createdAt,
 		lastActiveAt: row.lastActiveAt,
 	};
@@ -444,14 +445,30 @@ class SessionManager {
 	 * (this file already imports from `agents/pi.ts`). Every orchestrator
 	 * tool result excludes other orchestrator Sessions — they're not children,
 	 * and aren't what "ask about usage/sessions" means here.
+	 *
+	 * `orchestratorSessionId` (ADR-0025) is this specific orchestrator
+	 * Session's own id — closed over here, never accepted as a tool
+	 * parameter from the model, so `spawnedByMe` can't be spoofed to see
+	 * another orchestrator's lineage.
 	 */
-	private buildOrchestratorDeps(): OrchestratorDeps {
+	private buildOrchestratorDeps(
+		orchestratorSessionId: string,
+	): OrchestratorDeps {
 		return {
-			listSessions: async (repoId) => {
-				const views = repoId
-					? await this.listByRepo(repoId)
-					: await this.listAll();
-				return views.filter((v) => v.kind !== "orchestrator");
+			listSessions: async (repoId, spawnedByMe) => {
+				const db = getDb();
+				const conditions = [eq(sessionsTable.kind, "session")];
+				if (repoId) conditions.push(eq(sessionsTable.repoId, repoId));
+				if (spawnedByMe) {
+					conditions.push(eq(sessionsTable.spawnedBy, orchestratorSessionId));
+				}
+				const rows = db
+					.select()
+					.from(sessionsTable)
+					.where(and(...conditions))
+					.orderBy(asc(sessionsTable.lastActiveAt))
+					.all();
+				return rows.map(rowToSession).map(toView);
 			},
 			getSession: async (id) => {
 				const view = await this.getView(id);
@@ -472,7 +489,12 @@ class SessionManager {
 				return { ...view, lastMessagePreview };
 			},
 			createChildSession: async (repoId, prompt) => {
-				const view = await this.create(repoId, "pi");
+				const view = await this.create(
+					repoId,
+					"pi",
+					"session",
+					orchestratorSessionId,
+				);
 				this.beginTurn(view.id, prompt);
 				this.runTurn(view.id, prompt).catch((err) => {
 					console.error(
@@ -547,6 +569,10 @@ class SessionManager {
 		repoId: string,
 		agentType: AgentType = "pi",
 		kind: SessionKind = "session",
+		/** ADR-0025: the orchestrator Session's own id, when this call came
+		 * from `dilna_create_session` — omitted (null) for every other
+		 * caller. */
+		spawnedBy: string | null = null,
 	): Promise<SessionView> {
 		// Anything other than "pi" is rejected outright — including a legacy
 		// "claude" value on a pre-migration row passed in by a caller that
@@ -611,6 +637,7 @@ class SessionManager {
 			usage: { inputTokens: 0, outputTokens: 0 },
 			compactedSummary: null,
 			compactedThroughMessageId: null,
+			spawnedBy,
 			createdAt: now,
 			lastActiveAt: now,
 		};
@@ -627,6 +654,7 @@ class SessionManager {
 				kind: session.kind,
 				title: session.title,
 				status: session.status,
+				spawnedBy: session.spawnedBy,
 				createdAt: session.createdAt,
 				lastActiveAt: session.lastActiveAt,
 			})
@@ -1699,7 +1727,7 @@ class SessionManager {
 						sessionId: id,
 						worktreePath: session.worktreePath,
 						initialMessages,
-						deps: this.buildOrchestratorDeps(),
+						deps: this.buildOrchestratorDeps(id),
 					})
 				: await startPi({
 						sessionId: id,
