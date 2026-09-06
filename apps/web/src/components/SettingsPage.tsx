@@ -1,7 +1,16 @@
-import { ArrowLeft, KeyRound, RotateCcw, Save } from "lucide-react";
+import { ArrowLeft, KeyRound, Plus, RotateCcw, Save, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, type LlmConfig } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
@@ -10,15 +19,24 @@ type Props = {
 };
 
 /**
- * Standalone settings view for the single, instance-wide LLM provider/model.
- * dilna keeps one provider/model globally (ADR-0020); historically it came
- * only from `DILNA_PROVIDER`/`DILNA_MODEL` env vars. This form persists an
- * *override* that takes precedence over those env vars from then on (stored
- * in the `llm_config` table and served by `/api/config`), while the env
- * values remain the fallback whenever the override is cleared.
+ * Settings view for overall LLM config: which provider/model new sessions run
+ * on (ADR-0020), plus, layered under it, the multi-provider key store.
  *
- * Deliberately single-provider/single-model — no per-repo or per-session
- * selection, matching how the agent backend already works.
+ * Historically dilna authenticated every provider purely through env vars
+ * (`DILNA_PROVIDER`/`DILNA_MODEL` plus the matching `*_API_KEY` host
+ * passthrough, ADR-0005). The "Model provider" form still picks one
+ * provider/model the way it always did — an *override* persisted in the
+ * `llm_config` table and served by `/api/config`, with env as the fallback
+ * when the override is cleared.
+ *
+ * The "Added providers" section is what makes *multiple* providers usable at
+ * once (multi-provider support): each row is a provider whose API key you've
+ * stored in Settings (providerCredentials.ts), taking precedence over that
+ * provider's env var. Typing a key into "Add a provider" doesn't pick the
+ * running model — it just makes that provider selectable — so you configure
+ * several providers, then choose which one new sessions run on above. New
+ * sessions snapshot that choice at create time; existing sessions keep the
+ * model they started on.
  */
 export function SettingsPage({ onBack }: Props) {
 	const [config, setConfig] = useState<LlmConfig | null>(null);
@@ -33,6 +51,15 @@ export function SettingsPage({ onBack }: Props) {
 		kind: "ok" | "error";
 		text: string;
 	} | null>(null);
+
+	/** "Add a provider" dialog (multi-provider — see providerCredentials.ts):
+	 * holds whether it's open, the API key field, the provider being added, and
+	 * a submitting/error surface independent of the model-form `message` above. */
+	const [addOpen, setAddOpen] = useState(false);
+	const [addProvider, setAddProvider] = useState("");
+	const [addKey, setAddKey] = useState("");
+	const [addPending, setAddPending] = useState(false);
+	const [addError, setAddError] = useState<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -135,6 +162,64 @@ export function SettingsPage({ onBack }: Props) {
 		}
 	}
 
+	function openAddProvider() {
+		setAddProvider(addableProviders[0] ?? "");
+		setAddKey("");
+		setAddError(null);
+		setAddOpen(true);
+	}
+
+	async function handleAddProvider(e: React.FormEvent) {
+		e.preventDefault();
+		if (!addProvider || !addKey.trim()) return;
+		setAddPending(true);
+		setAddError(null);
+		try {
+			await api.config.setCredential(addProvider, addKey.trim());
+			setAddOpen(false);
+			// Refresh so the list + the model selector reflect the new key.
+			const cfg = await api.config.get();
+			setConfig(cfg);
+			// Point at the newly-added provider's first model as a convenience.
+			setProvider(addProvider);
+			const opts = cfg.modelsByProvider[addProvider] ?? [];
+			setModel(opts[0]?.id ?? "");
+			setMessage({ kind: "ok", text: "API key saved for this provider." });
+		} catch (err) {
+			setAddError(err instanceof Error ? err.message : "failed to save key");
+		} finally {
+			setAddPending(false);
+		}
+	}
+
+	async function handleRemoveProvider(provider: string) {
+		setMessage(null);
+		try {
+			await api.config.deleteCredential(provider);
+			const cfg = await api.config.get();
+			setConfig(cfg);
+			setMessage({
+				kind: "ok",
+				text: `No longer storing a key for ${provider}.`,
+			});
+		} catch (err) {
+			setMessage({
+				kind: "error",
+				text: err instanceof Error ? err.message : "failed to remove provider",
+			});
+		}
+	}
+
+	// Providers that have a dilna-managed (stored) API key, driving the
+	// "Added providers" list. Config carries these from GET /api/config; the
+	// test fixture may omit the field, so default to [] rather than crash.
+	const storedProviders = config?.keyedStoredProviders ?? [];
+	const storedSet = new Set(storedProviders.map((r) => r.provider));
+	// Providers already on the list, so the Add dialog excludes them.
+	const addableProviders = Object.keys(config?.modelsByProvider ?? {}).filter(
+		(p) => !storedSet.has(p),
+	);
+
 	const hasOverride = Boolean(config?.override);
 	const providerHasKey =
 		!!config &&
@@ -166,137 +251,271 @@ export function SettingsPage({ onBack }: Props) {
 				)}
 
 				{config && (
-					<form onSubmit={handleSave} className="space-y-5">
-						<div>
-							<h2 className="text-lg font-semibold tracking-tight">
-								Model provider
-							</h2>
-							<p className="mt-0.5 text-sm text-muted-foreground">
-								dilna runs every session on one provider/model. Pick the one to
-								use going forward — this saves an instance-wide override and
-								applies to any new session immediately.
-							</p>
-						</div>
+					<>
+						<form onSubmit={handleSave} className="space-y-5">
+							<div>
+								<h2 className="text-lg font-semibold tracking-tight">
+									Model provider
+								</h2>
+								<p className="mt-0.5 text-sm text-muted-foreground">
+									dilna runs every session on one provider/model. Pick the one
+									to use going forward — this saves an instance-wide override
+									and applies to any new session immediately.
+								</p>
+							</div>
 
-						{/* Active-now summary */}
-						<div className="rounded-xl border border-border bg-card p-3 text-sm shadow-sm">
-							<p className="text-xs text-muted-foreground">
-								Currently in effect
-							</p>
-							<p className="mt-1">
-								<span className="font-mono">{config.effective.provider}</span>
-								{" / "}
-								<span className="font-mono">{config.effective.model}</span>
-								{usingEnv && (
-									<span className="ml-2 text-xs text-muted-foreground">
-										(from env)
-									</span>
-								)}
-								{hasOverride && (
-									<span className="ml-2 text-xs text-muted-foreground">
-										(override set)
-									</span>
-								)}
-							</p>
-							{activeProvider &&
-								config.apiKeysConfigured[activeProvider] === false && (
-									<p className="mt-2 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
-										<KeyRound className="mt-0.5 size-3.5 shrink-0" />
-										No API key is configured for{" "}
-										<span className="font-mono">{activeProvider}</span>. Agent
-										turns will fail until its key env var (e.g.{" "}
-										<span className="font-mono">ANTHROPIC_API_KEY</span>) is
-										set.
+							{/* Active-now summary */}
+							<div className="rounded-xl border border-border bg-card p-3 text-sm shadow-sm">
+								<p className="text-xs text-muted-foreground">
+									Currently in effect
+								</p>
+								<p className="mt-1">
+									<span className="font-mono">{config.effective.provider}</span>
+									{" / "}
+									<span className="font-mono">{config.effective.model}</span>
+									{usingEnv && (
+										<span className="ml-2 text-xs text-muted-foreground">
+											(from env)
+										</span>
+									)}
+									{hasOverride && (
+										<span className="ml-2 text-xs text-muted-foreground">
+											(override set)
+										</span>
+									)}
+								</p>
+								{activeProvider &&
+									config.apiKeysConfigured[activeProvider] === false && (
+										<p className="mt-2 flex items-start gap-1.5 rounded-md bg-destructive/10 px-2 py-1.5 text-xs text-destructive">
+											<KeyRound className="mt-0.5 size-3.5 shrink-0" />
+											No API key is configured for{" "}
+											<span className="font-mono">{activeProvider}</span>. Agent
+											turns will fail until its key env var (e.g.{" "}
+											<span className="font-mono">ANTHROPIC_API_KEY</span>) is
+											set.
+										</p>
+									)}
+							</div>
+
+							<div className="space-y-1.5">
+								<Label htmlFor="settings-provider">Provider</Label>
+								<select
+									id="settings-provider"
+									value={provider || ""}
+									onChange={(e) => handleProviderChange(e.target.value)}
+									className={cn(
+										"h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm transition-[color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+									)}
+								>
+									<option value="" disabled>
+										Select a provider…
+									</option>
+									{Object.keys(config.modelsByProvider).map((p) => (
+										<option key={p} value={p}>
+											{p}
+											{config.apiKeysConfigured[p]
+												? ""
+												: " (no API key in env)"}
+										</option>
+									))}
+								</select>
+								{selectedProvider && !providerHasKey && (
+									<p className="text-xs text-muted-foreground">
+										No API key is configured in the environment for{" "}
+										<span className="font-mono">{selectedProvider}</span> —
+										saving will be rejected until one is set.
 									</p>
 								)}
-						</div>
+							</div>
 
-						<div className="space-y-1.5">
-							<Label htmlFor="settings-provider">Provider</Label>
-							<select
-								id="settings-provider"
-								value={provider || ""}
-								onChange={(e) => handleProviderChange(e.target.value)}
-								className={cn(
-									"h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm transition-[color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-								)}
-							>
-								<option value="" disabled>
-									Select a provider…
-								</option>
-								{Object.keys(config.modelsByProvider).map((p) => (
-									<option key={p} value={p}>
-										{p}
-										{config.apiKeysConfigured[p] ? "" : " (no API key in env)"}
-									</option>
-								))}
-							</select>
-							{selectedProvider && !providerHasKey && (
-								<p className="text-xs text-muted-foreground">
-									No API key is configured in the environment for{" "}
-									<span className="font-mono">{selectedProvider}</span> — saving
-									will be rejected until one is set.
+							<div className="space-y-1.5">
+								<Label htmlFor="settings-model">Model</Label>
+								<select
+									id="settings-model"
+									value={model || ""}
+									onChange={(e) => setModel(e.target.value)}
+									disabled={!selectedProvider || modelOptions.length === 0}
+									className={cn(
+										"h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+									)}
+								>
+									{modelOptions.length === 0 && (
+										<option value="">No model loaded</option>
+									)}
+									{modelOptions.map((m) => (
+										<option key={m.id} value={m.id}>
+											{m.name} ({m.id})
+										</option>
+									))}
+								</select>
+							</div>
+
+							{message && (
+								<p
+									className={cn(
+										"rounded-lg border px-3 py-2 text-sm",
+										message.kind === "ok"
+											? "border-border bg-card text-foreground"
+											: "border-destructive/30 bg-destructive/10 text-destructive",
+									)}
+								>
+									{message.text}
 								</p>
 							)}
-						</div>
 
-						<div className="space-y-1.5">
-							<Label htmlFor="settings-model">Model</Label>
-							<select
-								id="settings-model"
-								value={model || ""}
-								onChange={(e) => setModel(e.target.value)}
-								disabled={!selectedProvider || modelOptions.length === 0}
-								className={cn(
-									"h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-								)}
-							>
-								{modelOptions.length === 0 && (
-									<option value="">No model loaded</option>
-								)}
-								{modelOptions.map((m) => (
-									<option key={m.id} value={m.id}>
-										{m.name} ({m.id})
-									</option>
-								))}
-							</select>
-						</div>
+							<div className="flex items-center gap-2 pt-1">
+								<Button type="submit" disabled={saving || !provider || !model}>
+									<Save className="mr-1.5 size-4" />
+									{saving ? "Saving…" : "Save provider/model"}
+								</Button>
+								<Button
+									type="button"
+									variant="outline"
+									onClick={handleClear}
+									disabled={clearPending || !hasOverride}
+									title={
+										hasOverride
+											? "Return to the env-configured provider/model"
+											: "No override set — already using the env default"
+									}
+								>
+									<RotateCcw className="mr-1.5 size-4" />
+									{clearPending ? "Resetting…" : "Use env default"}
+								</Button>
+							</div>
+						</form>
 
-						{message && (
-							<p
-								className={cn(
-									"rounded-lg border px-3 py-2 text-sm",
-									message.kind === "ok"
-										? "border-border bg-card text-foreground"
-										: "border-destructive/30 bg-destructive/10 text-destructive",
-								)}
-							>
-								{message.text}
+						{/* Multi-provider: providers whose key dilna stores itself (see
+							providerCredentials.ts) rather than reads from an env var only. */}
+						<div className="space-y-3 border-t border-border pt-4">
+							<div className="flex items-center justify-between">
+								<h2 className="text-lg font-semibold tracking-tight">
+									Added providers
+								</h2>
+								<Button
+									type="button"
+									variant="outline"
+									onClick={openAddProvider}
+								>
+									<Plus className="mr-1.5 size-4" />
+									Add a provider
+								</Button>
+							</div>
+							<p className="text-xs text-muted-foreground">
+								A provider is usable once it has a key — stored here (in dilna's
+								db, taking precedence over the env var for that provider) or via
+								its env var.
 							</p>
-						)}
+							{storedProviders.length === 0 ? (
+								<p className="text-sm text-muted-foreground">
+									No keys stored in Settings — add one below, or keep using{" "}
+									<span className="font-mono">*_API_KEY</span> env vars as
+									before.
+								</p>
+							) : (
+								<ul className="space-y-1.5">
+									{storedProviders.map((r) => (
+										<li
+											key={r.provider}
+											className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2"
+										>
+											<span className="font-mono">{r.provider}</span>
+											<span className="ml-1 text-xs text-muted-foreground">
+												API key stored
+											</span>
+											<button
+												type="button"
+												onClick={() => void handleRemoveProvider(r.provider)}
+												title={`Remove stored key for ${r.provider}`}
+												aria-label={`Remove ${r.provider} key`}
+												className="ml-auto rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+											>
+												<X className="size-3.5" />
+											</button>
+										</li>
+									))}
+								</ul>
+							)}
+						</div>
+					</>
+				)}
 
-						<div className="flex items-center gap-2 pt-1">
-							<Button type="submit" disabled={saving || !provider || !model}>
-								<Save className="mr-1.5 size-4" />
-								{saving ? "Saving…" : "Save provider/model"}
-							</Button>
+				<Dialog open={addOpen} onOpenChange={setAddOpen}>
+					<DialogContent className="sm:max-w-md">
+						<DialogHeader>
+							<DialogTitle>Add a provider</DialogTitle>
+							<DialogDescription>
+								Add an API key for another provider so you can select it for new
+								sessions without setting its key env var on the host.
+							</DialogDescription>
+						</DialogHeader>
+						<form
+							id="add-provider-form"
+							onSubmit={handleAddProvider}
+							className="space-y-4"
+						>
+							<div className="space-y-1.5">
+								<Label htmlFor="add-provider">Provider</Label>
+								<select
+									id="add-provider"
+									value={addProvider}
+									onChange={(e) => setAddProvider(e.target.value)}
+									className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								>
+									<option value="" disabled>
+										Select a provider…
+									</option>
+									{addableProviders.map((p) => (
+										<option key={p} value={p}>
+											{p}
+										</option>
+									))}
+								</select>
+								<p className="text-xs text-muted-foreground">
+									Any provider already listed above (Added providers) can't be
+									re-added.
+								</p>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="add-key">API key</Label>
+								<Input
+									id="add-key"
+									type="password"
+									placeholder="sk-…"
+									value={addKey}
+									onChange={(e) => setAddKey(e.target.value)}
+									autoComplete="off"
+								/>
+							</div>
+							<p className="text-xs text-muted-foreground">
+								Stored in dilna's own database, not in the environment. Stored
+								keys take precedence over the matching env var.
+							</p>
+							{addError && (
+								<p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+									{addError}
+								</p>
+							)}
+						</form>
+						<DialogFooter>
 							<Button
 								type="button"
 								variant="outline"
-								onClick={handleClear}
-								disabled={clearPending || !hasOverride}
-								title={
-									hasOverride
-										? "Return to the env-configured provider/model"
-										: "No override set — already using the env default"
-								}
+								onClick={() => setAddOpen(false)}
+								disabled={addPending}
 							>
-								<RotateCcw className="mr-1.5 size-4" />
-								{clearPending ? "Resetting…" : "Use env default"}
+								Cancel
 							</Button>
-						</div>
-					</form>
-				)}
+							<Button
+								type="submit"
+								form="add-provider-form"
+								disabled={addPending || !addProvider || !addKey.trim()}
+							>
+								{addPending ? "Saving…" : "Save key"}
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
 			</div>
 		</div>
 	);

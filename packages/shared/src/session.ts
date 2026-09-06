@@ -27,6 +27,12 @@ export type Session = {
 	 * created via `dilna_create_session` — null otherwise. Internal to the
 	 * server (absent from SessionView), same as the compaction fields above. */
 	spawnedBy: string | null;
+	/** The concrete provider/model this Session runs on (multi-provider support).
+	 * Present once resolved (rowToSession always reads these columns), but kept
+	 * Optional so legacy Session-shaping factory sites don't have to populate it
+	 * and the shared type stays forgiving — server callers use `??` fallbacks. */
+	provider?: string | null;
+	model?: string | null;
 	createdAt: number;
 	lastActiveAt: number;
 };
@@ -37,6 +43,15 @@ export type SessionView = {
 	title: string;
 	agentType: AgentType;
 	kind: SessionKind;
+	/** The concrete provider/model this Session runs on, when the Session was
+	 * created with the Settings snapshot (multi-provider support) — what the
+	 * chat header and assistant rows label themselves with instead of the
+	 * generic agent name. Absent for pre-migration and never-resolved
+	 * Sessions; Optional (not required) so SessionView factory sites that
+	 * predate multi-provider still compile and those rows render the legacy
+	 * agent label instead. */
+	provider?: string | null;
+	model?: string | null;
 	status: SessionStatus;
 	/** See {@link Session.usage}. Seeds the chat header's token badge on
 	 * mount, so it doesn't restart from 0 after a reload or session switch. */

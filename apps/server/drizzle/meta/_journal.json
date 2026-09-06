@@ -85,6 +85,27 @@
 			"when": 1788515707584,
 			"tag": "0011_violet_richard_fisk",
 			"breakpoints": true
+		},
+		{
+			"idx": 12,
+			"version": "6",
+			"when": 1788616000000,
+			"tag": "0012_two_sunny_echo",
+			"breakpoints": true
+		},
+		{
+			"idx": 13,
+			"version": "6",
+			"when": 1788616100000,
+			"tag": "0013_quiet_ember_ivory",
+			"breakpoints": true
+		},
+		{
+			"idx": 14,
+			"version": "6",
+			"when": 1788616200000,
+			"tag": "0014_late_bright_echo",
+			"breakpoints": true
 		}
 	]
 }

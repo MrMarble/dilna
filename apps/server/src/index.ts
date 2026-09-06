@@ -7,6 +7,7 @@ import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
+import { primeProviderCredentials } from "./agents/providerCredentials";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
 import { repoManager } from "./repos/manager";
 import { configRoute } from "./routes/config";
@@ -29,6 +30,7 @@ import { sessionManager } from "./sessions/manager";
 // view can provide a provider/model override without a restart — and booting
 // is what makes that view reachable.
 primeOverrideFromDb();
+primeProviderCredentials();
 const envProviderConfig = validateProviderConfig(process.env);
 if (!envProviderConfig.ok && !getOverride()) {
 	console.warn(

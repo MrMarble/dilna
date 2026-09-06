@@ -60,8 +60,37 @@ export const sessions = sqliteTable("sessions", {
 	 * directly via the UI, or for an orchestrator Session itself. No FK
 	 * (same dangling-id tolerance as `usageEvents`/`sessionArchive`). */
 	spawnedBy: text("spawned_by"),
+	/** The concrete provider/model this Session was created to run on, seen
+	 * via the Settings view's "model for new sessions" selector (override ??
+	 * env) and snapshotted at `create()` time (multi-provider support, ADR
+	 * n/a; see providerCredentials.ts). Null for pre-migration rows and for
+	 * Sessions created with no provider/model resolvable at create time
+	 * (env not set etc.) — such Sessions lazily resolve the then-effective
+	 * config on their first start instead (the same fallback pre-existing
+	 * Sessions always used). */
+	provider: text("provider"),
+	model: text("model"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 	lastActiveAt: integer("last_active_at").notNull().$defaultFn(now),
+});
+
+/**
+ * One row per provider that has a **dilna-managed** API key — the keys you
+ * add in the Settings view's "Add a provider" flow (providerCredentials.ts).
+ * This is a per-provider extension layered *over* the env default: provider
+ * keys that come from `process.env` (ANTHROPIC_API_KEY & co., ADR-0005
+ * host-passthrough) are not stored here; when both exist a stored key wins
+ * (Settings takes precedence over env, matching how the provider/model
+ * override already outranks DILNA_PROVIDER/DILNA_MODEL). Stored at rest in
+ * the same SQLite db as every other dilna secret/config (llm_config,
+ * repo memory), consistent with dilna being a self-hosted single-user app
+ * with no auth layer — plaintext-keyed, not encrypted; see
+ * providerCredentials.ts's module doc comment. The Settings UI masks the
+ * value and only ever re-sends it to *set or replace*, never to display. */
+export const providerCredentials = sqliteTable("provider_credentials", {
+	provider: text("provider").primaryKey(),
+	apiKey: text("api_key").notNull(),
+	updatedAt: integer("updated_at").notNull().$defaultFn(now),
 });
 
 export const messages = sqliteTable("messages", {

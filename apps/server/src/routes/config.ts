@@ -13,23 +13,35 @@ import {
 	providerApiKeyConfigured,
 	setOverride,
 } from "../agents/providerConfigStore";
+import {
+	clearProviderApiKey,
+	listStoredProviderKeys,
+	type StoredProviderKey,
+	setProviderApiKey,
+} from "../agents/providerCredentials";
 
 type ProviderModelOption = { id: string; name: string };
 
 type GetConfigResponse = {
-	/** The persisted override (single provider/model chosen in Settings), or
-	 * null when dilna is falling back to the env vars. */
+	/** The persisted provider/model override chosen in Settings (applies to
+	 * new sessions), or null when dilna is falling back to the env vars. */
 	override: { provider: string; model: string } | null;
 	/** Raw DILNA_PROVIDER/DILNA_MODEL env values (may be empty strings/null
 	 * when unset). */
 	envDefault: { provider: string; model: string };
 	/** The provider/model currently in effect: override if set, else env. */
 	effective: { provider: string; model: string };
-	/** Which of the allowlisted providers has an API key configured in env —
-	 * lets the form steer the user and explain why a choice is disabled. */
+	/** Which of the allowlisted providers has a usable API key — a key added
+	 * in Settings (`keyedStoredProviders`'s members) or an env key (`*_API_KEY`
+	 * host passthrough). Lets the form steer the user and explain why a
+	 * choice is unusable. */
 	apiKeysConfigured: Record<string, boolean>;
 	/** Provider -> selectable models for the dropdown. */
 	modelsByProvider: Record<string, ProviderModelOption[]>;
+	/** Providers that have a **stored** key added via Settings (multi-provider
+	 * support) — distinct from `apiKeysConfigured`, which also counts env
+	 * keys. Drives the "Added providers" list in the Settings view. */
+	keyedStoredProviders: StoredProviderKey[];
 };
 
 export const configRoute = new Hono();
@@ -60,6 +72,7 @@ configRoute.get("/", (c) => {
 		},
 		apiKeysConfigured,
 		modelsByProvider,
+		keyedStoredProviders: listStoredProviderKeys(),
 	};
 	return c.json(body);
 });
@@ -87,4 +100,36 @@ configRoute.put("/", async (c) => {
 configRoute.delete("/", (c) => {
 	clearOverride();
 	return c.json({ ok: true, override: null });
+});
+
+// ---- Stored API keys (multi-provider — see providerCredentials.ts) ----------
+
+type SetCredentialBody = { provider: string; apiKey: string };
+
+/** Save (replace) a provider's API key so Settings can provision providers
+ * that aren't (or aren't only) configured via env. */
+configRoute.put("/credentials", async (c) => {
+	const body = (await c.req
+		.json()
+		.catch(() => null)) as SetCredentialBody | null;
+	if (
+		!body ||
+		typeof body.provider !== "string" ||
+		typeof body.apiKey !== "string"
+	) {
+		throw new HTTPException(400, {
+			message: "Expected { provider, apiKey } to save a provider key.",
+		});
+	}
+	const result = setProviderApiKey(body.provider, body.apiKey);
+	if (!result.ok) {
+		throw new HTTPException(400, { message: result.error });
+	}
+	return c.json({ ok: true });
+});
+
+/** Forget a provider's stored key (falls back to its env key thereafter). */
+configRoute.delete("/credentials/:provider", (c) => {
+	clearProviderApiKey(c.req.param("provider"));
+	return c.json({ ok: true });
 });

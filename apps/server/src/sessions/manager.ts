@@ -103,6 +103,8 @@ function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		compactedSummary: row.compactedSummary,
 		compactedThroughMessageId: row.compactedThroughMessageId,
 		spawnedBy: row.spawnedBy,
+		provider: row.provider,
+		model: row.model,
 		createdAt: row.createdAt,
 		lastActiveAt: row.lastActiveAt,
 	};
@@ -141,6 +143,8 @@ function toView(s: Session): SessionView {
 		title: s.title,
 		agentType: s.agentType,
 		kind: s.kind,
+		provider: s.provider,
+		model: s.model,
 		status: s.status,
 		usage: s.usage,
 		createdAt: s.createdAt,
@@ -550,8 +554,12 @@ class SessionManager {
 		if (session?.kind !== "session") return null;
 
 		const active = this.active.get(id);
-		const provider = active ? active.handle.provider : effectiveProvider();
-		const model = active ? active.handle.model : effectiveModel();
+		const provider = active
+			? active.handle.provider
+			: (session.provider ?? effectiveProvider());
+		const model = active
+			? active.handle.model
+			: (session.model ?? effectiveModel());
 
 		const pendingId = this.pendingUserMessageId(id);
 		const history = (await this.getMessages(id)).filter(
@@ -638,6 +646,14 @@ class SessionManager {
 			compactedSummary: null,
 			compactedThroughMessageId: null,
 			spawnedBy,
+			// Settings snapshot of the model this Session was created to run on
+			// (multi-provider support): resolve the effective override/env config
+			// now, at create time, so this Session is pinned to *that* model rather
+			// than whatever the instance default becomes later. A gap in coverage
+			// (override not yet resolvable because env/keys aren't set) stores
+			// null and lets startAgent lazily resolve when it first runs instead.
+			provider: effectiveProvider() || null,
+			model: effectiveModel() || null,
 			createdAt: now,
 			lastActiveAt: now,
 		};
@@ -655,6 +671,8 @@ class SessionManager {
 				title: session.title,
 				status: session.status,
 				spawnedBy: session.spawnedBy,
+				provider: session.provider,
+				model: session.model,
 				createdAt: session.createdAt,
 				lastActiveAt: session.lastActiveAt,
 			})
@@ -682,11 +700,16 @@ class SessionManager {
 
 		// Captured before `stopSession` below, which removes this Session's
 		// `ActiveAgent` entry (and with it, its live `PiHandle.provider`/
-		// `.model`) — an idle Session falls back to the currently-effective
-		// config, same resolution `getContextUsageEstimate` uses.
+		// `.model`) — an idle Session falls back to its own snapshot (taken at
+		// create; then the currently-effective config for pre-migration rows),
+		// same resolution `getContextUsageEstimate` uses.
 		const active = this.active.get(id);
-		const provider = active ? active.handle.provider : effectiveProvider();
-		const model = active ? active.handle.model : effectiveModel();
+		const provider = active
+			? active.handle.provider
+			: (session.provider ?? effectiveProvider());
+		const model = active
+			? active.handle.model
+			: (session.model ?? effectiveModel());
 
 		// Kill any running agent first.
 		await this.stopSession(id);
@@ -811,7 +834,12 @@ class SessionManager {
 	): Promise<void> {
 		if (session.kind !== "session") return;
 		if (session.title !== defaultSessionTitle(session.id)) return;
-		const title = await generateSessionTitle(session.id, firstPrompt);
+		const title = await generateSessionTitle(
+			session.id,
+			firstPrompt,
+			session.provider,
+			session.model,
+		);
 		if (!title) return;
 		await this.setTitle(session.id, title);
 	}
@@ -1726,6 +1754,8 @@ class SessionManager {
 				? await startOrchestrator({
 						sessionId: id,
 						worktreePath: session.worktreePath,
+						provider: session.provider,
+						model: session.model,
 						initialMessages,
 						deps: this.buildOrchestratorDeps(id),
 					})
@@ -1733,6 +1763,8 @@ class SessionManager {
 						sessionId: id,
 						worktreePath: session.worktreePath,
 						repoId: session.repoId,
+						provider: session.provider,
+						model: session.model,
 						initialMessages,
 					} satisfies PiStartOptions);
 

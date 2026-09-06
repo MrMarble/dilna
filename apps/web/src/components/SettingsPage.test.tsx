@@ -25,6 +25,7 @@ const state = vi.hoisted(() => {
 				? over
 				: { provider: "anthropic", model: "claude-opus-4-5" },
 			apiKeysConfigured: { anthropic: true, deepseek: false },
+			keyedStoredProviders: [],
 			modelsByProvider: models,
 		};
 	}
@@ -65,6 +66,8 @@ vi.mock("@/api/client", () => ({
 				state.api.setOverride(p, m),
 			),
 			clearOverride: vi.fn(async () => state.api.clearOverride()),
+			setCredential: vi.fn(async () => ({ ok: true })),
+			deleteCredential: vi.fn(async () => ({ ok: true })),
 		},
 	},
 }));
