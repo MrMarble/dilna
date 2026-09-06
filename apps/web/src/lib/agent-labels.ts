@@ -20,3 +20,18 @@ export const AGENT_LABELS: Record<AgentType, string> = {
 export function agentLabel(agentType: string): string {
 	return (AGENT_LABELS as Record<string, string>)[agentType] ?? agentType;
 }
+
+/**
+ * The name a chat row/header should show for the assistant in a Session.
+ * Multi-provider (see the Settings view) pins each Session to a concrete
+ * model, so its label is that model rather than the generic agent name —
+ * "claude-opus-4-5" instead of "pi". Falls back to the agent label (the
+ * historical "pi" name) only when the Session has no model snapshot yet
+ * (pre-migration, or configured before a model was resolvable).
+ */
+export function assistantDisplayName(
+	model: string | null | undefined,
+	agentType: string,
+): string {
+	return model ?? agentLabel(agentType);
+}

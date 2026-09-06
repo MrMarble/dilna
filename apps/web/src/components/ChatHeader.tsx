@@ -14,7 +14,7 @@ import { api } from "@/api/client";
 import { StatusDot } from "@/components/StatusDot";
 import { UsageBadge } from "@/components/UsageBadge";
 import type { MobileSheetTrigger } from "@/hooks/useMobileSheet";
-import { agentLabel } from "@/lib/agent-labels";
+import { assistantDisplayName } from "@/lib/agent-labels";
 
 type Props = {
 	repo: Repo;
@@ -92,7 +92,11 @@ export function ChatHeader({
 						<FileDiff className="size-4" />
 					</button>
 					<span className="hidden rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground md:inline">
-						Agent · {agentLabel(selectedSession.agentType)}
+						Agent ·{" "}
+						{assistantDisplayName(
+							selectedSession.model,
+							selectedSession.agentType,
+						)}
 					</span>
 					<CopyTranscriptLinkButton sessionId={selectedSession.id} />
 					<button

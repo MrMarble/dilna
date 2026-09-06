@@ -35,7 +35,6 @@ import type {
 import {
 	type AssistantMessage,
 	completeSimple,
-	getEnvApiKey,
 	type ImageContent,
 	streamSimple,
 	type TextContent,
@@ -73,6 +72,7 @@ export type { OrchestratorDeps };
 
 import { isDilnaProvider } from "./providerConfig";
 import { effectiveModel, effectiveProvider } from "./providerConfigStore";
+import { resolveApiKey } from "./providerCredentials";
 import type { AgentChatOptions } from "./types";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -89,6 +89,14 @@ export type PiStartOptions = {
 	/** The Session's owning Repo (memory is scoped per-Repo, not per-Session —
 	 * see ADR-0018). */
 	repoId: string;
+	/** The concrete provider/model this Session was created to run on (the
+	 * Settings snapshot — multi-provider support), when one exists.
+	 * SessionManager.startAgent resolves empty/absent values to the
+	 * then-effective global config, so passing it here keeps a Session pinned
+	 * to the model it started on rather than drifting if the instance default
+	 * changes under it. */
+	provider?: string | null;
+	model?: string | null;
 	/** dilna's own persisted history, already converted to pi's transcript
 	 * shape via {@link dilnaMessagesToInitialState}. Empty for a session's
 	 * first-ever turn. Every cold start (first turn, post-idle-kill respawn,
@@ -498,29 +506,46 @@ function findWorkspaceRoot(start: string): string {
 
 /**
  * Resolve the concrete provider/model pi should run on for a Session.
- * Provider/model come from the instance override if one is set, else from
- * `DILNA_PROVIDER`/`DILNA_MODEL` env (see providerConfigStore.ts) — this is
- * the one place every session-starting call goes through. Returns the
- * validated catalog `Model` for the active combination, throwing a
- * descriptive error if there's no usable provider/model (only reachable when
- * the override/env were changed out from under a running server — the
- * override write path and boot check validate first).
+ * Provider/model come from the session's own snapshot (the Settings-derived
+ * provider/model captured when the Session was created — multi-provider
+ * support, see manager.create) when one exists, else from the instance
+ * override if one is set, else from `DILNA_PROVIDER`/`DILNA_MODEL` env (see
+ * providerConfigStore.ts) — this is the one place every session-starting
+ * call goes through. Returns the validated catalog `Model` for the active
+ * combination, throwing a descriptive error if there's no usable
+ * provider/model (only reachable when the override/env were changed out from
+ * under a running server — the override write path and boot check validate
+ * first).
  */
-function resolveConfiguredModel() {
-	const provider = effectiveProvider();
-	const modelId = effectiveModel();
-	if (!isDilnaProvider(provider) || !modelId) {
+function resolveConfiguredModel(
+	provider?: string | null,
+	model?: string | null,
+) {
+	const p = (provider ?? effectiveProvider()).trim();
+	const m = (model ?? effectiveModel()).trim();
+	if (!isDilnaProvider(p) || !m) {
 		throw new Error(
-			`no usable provider/model configured (effective provider=${provider || "<unset>"}, model=${modelId || "<unset>"}). Set DILNA_PROVIDER/DILNA_MODEL in the environment or configure one in Settings.`,
+			`no usable provider/model configured (effective provider=${p || "<unset>"}, model=${m || "<unset>"}). Set DILNA_PROVIDER/DILNA_MODEL in the environment or configure one in Settings.`,
 		);
 	}
-	const model = getBuiltinModels(provider).find((m) => m.id === modelId);
-	if (!model) {
+	const modelObj = getBuiltinModels(p).find((mm) => mm.id === m);
+	if (!modelObj) {
 		throw new Error(
-			`provider=${provider}/model=${modelId} is no longer a valid combination.`,
+			`provider=${p}/model=${m} is no longer a valid combination.`,
 		);
 	}
-	return { provider, modelId, model };
+	return { provider: p, modelId: m, model: modelObj };
+}
+
+/**
+ * `pi-ai`'s per-"provider" API-key resolution, but layered over dilna's own
+ * stored (Settings) keys — the single place pi's `Agent` construction and the
+ * summarization/archive model calls ask ``what API key am I talking to this
+ * provider with?''. Stored keys win; env (`*_API_KEY`) is the fallback. See
+ * providerCredentials.ts.
+ */
+function providerApiKey(provider: string): string | undefined {
+	return resolveApiKey(provider);
 }
 
 /**
@@ -534,7 +559,10 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 	ensureWritablePathsExist();
 	await ensureSandboxInitialized();
 
-	const { provider, modelId, model } = resolveConfiguredModel();
+	const { provider, modelId, model } = resolveConfiguredModel(
+		opts.provider,
+		opts.model,
+	);
 
 	const gitCommonDir = resolveGitCommonDir(opts.worktreePath);
 	const workspaceRoot = findWorkspaceRoot(__dirname);
@@ -584,7 +612,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		},
 		sessionId: opts.sessionId,
 		streamFn: streamSimple,
-		getApiKey: (p) => getEnvApiKey(p, process.env as Record<string, string>),
+		getApiKey: (p) => resolveApiKey(p),
 		beforeToolCall: createConfinementHook(opts.worktreePath),
 	});
 
@@ -643,6 +671,13 @@ function wirePiHandle(
 export type OrchestratorStartOptions = {
 	sessionId: string;
 	worktreePath: string;
+	/** The concrete provider/model this orchestrator Session runs on — the
+	 * orchestrator meta-repo Session is created through the exact same
+	 * `manager.create` path as ordinary Sessions, so it carries a Settings
+	 * snapshot too (see `PiStartOptions.provider`). Empty/absent falls back
+	 * to the then-effective global config, same as ordinary Sessions. */
+	provider?: string | null;
+	model?: string | null;
 	initialMessages: AgentMessage[];
 	deps: OrchestratorDeps;
 };
@@ -657,7 +692,10 @@ export type OrchestratorStartOptions = {
 export async function startOrchestrator(
 	opts: OrchestratorStartOptions,
 ): Promise<PiHandle> {
-	const { provider, modelId, model } = resolveConfiguredModel();
+	const { provider, modelId, model } = resolveConfiguredModel(
+		opts.provider,
+		opts.model,
+	);
 
 	const agent = new Agent({
 		initialState: {
@@ -668,7 +706,7 @@ export async function startOrchestrator(
 		},
 		sessionId: opts.sessionId,
 		streamFn: streamSimple,
-		getApiKey: (p) => getEnvApiKey(p, process.env as Record<string, string>),
+		getApiKey: (p) => resolveApiKey(p),
 	});
 
 	return wirePiHandle(agent, opts.worktreePath, provider, modelId);
@@ -1149,10 +1187,7 @@ const summarizationModels = {
 		context: Context,
 		options?: SimpleStreamOptions,
 	) => {
-		const apiKey = await getEnvApiKey(
-			model.provider,
-			process.env as Record<string, string>,
-		);
+		const apiKey = providerApiKey(model.provider);
 		return completeSimple(model, context, { ...options, apiKey });
 	},
 	// biome-ignore lint/suspicious/noExplicitAny: partial `Models` shim, see doc comment above
@@ -1479,15 +1514,23 @@ const TITLE_SYSTEM_PROMPT =
 export async function generateSessionTitle(
 	sessionId: string,
 	userPrompt: string,
+	provider?: string | null,
+	modelId?: string | null,
 ): Promise<string | null> {
-	let model: ReturnType<typeof resolveConfiguredModel>["model"];
+	let resolved = resolveConfiguredModel();
 	try {
-		model = resolveConfiguredModel().model;
+		resolved = resolveConfiguredModel(provider, modelId);
 	} catch {
-		// No usable provider/model (override unset and env not configured) —
-		// best-effort per the doc comment: keep the placeholder title.
-		return null;
+		try {
+			resolved = resolveConfiguredModel();
+		} catch {
+			// No usable provider/model anywhere (nothing pinned to the Session and
+			// no override/env default) — best-effort per the doc comment: keep the
+			// placeholder title.
+			return null;
+		}
 	}
+	const model = resolved.model;
 
 	// Title derivation carries no tools — just the bare model call described in
 	// the doc comment above. Uses the same explicit `AgentTool<any>` alias
@@ -1508,7 +1551,7 @@ export async function generateSessionTitle(
 		// tiny call never collides with the real Session's billing/cache bucket.
 		sessionId: `${sessionId}:title`,
 		streamFn: streamSimple,
-		getApiKey: (p) => getEnvApiKey(p, process.env as Record<string, string>),
+		getApiKey: (p) => providerApiKey(p),
 	});
 
 	await titleAgent.prompt(

@@ -36,7 +36,7 @@ import {
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
 import { AgentIcon } from "@/lib/agent-icons";
-import { agentLabel } from "@/lib/agent-labels";
+import { assistantDisplayName } from "@/lib/agent-labels";
 import { getToolMeta } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -573,6 +573,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 														i === 0 || rendered[i - 1]?.role !== m.role
 													}
 													agentType={session.agentType}
+													modelName={session.model}
 													isStreaming={m.id in live}
 													thinkingChunk={thinkingBuffers[m.id]}
 													turnActivity={turnActivity}
@@ -646,7 +647,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 						placeholder={
 							working
 								? `${thinkingWord}…`
-								: `Message ${agentLabel(session.agentType)}…`
+								: `Message ${assistantDisplayName(session.model, session.agentType)}…`
 						}
 						rows={2}
 						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-base outline-none"
@@ -715,6 +716,7 @@ function ChatMessageRow({
 	createdAt,
 	showAttribution,
 	agentType,
+	modelName,
 	isStreaming,
 	thinkingChunk,
 	turnActivity,
@@ -725,11 +727,13 @@ function ChatMessageRow({
 	createdAt: number;
 	showAttribution: boolean;
 	agentType: AgentType;
+	modelName?: string | null;
 	isStreaming?: boolean;
 	thinkingChunk?: string;
 	turnActivity?: TurnActivity | null;
 }) {
-	const name = role === "user" ? "You" : agentLabel(agentType);
+	const name =
+		role === "user" ? "You" : assistantDisplayName(modelName, agentType);
 
 	// Group consecutive tool call parts into collapsible sections.
 	const rows: React.ReactNode[] = [];

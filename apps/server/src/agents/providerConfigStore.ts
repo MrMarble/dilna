@@ -1,4 +1,3 @@
-import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
@@ -9,6 +8,7 @@ import {
 	isDilnaProvider,
 	PROVIDER_ALLOWLIST,
 } from "./providerConfig";
+import { hasApiKey, resolveApiKey } from "./providerCredentials";
 
 /**
  * Instance-wide LLM provider/model override + the single resolution point
@@ -95,9 +95,9 @@ export type SetOverrideResult = { ok: true } | { ok: false; error: string };
  * Validate and persist a new override, replacing the row if one exists. Empty
  * string values are treated as "clear the field". Any invalid combination
  * (provider outside the allowlist, a model not in that provider's catalog, or
- * no matching API key configured in env) is rejected up front so the DB never
- * holds a combination the agent startup path couldn't resolve — the pi.ts
- * "should not happen" guards stay genuinely unreachable.
+ * no matching API key configured — in env or in Settings) is rejected up
+ * front so the DB never holds a combination the agent startup path couldn't
+ * resolve — the pi.ts "should not happen" guards stay genuinely unreachable.
  */
 export function setOverride(
 	provider: string,
@@ -127,11 +127,11 @@ export function setOverride(
 			error: `${m} is not a known model for provider "${p}".`,
 		};
 	}
-	const apiKey = getEnvApiKey(p, process.env as Record<string, string>);
+	const apiKey = resolveApiKey(p);
 	if (!apiKey) {
 		return {
 			ok: false,
-			error: `No API key configured for provider "${p}" — set its matching env var (e.g. ANTHROPIC_API_KEY for "anthropic").`,
+			error: `No API key configured for provider "${p}" — set its matching env var (e.g. ANTHROPIC_API_KEY for "anthropic") or add the provider's key in Settings.`,
 		};
 	}
 
@@ -178,8 +178,7 @@ export function effectiveModel(): string {
  * reject an override whose key isn't present (see {@link setOverride}).
  */
 export function providerApiKeyConfigured(provider: string): boolean {
-	if (!isDilnaProvider(provider)) return false;
-	return Boolean(getEnvApiKey(provider, process.env as Record<string, string>));
+	return hasApiKey(provider);
 }
 
 /** Build the effective `Model` object pi expects, or `null` if unresolved. */

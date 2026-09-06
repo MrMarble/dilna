@@ -48,6 +48,10 @@ export type LlmConfig = {
 	envDefault: { provider: string; model: string };
 	effective: { provider: string; model: string };
 	apiKeysConfigured: Record<string, boolean>;
+	/** Providers that have a **stored** (Settings-added) API key — see the
+	 * server's providerCredentials.ts. Provider ids only; key material never
+	 * leaves the server. */
+	keyedStoredProviders: { provider: string }[];
 	modelsByProvider: Record<string, ProviderModelOption[]>;
 };
 
@@ -337,5 +341,20 @@ export const api = {
 			request<{ ok: boolean; override: null }>("/api/config", {
 				method: "DELETE",
 			}),
+		/** Save (replace) a provider's API key — multi-provider support (see
+		 * the Settings "Add a provider" flow). */
+		setCredential: (provider: string, apiKey: string) =>
+			request<{ ok: boolean }>("/api/config/credentials", {
+				method: "PUT",
+				body: JSON.stringify({ provider, apiKey }),
+			}),
+		/** Forget a provider's stored API key (falls back to its env key). */
+		deleteCredential: (provider: string) =>
+			request<{ ok: boolean }>(
+				`/api/config/credentials/${encodeURIComponent(provider)}`,
+				{
+					method: "DELETE",
+				},
+			),
 	},
 };
