@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.18.0](https://github.com/MrMarble/dilna/compare/v0.17.0...v0.18.0) (2026-09-06)
+
+
+### Features
+
+* **server+web:** add Anthropic OAuth login alongside API keys ([#140](https://github.com/MrMarble/dilna/issues/140)) ([f44128e](https://github.com/MrMarble/dilna/commit/f44128e6faff85efaa79ed30c4afd90ca60b221e))
+* **server+web:** configure multiple LLM providers at once ([#136](https://github.com/MrMarble/dilna/issues/136)) ([c1a772b](https://github.com/MrMarble/dilna/commit/c1a772bb4d5fafc6dc42f709af5f226f80d83d64))
+* **server+web:** support custom LLM providers (Ollama, LM Studio, vLLM, ...) ([#141](https://github.com/MrMarble/dilna/issues/141)) ([261f955](https://github.com/MrMarble/dilna/commit/261f9557552bbc42dd66a92da92cd79910186019))
+
 ## [0.17.0](https://github.com/MrMarble/dilna/compare/v0.16.0...v0.17.0) (2026-09-04)
 
 
