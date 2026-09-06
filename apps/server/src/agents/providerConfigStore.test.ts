@@ -59,15 +59,15 @@ describe("provider config override store", () => {
 		expect(effectiveModel()).toBe("claude-opus-5");
 	});
 
-	it("persists a valid override and makes it take effect immediately", () => {
-		const res = setOverride("deepseek", "deepseek-v4-flash");
+	it("persists a valid override and makes it take effect immediately", async () => {
+		const res = await setOverride("deepseek", "deepseek-v4-flash");
 		expect(res.ok).toBe(true);
 		expect(effectiveProvider()).toBe("deepseek");
 		expect(effectiveModel()).toBe("deepseek-v4-flash");
 	});
 
-	it("persists to the DB so it survives restart (override survives close/re-prime)", () => {
-		setOverride("moonshotai", "kimi-k2.5");
+	it("persists to the DB so it survives restart (override survives close/re-prime)", async () => {
+		await setOverride("moonshotai", "kimi-k2.5");
 		// Simulate a server restart: close the DB connection, then re-prime the
 		// module cache from the on-disk row. The override must come back from
 		// SQLite rather than from the module's in-memory cache.
@@ -77,40 +77,40 @@ describe("provider config override store", () => {
 		expect(effectiveModel()).toBe("kimi-k2.5");
 	});
 
-	it("clearing the override returns effective values to the env fallback", () => {
-		setOverride("deepseek", "deepseek-v4-flash");
+	it("clearing the override returns effective values to the env fallback", async () => {
+		await setOverride("deepseek", "deepseek-v4-flash");
 		clearOverride();
 		expect(effectiveProvider()).toBe("anthropic");
 		expect(effectiveModel()).toBe("claude-opus-5");
 	});
 
-	it("rejects a provider outside the allowlist", () => {
-		const res = setOverride("kimi-coding", "k3");
+	it("rejects a provider outside the allowlist", async () => {
+		const res = await setOverride("kimi-coding", "k3");
 		expect(res.ok).toBe(false);
 		if (res.ok) throw new Error("unreachable");
 		expect(res.error).toContain("not a supported provider");
 		expect(getOverride()).toBeNull();
 	});
 
-	it("rejects a model not in the provider's catalog", () => {
-		const res = setOverride("anthropic", "definitely-not-a-model");
+	it("rejects a model not in the provider's catalog", async () => {
+		const res = await setOverride("anthropic", "definitely-not-a-model");
 		expect(res.ok).toBe(false);
 		if (res.ok) throw new Error("unreachable");
 		expect(res.error).toContain("not a known model");
 		expect(getOverride()).toBeNull();
 	});
 
-	it("rejects when the matching API key env var is absent", () => {
+	it("rejects when the matching API key env var is absent", async () => {
 		delete process.env.DEEPSEEK_API_KEY;
-		const res = setOverride("deepseek", "deepseek-v4-flash");
+		const res = await setOverride("deepseek", "deepseek-v4-flash");
 		expect(res.ok).toBe(false);
 		if (res.ok) throw new Error("unreachable");
 		expect(res.error).toContain("No API key configured");
 		expect(getOverride()).toBeNull();
 	});
 
-	it("setting an empty provider+model is rejected as nothing to set", () => {
-		const res = setOverride("", "");
+	it("setting an empty provider+model is rejected as nothing to set", async () => {
+		const res = await setOverride("", "");
 		expect(res.ok).toBe(false);
 		if (res.ok) throw new Error("unreachable");
 		expect(res.error).toContain("empty");

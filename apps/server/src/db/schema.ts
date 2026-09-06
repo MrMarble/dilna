@@ -75,21 +75,40 @@ export const sessions = sqliteTable("sessions", {
 });
 
 /**
- * One row per provider that has a **dilna-managed** API key — the keys you
- * add in the Settings view's "Add a provider" flow (providerCredentials.ts).
- * This is a per-provider extension layered *over* the env default: provider
- * keys that come from `process.env` (ANTHROPIC_API_KEY & co., ADR-0005
- * host-passthrough) are not stored here; when both exist a stored key wins
- * (Settings takes precedence over env, matching how the provider/model
- * override already outranks DILNA_PROVIDER/DILNA_MODEL). Stored at rest in
- * the same SQLite db as every other dilna secret/config (llm_config,
- * repo memory), consistent with dilna being a self-hosted single-user app
- * with no auth layer — plaintext-keyed, not encrypted; see
- * providerCredentials.ts's module doc comment. The Settings UI masks the
- * value and only ever re-sends it to *set or replace*, never to display. */
+ * One row per provider that has a **dilna-managed** credential — either an
+ * API key or an OAuth login, added via the Settings view's "Add a provider"
+ * / "Sign in with Claude" flows (providerCredentials.ts). This is a
+ * per-provider extension layered *over* the env default: provider keys that
+ * come from `process.env` (ANTHROPIC_API_KEY & co., ADR-0005 host
+ * passthrough) are not stored here; when a stored credential exists it wins
+ * over env (Settings takes precedence over env, matching how the
+ * provider/model override already outranks DILNA_PROVIDER/DILNA_MODEL), and
+ * for a provider with both a stored OAuth login and a stored API key, OAuth
+ * wins (see providerCredentials.ts's `resolveApiKey`). Stored at rest in the
+ * same SQLite db as every other dilna secret/config (llm_config, repo
+ * memory), consistent with dilna being a self-hosted single-user app with no
+ * auth layer — plaintext-keyed, not encrypted; see providerCredentials.ts's
+ * module doc comment. The Settings UI masks the value and only ever re-sends
+ * it to *set or replace*, never to display.
+ *
+ * `oauth*` columns are only ever populated for `anthropic` today — it's the
+ * only dilna-allowlisted provider `pi-ai` ships an OAuth flow for. `apiKey`
+ * became nullable when OAuth support was added: a row can now hold just an
+ * OAuth login with no API key at all. */
 export const providerCredentials = sqliteTable("provider_credentials", {
 	provider: text("provider").primaryKey(),
-	apiKey: text("api_key").notNull(),
+	apiKey: text("api_key"),
+	/** OAuth access token — a live `sk-ant-oat...` token when present. `pi-ai`'s
+	 * anthropic-messages API layer auto-detects this prefix and switches to
+	 * Bearer auth + the oauth beta headers itself; dilna never has to branch
+	 * on credential type on the request path. */
+	oauthAccess: text("oauth_access"),
+	/** OAuth refresh token, used by `resolveApiKey` to rotate `oauthAccess`
+	 * once it's within `OAUTH_MIN_VALIDITY_MS` of `oauthExpiresAt`. */
+	oauthRefresh: text("oauth_refresh"),
+	/** Epoch-ms expiry of `oauthAccess`, mirroring `OAuthCredential.expires`
+	 * from `@earendil-works/pi-ai`'s auth types. */
+	oauthExpiresAt: integer("oauth_expires_at"),
 	updatedAt: integer("updated_at").notNull().$defaultFn(now),
 });
 

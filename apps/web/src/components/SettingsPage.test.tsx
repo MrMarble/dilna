@@ -27,6 +27,7 @@ const state = vi.hoisted(() => {
 			apiKeysConfigured: { anthropic: true, deepseek: false },
 			keyedStoredProviders: [],
 			modelsByProvider: models,
+			oauthConnected: { anthropic: false },
 		};
 	}
 
@@ -68,6 +69,13 @@ vi.mock("@/api/client", () => ({
 			clearOverride: vi.fn(async () => state.api.clearOverride()),
 			setCredential: vi.fn(async () => ({ ok: true })),
 			deleteCredential: vi.fn(async () => ({ ok: true })),
+			startAnthropicOAuthLogin: vi.fn(async () => ({
+				loginId: "test-login",
+				authUrl: "https://claude.ai/oauth/authorize?test=1",
+			})),
+			completeAnthropicOAuthLogin: vi.fn(async () => ({ ok: true })),
+			cancelAnthropicOAuthLogin: vi.fn(async () => ({ ok: true })),
+			disconnectAnthropicOAuth: vi.fn(async () => ({ ok: true })),
 		},
 	},
 }));

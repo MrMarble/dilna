@@ -544,7 +544,7 @@ function resolveConfiguredModel(
  * provider with?''. Stored keys win; env (`*_API_KEY`) is the fallback. See
  * providerCredentials.ts.
  */
-function providerApiKey(provider: string): string | undefined {
+function providerApiKey(provider: string): Promise<string | undefined> {
 	return resolveApiKey(provider);
 }
 
@@ -1187,7 +1187,7 @@ const summarizationModels = {
 		context: Context,
 		options?: SimpleStreamOptions,
 	) => {
-		const apiKey = providerApiKey(model.provider);
+		const apiKey = await providerApiKey(model.provider);
 		return completeSimple(model, context, { ...options, apiKey });
 	},
 	// biome-ignore lint/suspicious/noExplicitAny: partial `Models` shim, see doc comment above
