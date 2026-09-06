@@ -42,6 +42,19 @@ export type ProviderModelOption = {
 	name: string;
 };
 
+/** A model entry on a custom provider — see apps/server/src/agents/customProviders.ts. */
+export type CustomModelInput = { id: string; name?: string };
+
+/** A user-defined provider (Ollama, LM Studio, vLLM, ...) — see
+ * apps/server/src/agents/customProviders.ts. No key material included. */
+export type CustomProviderView = {
+	id: string;
+	name: string;
+	baseUrl: string;
+	api: string;
+	models: CustomModelInput[];
+};
+
 /** Server `/api/config` GET response — see apps/server/src/routes/config.ts. */
 export type LlmConfig = {
 	override: { provider: string; model: string } | null;
@@ -57,6 +70,10 @@ export type LlmConfig = {
 	 * only ever `{ anthropic: boolean }`. An OAuth login outranks a stored API
 	 * key for the same provider. */
 	oauthConnected: Record<string, boolean>;
+	/** User-defined providers — already folded into `modelsByProvider`/
+	 * `apiKeysConfigured` above, this is only for the "Custom providers"
+	 * management section. */
+	customProviders: CustomProviderView[];
 };
 
 const SESSION_EVENT_TYPES: AgentStreamEvent["type"][] = [
@@ -386,5 +403,41 @@ export const api = {
 			request<{ ok: boolean }>("/api/config/providers/anthropic/oauth", {
 				method: "DELETE",
 			}),
+		/** Create a custom provider (Ollama, LM Studio, vLLM, ...), plus its API
+		 * key when one is given. */
+		createCustomProvider: (input: {
+			id: string;
+			name: string;
+			baseUrl: string;
+			api: string;
+			apiKey?: string;
+			models: CustomModelInput[];
+		}) =>
+			request<{ ok: boolean }>("/api/config/custom-providers", {
+				method: "POST",
+				body: JSON.stringify(input),
+			}),
+		/** Update a custom provider's definition; the id is immutable. Replaces
+		 * the stored key only when a non-empty `apiKey` is sent. */
+		updateCustomProvider: (
+			id: string,
+			input: {
+				name: string;
+				baseUrl: string;
+				api: string;
+				apiKey?: string;
+				models: CustomModelInput[];
+			},
+		) =>
+			request<{ ok: boolean }>(
+				`/api/config/custom-providers/${encodeURIComponent(id)}`,
+				{ method: "PUT", body: JSON.stringify(input) },
+			),
+		/** Delete a custom provider and its stored key. */
+		deleteCustomProvider: (id: string) =>
+			request<{ ok: boolean }>(
+				`/api/config/custom-providers/${encodeURIComponent(id)}`,
+				{ method: "DELETE" },
+			),
 	},
 };

@@ -3,6 +3,11 @@ import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { llmConfig as llmConfigTable } from "../db/schema";
 import {
+	customProviderModelIds,
+	getCustomProvider,
+	isCustomProvider,
+} from "./customProviders";
+import {
 	catalogModelIds,
 	type DilnaProvider,
 	isDilnaProvider,
@@ -40,7 +45,10 @@ import { hasApiKey, resolveApiKey } from "./providerCredentials";
 
 const CONFIG_ROW_ID = "instance";
 
-type Override = { provider: DilnaProvider; model: string } | null;
+/** `provider` is a builtin allowlisted id or a custom provider id
+ * (customProviders.ts) — not narrowed to `DilnaProvider` since either can be
+ * stored here. */
+type Override = { provider: string; model: string } | null;
 
 /**
  * In-memory mirror of the persisted override row. Starts as `null` ("no
@@ -61,7 +69,11 @@ function readOverrideFromDb(): Override {
 		.where(eq(llmConfigTable.id, CONFIG_ROW_ID))
 		.get();
 	if (!row) return null;
-	if (!row.provider || !row.model || !isDilnaProvider(row.provider)) {
+	if (
+		!row.provider ||
+		!row.model ||
+		(!isDilnaProvider(row.provider) && !isCustomProvider(row.provider))
+	) {
 		// A legacy/partial/never-valid row counts as "no override" rather than
 		// poisoning the effective value — the Settings write path never stores
 		// one (validation happens before persist), so this is defensive only.
@@ -91,6 +103,15 @@ function setCache(override: Override): void {
 
 export type SetOverrideResult = { ok: true } | { ok: false; error: string };
 
+/** Model ids selectable for `provider` — the builtin catalog for an
+ * allowlisted provider, or a stored custom provider's own model list
+ * (customProviders.ts). Empty for an unknown provider id. */
+function modelIdsForProvider(provider: string): string[] {
+	if (isDilnaProvider(provider)) return catalogModelIds(provider);
+	const custom = getCustomProvider(provider);
+	return custom ? customProviderModelIds(custom.id) : [];
+}
+
 /**
  * Validate and persist a new override, replacing the row if one exists. Empty
  * string values are treated as "clear the field". Any invalid combination
@@ -111,16 +132,16 @@ export async function setOverride(
 			error: "Nothing to set — provider and model are both empty.",
 		};
 	}
-	if (!isDilnaProvider(p)) {
+	if (!isDilnaProvider(p) && !isCustomProvider(p)) {
 		return {
 			ok: false,
-			error: `${p || "(empty)"} is not a supported provider. Valid values: ${PROVIDER_ALLOWLIST.join(", ")}`,
+			error: `${p || "(empty)"} is not a supported provider. Valid values: ${PROVIDER_ALLOWLIST.join(", ")}, or a configured custom provider.`,
 		};
 	}
 	if (!m) {
 		return { ok: false, error: "Choose a model for the selected provider." };
 	}
-	const catalog = catalogModelIds(p);
+	const catalog = modelIdsForProvider(p);
 	if (!catalog.includes(m)) {
 		return {
 			ok: false,

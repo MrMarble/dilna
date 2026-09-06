@@ -4,6 +4,7 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { providerCredentials as providerCredentialsTable } from "../db/schema";
+import { isCustomProvider } from "./customProviders";
 import { isDilnaProvider, PROVIDER_ALLOWLIST } from "./providerConfig";
 
 /**
@@ -115,10 +116,10 @@ export function setProviderApiKey(
 ): { ok: true } | { ok: false; error: string } {
 	const p = provider.trim();
 	const k = apiKey.trim();
-	if (!isDilnaProvider(p)) {
+	if (!isDilnaProvider(p) && !isCustomProvider(p)) {
 		return {
 			ok: false,
-			error: `${p || "(empty)"} is not a supported provider. Valid values: ${PROVIDER_ALLOWLIST.join(", ")}`,
+			error: `${p || "(empty)"} is not a supported provider. Valid values: ${PROVIDER_ALLOWLIST.join(", ")}, or a configured custom provider.`,
 		};
 	}
 	if (!k) {
@@ -301,6 +302,6 @@ export async function resolveApiKey(
 /** Whether the provider currently has *any* usable key (stored, OAuth, or
  * env). */
 export async function hasApiKey(provider: string): Promise<boolean> {
-	if (!isDilnaProvider(provider)) return false;
+	if (!isDilnaProvider(provider) && !isCustomProvider(provider)) return false;
 	return Boolean(await resolveApiKey(provider));
 }

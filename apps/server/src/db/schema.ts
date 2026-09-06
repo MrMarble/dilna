@@ -112,6 +112,32 @@ export const providerCredentials = sqliteTable("provider_credentials", {
 	updatedAt: integer("updated_at").notNull().$defaultFn(now),
 });
 
+/**
+ * A user-defined LLM provider (Ollama, LM Studio, vLLM, or anything else
+ * speaking one of the four API shapes `pi-ai` supports) — the same
+ * capability pi's own CLI exposes via a hand-edited `~/.pi/agent/models.json`
+ * (see docs/adr n/a; customProviders.ts's module doc comment for the full
+ * design). `id` is a user-chosen slug (e.g. `"ollama"`), immutable after
+ * creation, and doubles as the `provider` value everywhere a Session's
+ * provider/model is recorded — including as the primary key row in
+ * `provider_credentials` for this provider's stored API key, via the same
+ * table/flow builtin providers already use.
+ *
+ * `modelsJson` follows the `messages.partsJson` convention: a plain JSON
+ * array (`CustomModelDef[]` from customProviders.ts), parsed at the call
+ * site rather than via drizzle's json column mode. */
+export const customProviders = sqliteTable("custom_providers", {
+	id: text("id").primaryKey(),
+	name: text("name").notNull(),
+	baseUrl: text("base_url").notNull(),
+	/** One of `CUSTOM_PROVIDER_APIS` (providerConfig.ts) — the `pi-ai` `Api`
+	 * every model on this provider is built with. */
+	api: text("api").notNull(),
+	modelsJson: text("models_json").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+	updatedAt: integer("updated_at").notNull().$defaultFn(now),
+});
+
 export const messages = sqliteTable("messages", {
 	id: text("id").primaryKey(),
 	sessionId: text("session_id").notNull(),
