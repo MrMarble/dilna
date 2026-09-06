@@ -6,9 +6,10 @@ services:
     environment:
       # Selects the LLM provider/model for every session on this instance —
       # one global choice for the whole dilna instance, not a per-session
-      # setting (ADR-0020). Both are required: the server refuses to start
-      # if either is unset or invalid, and there is no default. Valid
-      # DILNA_PROVIDER values: anthropic, deepseek, moonshotai, zai.
+      # setting (ADR-0020). Optional here: leave unset and configure a
+      # provider/model from the web Settings view instead — the server just
+      # warns at startup and sessions fail until one is set, either way.
+      # Valid DILNA_PROVIDER values: anthropic, deepseek, moonshotai, zai.
       - DILNA_PROVIDER=${DILNA_PROVIDER:-}
       - DILNA_MODEL=${DILNA_MODEL:-}
       # Provider API keys (ADR-0005 host-passthrough): every provider,
