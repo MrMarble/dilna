@@ -70,6 +70,7 @@ import {
 
 export type { OrchestratorDeps };
 
+import { buildCustomModel, getCustomProvider } from "./customProviders";
 import { isDilnaProvider } from "./providerConfig";
 import { effectiveModel, effectiveProvider } from "./providerConfigStore";
 import { resolveApiKey } from "./providerCredentials";
@@ -505,6 +506,26 @@ function findWorkspaceRoot(start: string): string {
 }
 
 /**
+ * Resolve a `Model` for a provider/model pair, whichever catalog the
+ * provider comes from: `pi-ai`'s builtin catalog for an allowlisted provider,
+ * or a stored custom provider's own model list (customProviders.ts) —
+ * dilna's answer to pi's CLI-only `~/.pi/agent/models.json`. Shared by
+ * {@link resolveConfiguredModel} (throws on a miss) and
+ * {@link resolveModelById} (returns `undefined`), the only two lookup
+ * shapes callers need.
+ */
+function lookupModel(
+	provider: string,
+	modelId: string,
+): Model<Api> | undefined {
+	if (isDilnaProvider(provider)) {
+		return getBuiltinModels(provider).find((mm) => mm.id === modelId);
+	}
+	const custom = getCustomProvider(provider);
+	return custom ? buildCustomModel(custom, modelId) : undefined;
+}
+
+/**
  * Resolve the concrete provider/model pi should run on for a Session.
  * Provider/model come from the session's own snapshot (the Settings-derived
  * provider/model captured when the Session was created — multi-provider
@@ -523,12 +544,12 @@ function resolveConfiguredModel(
 ) {
 	const p = (provider ?? effectiveProvider()).trim();
 	const m = (model ?? effectiveModel()).trim();
-	if (!isDilnaProvider(p) || !m) {
+	if (!p || !m) {
 		throw new Error(
 			`no usable provider/model configured (effective provider=${p || "<unset>"}, model=${m || "<unset>"}). Set DILNA_PROVIDER/DILNA_MODEL in the environment or configure one in Settings.`,
 		);
 	}
-	const modelObj = getBuiltinModels(p).find((mm) => mm.id === m);
+	const modelObj = lookupModel(p, m);
 	if (!modelObj) {
 		throw new Error(
 			`provider=${p}/model=${m} is no longer a valid combination.`,
@@ -1201,8 +1222,7 @@ const summarizationModels = {
  * and can change under a long-lived Session; see `PiHandle`'s doc comment).
  */
 function resolveModelById(provider: string, modelId: string) {
-	if (!isDilnaProvider(provider)) return undefined;
-	return getBuiltinModels(provider).find((m) => m.id === modelId);
+	return lookupModel(provider, modelId);
 }
 
 /**

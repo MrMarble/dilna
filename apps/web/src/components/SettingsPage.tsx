@@ -2,13 +2,19 @@ import {
 	ArrowLeft,
 	KeyRound,
 	LogIn,
+	Pencil,
 	Plus,
 	RotateCcw,
 	Save,
 	X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { api, type LlmConfig } from "@/api/client";
+import {
+	api,
+	type CustomModelInput,
+	type CustomProviderView,
+	type LlmConfig,
+} from "@/api/client";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -25,6 +31,28 @@ import { cn } from "@/lib/utils";
 type Props = {
 	onBack: () => void;
 };
+
+/** The four `pi-ai` API shapes a custom provider can speak (see
+ * apps/server/src/agents/providerConfig.ts's `CUSTOM_PROVIDER_APIS`), with
+ * display labels for the dialog's select. */
+const CUSTOM_PROVIDER_API_OPTIONS = [
+	{
+		value: "openai-completions",
+		label: "OpenAI-compatible (Chat Completions)",
+	},
+	{ value: "openai-responses", label: "OpenAI-compatible (Responses)" },
+	{ value: "anthropic-messages", label: "Anthropic Messages" },
+	{ value: "google-generative-ai", label: "Google Generative AI" },
+] as const;
+
+/** One editable row in the "Add/Edit custom provider" dialog's model list. */
+/** `key` is a client-only synthetic id (stable React list key across
+ * add/remove), distinct from `id` (the model id field being edited). */
+type CustomModelRow = { key: string; id: string; name: string };
+
+function newCustomModelRow(): CustomModelRow {
+	return { key: crypto.randomUUID(), id: "", name: "" };
+}
 
 /**
  * Settings view for overall LLM config: which provider/model new sessions run
@@ -79,6 +107,25 @@ export function SettingsPage({ onBack }: Props) {
 	const [oauthInput, setOauthInput] = useState("");
 	const [oauthSubmitting, setOauthSubmitting] = useState(false);
 	const [oauthError, setOauthError] = useState<string | null>(null);
+
+	/** "Add/Edit custom provider" dialog (Ollama, LM Studio, vLLM, ... — see
+	 * customProviders.ts): `customEditingId` is `null` in create mode, or the
+	 * provider's id in edit mode (the ID field is disabled then, since it's
+	 * immutable). */
+	const [customOpen, setCustomOpen] = useState(false);
+	const [customEditingId, setCustomEditingId] = useState<string | null>(null);
+	const [customId, setCustomId] = useState("");
+	const [customName, setCustomName] = useState("");
+	const [customBaseUrl, setCustomBaseUrl] = useState("");
+	const [customApi, setCustomApi] = useState<string>(
+		CUSTOM_PROVIDER_API_OPTIONS[0].value,
+	);
+	const [customApiKey, setCustomApiKey] = useState("");
+	const [customModels, setCustomModels] = useState<CustomModelRow[]>([
+		newCustomModelRow(),
+	]);
+	const [customPending, setCustomPending] = useState(false);
+	const [customError, setCustomError] = useState<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -298,14 +345,132 @@ export function SettingsPage({ onBack }: Props) {
 		}
 	}
 
+	function openAddCustomProvider() {
+		setCustomEditingId(null);
+		setCustomId("");
+		setCustomName("");
+		setCustomBaseUrl("");
+		setCustomApi(CUSTOM_PROVIDER_API_OPTIONS[0].value);
+		setCustomApiKey("");
+		setCustomModels([newCustomModelRow()]);
+		setCustomError(null);
+		setCustomOpen(true);
+	}
+
+	function openEditCustomProvider(cp: CustomProviderView) {
+		setCustomEditingId(cp.id);
+		setCustomId(cp.id);
+		setCustomName(cp.name);
+		setCustomBaseUrl(cp.baseUrl);
+		setCustomApi(cp.api);
+		setCustomApiKey("");
+		setCustomModels(
+			cp.models.length > 0
+				? cp.models.map((m) => ({
+						key: crypto.randomUUID(),
+						id: m.id,
+						name: m.name ?? "",
+					}))
+				: [newCustomModelRow()],
+		);
+		setCustomError(null);
+		setCustomOpen(true);
+	}
+
+	function updateCustomModelRow(
+		index: number,
+		field: "id" | "name",
+		value: string,
+	) {
+		setCustomModels((rows) =>
+			rows.map((row, i) => (i === index ? { ...row, [field]: value } : row)),
+		);
+	}
+
+	function addCustomModelRow() {
+		setCustomModels((rows) => [...rows, newCustomModelRow()]);
+	}
+
+	function removeCustomModelRow(index: number) {
+		setCustomModels((rows) => rows.filter((_, i) => i !== index));
+	}
+
+	async function handleSubmitCustomProvider(e: React.FormEvent) {
+		e.preventDefault();
+		const models: CustomModelInput[] = customModels
+			.map((row) => ({ id: row.id.trim(), name: row.name.trim() || undefined }))
+			.filter((row) => row.id);
+		if (!customId.trim() || !customName.trim() || !customBaseUrl.trim()) return;
+		if (models.length === 0) return;
+
+		setCustomPending(true);
+		setCustomError(null);
+		try {
+			const fields = {
+				name: customName.trim(),
+				baseUrl: customBaseUrl.trim(),
+				api: customApi,
+				apiKey: customApiKey.trim() || undefined,
+				models,
+			};
+			if (customEditingId) {
+				await api.config.updateCustomProvider(customEditingId, fields);
+			} else {
+				await api.config.createCustomProvider({
+					id: customId.trim(),
+					...fields,
+				});
+			}
+			setCustomOpen(false);
+			const cfg = await api.config.get();
+			setConfig(cfg);
+			setMessage({
+				kind: "ok",
+				text: customEditingId
+					? "Custom provider updated."
+					: "Custom provider added.",
+			});
+		} catch (err) {
+			setCustomError(
+				err instanceof Error ? err.message : "failed to save custom provider",
+			);
+		} finally {
+			setCustomPending(false);
+		}
+	}
+
+	async function handleDeleteCustomProvider(id: string) {
+		setMessage(null);
+		try {
+			await api.config.deleteCustomProvider(id);
+			const cfg = await api.config.get();
+			setConfig(cfg);
+			setMessage({ kind: "ok", text: `Removed custom provider "${id}".` });
+		} catch (err) {
+			setMessage({
+				kind: "error",
+				text: err instanceof Error ? err.message : "failed to remove provider",
+			});
+		}
+	}
+
+	// Custom providers (Ollama, LM Studio, vLLM, ... — see customProviders.ts)
+	// get their own management section below, so they're excluded from the
+	// builtin-key "Added providers" list/dialog even though a custom
+	// provider's key lives in the same store (providerCredentials.ts).
+	const customProviders = config?.customProviders ?? [];
+	const customProviderIds = new Set(customProviders.map((p) => p.id));
+
 	// Providers that have a dilna-managed (stored) API key, driving the
 	// "Added providers" list. Config carries these from GET /api/config; the
 	// test fixture may omit the field, so default to [] rather than crash.
-	const storedProviders = config?.keyedStoredProviders ?? [];
+	const storedProviders = (config?.keyedStoredProviders ?? []).filter(
+		(r) => !customProviderIds.has(r.provider),
+	);
 	const storedSet = new Set(storedProviders.map((r) => r.provider));
 	// Providers already on the list, so the Add dialog excludes them.
 	const addableProviders = Object.keys(config?.modelsByProvider ?? {}).filter(
-		(p) => !storedSet.has(p),
+		(p) => !storedSet.has(p) && !customProviderIds.has(p),
 	);
 
 	const hasOverride = Boolean(config?.override);
@@ -572,6 +737,80 @@ export function SettingsPage({ onBack }: Props) {
 								</div>
 							)}
 						</div>
+
+						{/* Custom providers (Ollama, LM Studio, vLLM, or anything else
+							speaking one of pi-ai's 4 supported API shapes — see
+							customProviders.ts). A custom provider's key lives in the same
+							store as a builtin provider's, but is managed here, together
+							with the rest of its definition, rather than in "Added
+							providers" above. */}
+						<div className="space-y-3 border-t border-border pt-4">
+							<div className="flex items-center justify-between">
+								<div>
+									<h2 className="text-lg font-semibold tracking-tight">
+										Custom providers
+									</h2>
+									<p className="mt-0.5 text-xs text-muted-foreground">
+										Point at Ollama, LM Studio, vLLM, or anything else speaking
+										OpenAI Completions, OpenAI Responses, Anthropic Messages, or
+										Google Generative AI.
+									</p>
+								</div>
+								<Button
+									type="button"
+									variant="outline"
+									onClick={openAddCustomProvider}
+								>
+									<Plus className="mr-1.5 size-4" />
+									Add custom provider
+								</Button>
+							</div>
+							{customProviders.length === 0 ? (
+								<p className="text-sm text-muted-foreground">
+									No custom providers configured yet.
+								</p>
+							) : (
+								<ul className="space-y-1.5">
+									{customProviders.map((cp) => (
+										<li
+											key={cp.id}
+											className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2"
+										>
+											<div className="min-w-0">
+												<div className="flex items-center gap-1.5">
+													<span className="font-mono">{cp.id}</span>
+													<span className="text-xs text-muted-foreground">
+														{cp.name}
+													</span>
+												</div>
+												<p className="truncate text-xs text-muted-foreground">
+													{cp.baseUrl} · {cp.models.length}{" "}
+													{cp.models.length === 1 ? "model" : "models"}
+												</p>
+											</div>
+											<button
+												type="button"
+												onClick={() => openEditCustomProvider(cp)}
+												title={`Edit ${cp.id}`}
+												aria-label={`Edit ${cp.id}`}
+												className="ml-auto rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+											>
+												<Pencil className="size-3.5" />
+											</button>
+											<button
+												type="button"
+												onClick={() => void handleDeleteCustomProvider(cp.id)}
+												title={`Remove ${cp.id}`}
+												aria-label={`Remove ${cp.id}`}
+												className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+											>
+												<X className="size-3.5" />
+											</button>
+										</li>
+									))}
+								</ul>
+							)}
+						</div>
 					</>
 				)}
 
@@ -715,6 +954,174 @@ export function SettingsPage({ onBack }: Props) {
 								}
 							>
 								{oauthSubmitting ? "Connecting…" : "Connect"}
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+
+				<Dialog open={customOpen} onOpenChange={setCustomOpen}>
+					<DialogContent className="sm:max-w-lg">
+						<DialogHeader>
+							<DialogTitle>
+								{customEditingId
+									? `Edit ${customEditingId}`
+									: "Add custom provider"}
+							</DialogTitle>
+							<DialogDescription>
+								Point at Ollama, LM Studio, vLLM, or anything else speaking
+								OpenAI Completions, OpenAI Responses, Anthropic Messages, or
+								Google Generative AI.
+							</DialogDescription>
+						</DialogHeader>
+						<form
+							id="custom-provider-form"
+							onSubmit={handleSubmitCustomProvider}
+							className="space-y-4"
+						>
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-id">Provider ID</Label>
+								<Input
+									id="custom-id"
+									placeholder="ollama"
+									value={customId}
+									onChange={(e) => setCustomId(e.target.value)}
+									disabled={!!customEditingId}
+									autoComplete="off"
+								/>
+								<p className="text-xs text-muted-foreground">
+									Lowercase letters, digits, and hyphens only. Can't be changed
+									later.
+								</p>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-name">Name</Label>
+								<Input
+									id="custom-name"
+									placeholder="Ollama"
+									value={customName}
+									onChange={(e) => setCustomName(e.target.value)}
+								/>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-base-url">Base URL</Label>
+								<Input
+									id="custom-base-url"
+									placeholder="http://localhost:11434/v1"
+									value={customBaseUrl}
+									onChange={(e) => setCustomBaseUrl(e.target.value)}
+									autoComplete="off"
+								/>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-api">API type</Label>
+								<select
+									id="custom-api"
+									value={customApi}
+									onChange={(e) => setCustomApi(e.target.value)}
+									className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+								>
+									{CUSTOM_PROVIDER_API_OPTIONS.map((opt) => (
+										<option key={opt.value} value={opt.value}>
+											{opt.label}
+										</option>
+									))}
+								</select>
+							</div>
+							<div className="space-y-1.5">
+								<Label htmlFor="custom-api-key">API key</Label>
+								<Input
+									id="custom-api-key"
+									type="password"
+									placeholder={
+										customEditingId
+											? "Leave blank to keep the current key"
+											: "sk-…"
+									}
+									value={customApiKey}
+									onChange={(e) => setCustomApiKey(e.target.value)}
+									autoComplete="off"
+								/>
+								<p className="text-xs text-muted-foreground">
+									{customEditingId
+										? "Leave blank to keep the currently stored key."
+										: "Required — for a keyless local server like Ollama, any placeholder value works."}
+								</p>
+							</div>
+							<div className="space-y-1.5">
+								<Label>Models</Label>
+								<div className="space-y-2">
+									{customModels.map((row, i) => (
+										<div key={row.key} className="flex items-center gap-2">
+											<Input
+												placeholder="Model ID (e.g. llama3.1:8b)"
+												value={row.id}
+												onChange={(e) =>
+													updateCustomModelRow(i, "id", e.target.value)
+												}
+												autoComplete="off"
+											/>
+											<Input
+												placeholder="Display name (optional)"
+												value={row.name}
+												onChange={(e) =>
+													updateCustomModelRow(i, "name", e.target.value)
+												}
+												autoComplete="off"
+											/>
+											<button
+												type="button"
+												onClick={() => removeCustomModelRow(i)}
+												title="Remove model"
+												aria-label="Remove model"
+												disabled={customModels.length === 1}
+												className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive disabled:cursor-not-allowed disabled:opacity-50"
+											>
+												<X className="size-3.5" />
+											</button>
+										</div>
+									))}
+								</div>
+								<Button
+									type="button"
+									variant="outline"
+									size="sm"
+									onClick={addCustomModelRow}
+								>
+									<Plus className="mr-1.5 size-4" />
+									Add model
+								</Button>
+							</div>
+							{customError && (
+								<p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+									{customError}
+								</p>
+							)}
+						</form>
+						<DialogFooter>
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() => setCustomOpen(false)}
+								disabled={customPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								type="submit"
+								form="custom-provider-form"
+								disabled={
+									customPending ||
+									!customId.trim() ||
+									!customName.trim() ||
+									!customBaseUrl.trim() ||
+									!customModels.some((m) => m.id.trim())
+								}
+							>
+								{customPending
+									? "Saving…"
+									: customEditingId
+										? "Save changes"
+										: "Add provider"}
 							</Button>
 						</DialogFooter>
 					</DialogContent>

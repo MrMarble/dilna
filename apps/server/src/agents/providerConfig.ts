@@ -23,6 +23,27 @@ export function isDilnaProvider(value: string): value is DilnaProvider {
 }
 
 /**
+ * The `pi-ai` `Api` shapes dilna's custom-provider support (customProviders.ts)
+ * lets a user pick from — the same four kinds pi's own `models.json` supports
+ * (see https://pi.dev/docs/latest/models): OpenAI Chat Completions, OpenAI
+ * Responses, Anthropic Messages, and Google Generative AI. A custom provider
+ * is just a `Model<Api>` dilna constructs itself (baseUrl + api + a plain
+ * apiKey string), not a `pi-ai` `Provider`/auth-registry entry — see that
+ * module's doc comment for why no further abstraction is needed.
+ */
+export const CUSTOM_PROVIDER_APIS = [
+	"openai-completions",
+	"openai-responses",
+	"anthropic-messages",
+	"google-generative-ai",
+] as const;
+export type CustomProviderApi = (typeof CUSTOM_PROVIDER_APIS)[number];
+
+export function isCustomProviderApi(value: string): value is CustomProviderApi {
+	return (CUSTOM_PROVIDER_APIS as readonly string[]).includes(value);
+}
+
+/**
  * Model ids available for a provider, straight from pi-ai's generated
  * catalog. Pure and exportable so the config store can validate a proposed
  * override's model against what actually exists for its provider without

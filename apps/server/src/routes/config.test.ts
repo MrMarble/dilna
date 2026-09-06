@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { primeCustomProviders } from "../agents/customProviders";
 import { primeOverrideFromDb } from "../agents/providerConfigStore";
+import { primeProviderCredentials } from "../agents/providerCredentials";
 import { closeDb } from "../db";
 import { configRoute } from "./config";
 
@@ -29,6 +31,8 @@ beforeEach(() => {
 	process.env.DEEPSEEK_API_KEY = "sk-deepseek";
 	process.env.MOONSHOT_API_KEY = "sk-moonshot";
 	process.env.ZAI_API_KEY = "sk-zai";
+	primeCustomProviders();
+	primeProviderCredentials();
 	primeOverrideFromDb();
 });
 
@@ -138,5 +142,105 @@ describe("DELETE /api/config", () => {
 		};
 		expect(body.override).toBeNull();
 		expect(body.effective.provider).toBe("anthropic");
+	});
+});
+
+describe("custom providers", () => {
+	const ollamaBody = {
+		id: "ollama",
+		name: "Ollama",
+		baseUrl: "http://localhost:11434/v1",
+		api: "openai-completions",
+		apiKey: "sk-ollama",
+		models: [{ id: "llama3.1:8b", name: "Llama 3.1 8B" }],
+	};
+
+	it("creates a custom provider with its key, folded into GET /api/config", async () => {
+		const post = await app.request("/api/config/custom-providers", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(ollamaBody),
+		});
+		expect(post.status).toBe(200);
+
+		const get = await app.request("/api/config");
+		const body = (await get.json()) as {
+			customProviders: { id: string; name: string }[];
+			modelsByProvider: Record<string, { id: string; name: string }[]>;
+			apiKeysConfigured: Record<string, boolean>;
+		};
+		expect(body.customProviders).toEqual([
+			{
+				id: "ollama",
+				name: "Ollama",
+				baseUrl: "http://localhost:11434/v1",
+				api: "openai-completions",
+				models: [{ id: "llama3.1:8b", name: "Llama 3.1 8B" }],
+			},
+		]);
+		expect(body.modelsByProvider.ollama).toEqual([
+			{ id: "llama3.1:8b", name: "Llama 3.1 8B" },
+		]);
+		expect(body.apiKeysConfigured.ollama).toBe(true);
+	});
+
+	it("rejects a create body that fails validation", async () => {
+		const res = await app.request("/api/config/custom-providers", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ ...ollamaBody, id: "anthropic" }),
+		});
+		expect(res.status).toBe(400);
+		expect(await res.text()).toContain("already a built-in provider");
+	});
+
+	it("updates a provider's definition without requiring a new key", async () => {
+		await app.request("/api/config/custom-providers", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(ollamaBody),
+		});
+
+		const put = await app.request("/api/config/custom-providers/ollama", {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				name: "Local Ollama",
+				baseUrl: ollamaBody.baseUrl,
+				api: ollamaBody.api,
+				models: ollamaBody.models,
+			}),
+		});
+		expect(put.status).toBe(200);
+
+		const get = await app.request("/api/config");
+		const body = (await get.json()) as {
+			customProviders: { id: string; name: string }[];
+			apiKeysConfigured: Record<string, boolean>;
+		};
+		expect(body.customProviders[0]?.name).toBe("Local Ollama");
+		// The key set at creation is still there — the update omitted apiKey.
+		expect(body.apiKeysConfigured.ollama).toBe(true);
+	});
+
+	it("deletes a provider and its stored key", async () => {
+		await app.request("/api/config/custom-providers", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(ollamaBody),
+		});
+
+		const del = await app.request("/api/config/custom-providers/ollama", {
+			method: "DELETE",
+		});
+		expect(del.status).toBe(200);
+
+		const get = await app.request("/api/config");
+		const body = (await get.json()) as {
+			customProviders: unknown[];
+			modelsByProvider: Record<string, unknown>;
+		};
+		expect(body.customProviders).toEqual([]);
+		expect(body.modelsByProvider.ollama).toBeUndefined();
 	});
 });

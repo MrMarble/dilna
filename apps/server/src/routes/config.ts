@@ -2,6 +2,13 @@ import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
+	type CustomModelDef,
+	type CustomProvider,
+	deleteCustomProvider,
+	listCustomProviders,
+	setCustomProvider,
+} from "../agents/customProviders";
+import {
 	type DilnaProvider,
 	PROVIDER_ALLOWLIST,
 } from "../agents/providerConfig";
@@ -55,6 +62,12 @@ type GetConfigResponse = {
 	 * "Connected" indicator; an OAuth login outranks a stored API key for the
 	 * same provider (see providerCredentials.ts). */
 	oauthConnected: Record<string, boolean>;
+	/** User-defined providers (Ollama, LM Studio, vLLM, ... — see
+	 * customProviders.ts), no key material included. Drives the Settings
+	 * view's "Custom providers" management section; their ids/models are
+	 * already folded into `modelsByProvider`/`apiKeysConfigured` above so the
+	 * main provider/model picker needs no separate wiring for them. */
+	customProviders: CustomProvider[];
 };
 
 export const configRoute = new Hono();
@@ -67,15 +80,26 @@ configRoute.get("/", async (c) => {
 	const override = getOverride();
 	const envProvider = process.env.DILNA_PROVIDER ?? "";
 	const envModel = process.env.DILNA_MODEL ?? "";
+	const customProviders = listCustomProviders();
+
 	const modelsByProvider: Record<string, ProviderModelOption[]> = {};
 	for (const provider of PROVIDER_ALLOWLIST) {
 		modelsByProvider[provider] = modelsFor(provider);
 	}
+	for (const custom of customProviders) {
+		modelsByProvider[custom.id] = custom.models.map((m) => ({
+			id: m.id,
+			name: m.name || m.id,
+		}));
+	}
+
 	const apiKeysConfigured: Record<string, boolean> = {};
 	await Promise.all(
-		PROVIDER_ALLOWLIST.map(async (provider) => {
-			apiKeysConfigured[provider] = await providerApiKeyConfigured(provider);
-		}),
+		[...PROVIDER_ALLOWLIST, ...customProviders.map((p) => p.id)].map(
+			async (provider) => {
+				apiKeysConfigured[provider] = await providerApiKeyConfigured(provider);
+			},
+		),
 	);
 	const body: GetConfigResponse = {
 		override,
@@ -89,6 +113,7 @@ configRoute.get("/", async (c) => {
 		modelsByProvider,
 		keyedStoredProviders: listStoredProviderKeys(),
 		oauthConnected: { anthropic: hasOAuthCredential("anthropic") },
+		customProviders,
 	};
 	return c.json(body);
 });
@@ -204,5 +229,86 @@ configRoute.post("/providers/anthropic/oauth/cancel", async (c) => {
  * thereafter). */
 configRoute.delete("/providers/anthropic/oauth", (c) => {
 	clearProviderOAuthCredential("anthropic");
+	return c.json({ ok: true });
+});
+
+// ---- Custom providers (Ollama, LM Studio, vLLM, ... — see customProviders.ts) ----
+
+type CustomProviderFields = {
+	name: string;
+	baseUrl: string;
+	api: string;
+	apiKey?: string;
+	models: CustomModelDef[];
+};
+
+function isCustomProviderFields(body: unknown): body is CustomProviderFields {
+	if (!body || typeof body !== "object") return false;
+	const b = body as Record<string, unknown>;
+	return (
+		typeof b.name === "string" &&
+		typeof b.baseUrl === "string" &&
+		typeof b.api === "string" &&
+		(b.apiKey === undefined || typeof b.apiKey === "string") &&
+		Array.isArray(b.models)
+	);
+}
+
+const CUSTOM_PROVIDER_BODY_ERROR =
+	"Expected { name, baseUrl, api, models, apiKey? } for a custom provider.";
+
+/** Create a custom provider (id in the body, since there's no path segment
+ * for it yet), plus its API key when one is given — a single "Add custom
+ * provider" dialog submission, two internal writes, mirroring how OAuth's
+ * "complete" route also writes to two places. */
+configRoute.post("/custom-providers", async (c) => {
+	const body = await c.req.json().catch(() => null);
+	const id = typeof body?.id === "string" ? body.id : undefined;
+	if (!id || !isCustomProviderFields(body)) {
+		throw new HTTPException(400, {
+			message: `Expected { id, ...fields } — ${CUSTOM_PROVIDER_BODY_ERROR}`,
+		});
+	}
+	const result = setCustomProvider({ id, ...body });
+	if (!result.ok) {
+		throw new HTTPException(400, { message: result.error });
+	}
+	if (body.apiKey?.trim()) {
+		const keyResult = setProviderApiKey(id, body.apiKey);
+		if (!keyResult.ok) {
+			throw new HTTPException(400, { message: keyResult.error });
+		}
+	}
+	return c.json({ ok: true });
+});
+
+/** Update a custom provider's definition; the id is immutable (path param —
+ * the body only carries the editable fields). Replaces the stored key only
+ * when a non-empty `apiKey` is sent — an edit shouldn't force re-entering a
+ * key that's already fine. */
+configRoute.put("/custom-providers/:id", async (c) => {
+	const id = c.req.param("id");
+	const body = await c.req.json().catch(() => null);
+	if (!isCustomProviderFields(body)) {
+		throw new HTTPException(400, { message: CUSTOM_PROVIDER_BODY_ERROR });
+	}
+	const result = setCustomProvider({ id, ...body });
+	if (!result.ok) {
+		throw new HTTPException(400, { message: result.error });
+	}
+	if (body.apiKey?.trim()) {
+		const keyResult = setProviderApiKey(id, body.apiKey);
+		if (!keyResult.ok) {
+			throw new HTTPException(400, { message: keyResult.error });
+		}
+	}
+	return c.json({ ok: true });
+});
+
+/** Delete a custom provider and its stored key. Doesn't clear an active
+ * override still pointing at it (see customProviders.ts's doc comment on
+ * `deleteCustomProvider`). */
+configRoute.delete("/custom-providers/:id", (c) => {
+	deleteCustomProvider(c.req.param("id"), clearProviderApiKey);
 	return c.json({ ok: true });
 });

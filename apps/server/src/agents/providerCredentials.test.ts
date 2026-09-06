@@ -23,6 +23,9 @@ vi.mock("@earendil-works/pi-ai/providers/anthropic", () => ({
 	}),
 }));
 
+const { primeCustomProviders, setCustomProvider } = await import(
+	"./customProviders"
+);
 const {
 	clearProviderApiKey,
 	clearProviderOAuthCredential,
@@ -57,6 +60,7 @@ beforeEach(() => {
 	process.env.DILNA_DATA_DIR = dataDir;
 	delete process.env.ANTHROPIC_API_KEY;
 	refresh.mockReset();
+	primeCustomProviders();
 	primeProviderCredentials();
 });
 
@@ -140,5 +144,28 @@ describe("resolveApiKey", () => {
 		expect(await hasApiKey("anthropic")).toBe(false);
 		setProviderOAuthCredential("anthropic", oauthCredential());
 		expect(await hasApiKey("anthropic")).toBe(true);
+	});
+});
+
+describe("custom providers", () => {
+	it("accepts a stored key for a live custom provider id, unlike an unknown one", async () => {
+		const rejected = setProviderApiKey("ollama", "sk-ollama");
+		expect(rejected.ok).toBe(false);
+
+		setCustomProvider({
+			id: "ollama",
+			name: "Ollama",
+			baseUrl: "http://localhost:11434/v1",
+			api: "openai-completions",
+			models: [{ id: "llama3.1:8b" }],
+		});
+
+		const accepted = setProviderApiKey("ollama", "sk-ollama");
+		expect(accepted.ok).toBe(true);
+		expect(await resolveApiKey("ollama")).toBe("sk-ollama");
+		expect(await hasApiKey("ollama")).toBe(true);
+
+		clearProviderApiKey("ollama");
+		expect(await hasApiKey("ollama")).toBe(false);
 	});
 });

@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { LlmConfig } from "@/api/client";
+import type { CustomProviderView, LlmConfig } from "@/api/client";
 import { SettingsPage } from "@/components/SettingsPage";
 
 // Mutable fixture state lives inside vi.hoisted so the vi.mock factory (also
@@ -26,8 +26,9 @@ const state = vi.hoisted(() => {
 				: { provider: "anthropic", model: "claude-opus-4-5" },
 			apiKeysConfigured: { anthropic: true, deepseek: false },
 			keyedStoredProviders: [],
-			modelsByProvider: models,
+			modelsByProvider: { ...models },
 			oauthConnected: { anthropic: false },
+			customProviders: [],
 		};
 	}
 
@@ -55,6 +56,28 @@ const state = vi.hoisted(() => {
 				current.value = make(null);
 				return { ok: true, override: null };
 			},
+			// Minimal stand-in for the server's custom-provider routes: enough to
+			// verify the create/delete flow reaches the UI, not a full validation
+			// re-implementation (that's covered server-side).
+			createCustomProvider: (input: CustomProviderView) => {
+				current.value.customProviders = [
+					...current.value.customProviders,
+					input,
+				];
+				current.value.modelsByProvider[input.id] = input.models.map((m) => ({
+					id: m.id,
+					name: m.name ?? m.id,
+				}));
+				current.value.apiKeysConfigured[input.id] = true;
+				return { ok: true };
+			},
+			deleteCustomProvider: (id: string) => {
+				current.value.customProviders = current.value.customProviders.filter(
+					(p) => p.id !== id,
+				);
+				delete current.value.modelsByProvider[id];
+				return { ok: true };
+			},
 		},
 	};
 });
@@ -76,6 +99,13 @@ vi.mock("@/api/client", () => ({
 			completeAnthropicOAuthLogin: vi.fn(async () => ({ ok: true })),
 			cancelAnthropicOAuthLogin: vi.fn(async () => ({ ok: true })),
 			disconnectAnthropicOAuth: vi.fn(async () => ({ ok: true })),
+			createCustomProvider: vi.fn(async (input: CustomProviderView) =>
+				state.api.createCustomProvider(input),
+			),
+			updateCustomProvider: vi.fn(async () => ({ ok: true })),
+			deleteCustomProvider: vi.fn(async (id: string) =>
+				state.api.deleteCustomProvider(id),
+			),
 		},
 	},
 }));
@@ -154,5 +184,60 @@ describe("SettingsPage", () => {
 		expect(
 			screen.getByRole("button", { name: /use env default/i }),
 		).toBeDisabled();
+	});
+
+	describe("custom providers", () => {
+		it("adds a custom provider and shows it in the management list and provider dropdown", async () => {
+			state.reset();
+			const user = userEvent.setup();
+			render(<SettingsPage onBack={() => {}} />);
+			await screen.findByText(/currently in effect/i);
+
+			await user.click(
+				screen.getByRole("button", { name: /add custom provider/i }),
+			);
+			await user.type(screen.getByLabelText("Provider ID"), "ollama");
+			await user.type(screen.getByLabelText("Name"), "Ollama");
+			await user.type(
+				screen.getByLabelText("Base URL"),
+				"http://localhost:11434/v1",
+			);
+			await user.type(screen.getByPlaceholderText(/model id/i), "llama3.1:8b");
+			await user.click(screen.getByRole("button", { name: /add provider/i }));
+
+			expect(
+				await screen.findByText(/custom provider added/i),
+			).toBeInTheDocument();
+			// Appears both as a management-list row and a provider dropdown option.
+			expect(screen.getAllByText("ollama").length).toBeGreaterThanOrEqual(2);
+			expect(
+				screen.getByRole("option", { name: /^ollama/ }),
+			).toBeInTheDocument();
+		});
+
+		it("removes a custom provider from the management list", async () => {
+			state.reset();
+			state.api.createCustomProvider({
+				id: "ollama",
+				name: "Ollama",
+				baseUrl: "http://localhost:11434/v1",
+				api: "openai-completions",
+				models: [{ id: "llama3.1:8b" }],
+			});
+			const user = userEvent.setup();
+			render(<SettingsPage onBack={() => {}} />);
+			await screen.findByRole("button", { name: /remove ollama/i });
+
+			await user.click(screen.getByRole("button", { name: /remove ollama/i }));
+
+			expect(
+				await screen.findByText(/removed custom provider/i),
+			).toBeInTheDocument();
+			// The management-list row is gone; the dropdown option may briefly
+			// linger until the refetch resolves, so check the row specifically.
+			expect(
+				screen.queryByRole("button", { name: /remove ollama/i }),
+			).not.toBeInTheDocument();
+		});
 	});
 });

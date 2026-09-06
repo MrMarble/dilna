@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { closeDb } from "../db";
+import { primeCustomProviders, setCustomProvider } from "./customProviders";
 import {
 	clearOverride,
 	effectiveModel,
@@ -11,6 +12,10 @@ import {
 	primeOverrideFromDb,
 	setOverride,
 } from "./providerConfigStore";
+import {
+	primeProviderCredentials,
+	setProviderApiKey,
+} from "./providerCredentials";
 
 let dataDir: string;
 let oldDataDir: string | undefined;
@@ -37,6 +42,8 @@ beforeEach(() => {
 	process.env.DEEPSEEK_API_KEY = "sk-deepseek";
 	process.env.MOONSHOT_API_KEY = "sk-moonshot";
 	process.env.ZAI_API_KEY = "sk-zai";
+	primeCustomProviders();
+	primeProviderCredentials();
 	// Fresh DB (each test gets its own dir) => no persisted override yet.
 	primeOverrideFromDb();
 });
@@ -114,5 +121,32 @@ describe("provider config override store", () => {
 		expect(res.ok).toBe(false);
 		if (res.ok) throw new Error("unreachable");
 		expect(res.error).toContain("empty");
+	});
+
+	describe("custom providers", () => {
+		beforeEach(() => {
+			setCustomProvider({
+				id: "ollama",
+				name: "Ollama",
+				baseUrl: "http://localhost:11434/v1",
+				api: "openai-completions",
+				models: [{ id: "llama3.1:8b" }],
+			});
+			setProviderApiKey("ollama", "sk-ollama");
+		});
+
+		it("accepts an override for a custom provider + one of its models", async () => {
+			const res = await setOverride("ollama", "llama3.1:8b");
+			expect(res.ok).toBe(true);
+			expect(effectiveProvider()).toBe("ollama");
+			expect(effectiveModel()).toBe("llama3.1:8b");
+		});
+
+		it("rejects a model id the custom provider doesn't have", async () => {
+			const res = await setOverride("ollama", "not-a-real-model");
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.error).toContain("not a known model");
+		});
 	});
 });

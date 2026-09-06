@@ -5,6 +5,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
+import { primeCustomProviders } from "./agents/customProviders";
 import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { primeProviderCredentials } from "./agents/providerCredentials";
@@ -29,6 +30,10 @@ import { sessionManager } from "./sessions/manager";
 // pre-web-config era an unset env is now recoverable in place — the Settings
 // view can provide a provider/model override without a restart — and booting
 // is what makes that view reachable.
+// Custom providers are primed first: readOverrideFromDb's validation checks
+// whether a persisted override's provider is a known custom provider id, so
+// that cache has to exist before primeOverrideFromDb runs.
+primeCustomProviders();
 primeOverrideFromDb();
 primeProviderCredentials();
 const envProviderConfig = validateProviderConfig(process.env);
