@@ -99,10 +99,10 @@ export type SetOverrideResult = { ok: true } | { ok: false; error: string };
  * front so the DB never holds a combination the agent startup path couldn't
  * resolve — the pi.ts "should not happen" guards stay genuinely unreachable.
  */
-export function setOverride(
+export async function setOverride(
 	provider: string,
 	model: string,
-): SetOverrideResult {
+): Promise<SetOverrideResult> {
 	const p = provider.trim();
 	const m = model.trim();
 	if (!p && !m) {
@@ -127,7 +127,7 @@ export function setOverride(
 			error: `${m} is not a known model for provider "${p}".`,
 		};
 	}
-	const apiKey = resolveApiKey(p);
+	const apiKey = await resolveApiKey(p);
 	if (!apiKey) {
 		return {
 			ok: false,
@@ -177,7 +177,7 @@ export function effectiveModel(): string {
  * used by the Settings UI to steer the user toward a keyed provider and to
  * reject an override whose key isn't present (see {@link setOverride}).
  */
-export function providerApiKeyConfigured(provider: string): boolean {
+export function providerApiKeyConfigured(provider: string): Promise<boolean> {
 	return hasApiKey(provider);
 }
 

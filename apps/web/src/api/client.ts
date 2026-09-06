@@ -53,6 +53,10 @@ export type LlmConfig = {
 	 * leaves the server. */
 	keyedStoredProviders: { provider: string }[];
 	modelsByProvider: Record<string, ProviderModelOption[]>;
+	/** Providers with a connected OAuth login ("Sign in with Claude") — today
+	 * only ever `{ anthropic: boolean }`. An OAuth login outranks a stored API
+	 * key for the same provider. */
+	oauthConnected: Record<string, boolean>;
 };
 
 const SESSION_EVENT_TYPES: AgentStreamEvent["type"][] = [
@@ -356,5 +360,31 @@ export const api = {
 					method: "DELETE",
 				},
 			),
+		/** Begin an Anthropic "Sign in with Claude" OAuth login — returns a URL
+		 * to open plus a `loginId` to complete it with once the user pastes back
+		 * the resulting code/redirect URL (see providerOAuth.ts). */
+		startAnthropicOAuthLogin: () =>
+			request<{ loginId: string; authUrl: string }>(
+				"/api/config/providers/anthropic/oauth/start",
+				{ method: "POST" },
+			),
+		/** Finish a pending login with the pasted code/redirect URL. */
+		completeAnthropicOAuthLogin: (loginId: string, input: string) =>
+			request<{ ok: boolean }>(
+				"/api/config/providers/anthropic/oauth/complete",
+				{ method: "POST", body: JSON.stringify({ loginId, input }) },
+			),
+		/** Abandon a pending login (e.g. the dialog was closed unsubmitted). */
+		cancelAnthropicOAuthLogin: (loginId: string) =>
+			request<{ ok: boolean }>("/api/config/providers/anthropic/oauth/cancel", {
+				method: "POST",
+				body: JSON.stringify({ loginId }),
+			}),
+		/** Disconnect Anthropic's OAuth login (falls back to a stored API key or
+		 * env thereafter). */
+		disconnectAnthropicOAuth: () =>
+			request<{ ok: boolean }>("/api/config/providers/anthropic/oauth", {
+				method: "DELETE",
+			}),
 	},
 };

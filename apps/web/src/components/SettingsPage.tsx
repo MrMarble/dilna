@@ -1,4 +1,12 @@
-import { ArrowLeft, KeyRound, Plus, RotateCcw, Save, X } from "lucide-react";
+import {
+	ArrowLeft,
+	KeyRound,
+	LogIn,
+	Plus,
+	RotateCcw,
+	Save,
+	X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api, type LlmConfig } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -60,6 +68,17 @@ export function SettingsPage({ onBack }: Props) {
 	const [addKey, setAddKey] = useState("");
 	const [addPending, setAddPending] = useState(false);
 	const [addError, setAddError] = useState<string | null>(null);
+
+	/** "Sign in with Claude" dialog (Anthropic OAuth — see providerOAuth.ts):
+	 * `oauthLoginId`/`oauthAuthUrl` populate once `startAnthropicOAuthLogin`
+	 * returns; the paste-back field feeds `completeAnthropicOAuthLogin`. */
+	const [oauthOpen, setOauthOpen] = useState(false);
+	const [oauthLoginId, setOauthLoginId] = useState<string | null>(null);
+	const [oauthAuthUrl, setOauthAuthUrl] = useState<string | null>(null);
+	const [oauthStarting, setOauthStarting] = useState(false);
+	const [oauthInput, setOauthInput] = useState("");
+	const [oauthSubmitting, setOauthSubmitting] = useState(false);
+	const [oauthError, setOauthError] = useState<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -210,6 +229,75 @@ export function SettingsPage({ onBack }: Props) {
 		}
 	}
 
+	async function openOAuthDialog() {
+		setOauthOpen(true);
+		setOauthStarting(true);
+		setOauthError(null);
+		setOauthAuthUrl(null);
+		setOauthLoginId(null);
+		setOauthInput("");
+		try {
+			const { loginId, authUrl } = await api.config.startAnthropicOAuthLogin();
+			setOauthLoginId(loginId);
+			setOauthAuthUrl(authUrl);
+		} catch (err) {
+			setOauthError(
+				err instanceof Error ? err.message : "failed to start login",
+			);
+		} finally {
+			setOauthStarting(false);
+		}
+	}
+
+	function handleOAuthOpenChange(open: boolean) {
+		// Closing without completing abandons the pending login server-side —
+		// otherwise it'd sit around consuming the local callback race until its
+		// own TTL sweep (see providerOAuth.ts).
+		if (!open && oauthLoginId) {
+			void api.config.cancelAnthropicOAuthLogin(oauthLoginId);
+		}
+		setOauthOpen(open);
+	}
+
+	async function handleOAuthSubmit(e: React.FormEvent) {
+		e.preventDefault();
+		if (!oauthLoginId || !oauthInput.trim()) return;
+		setOauthSubmitting(true);
+		setOauthError(null);
+		try {
+			await api.config.completeAnthropicOAuthLogin(
+				oauthLoginId,
+				oauthInput.trim(),
+			);
+			setOauthOpen(false);
+			setOauthLoginId(null);
+			const cfg = await api.config.get();
+			setConfig(cfg);
+			setMessage({ kind: "ok", text: "Signed in with Claude." });
+		} catch (err) {
+			setOauthError(
+				err instanceof Error ? err.message : "failed to complete login",
+			);
+		} finally {
+			setOauthSubmitting(false);
+		}
+	}
+
+	async function handleDisconnectOAuth() {
+		setMessage(null);
+		try {
+			await api.config.disconnectAnthropicOAuth();
+			const cfg = await api.config.get();
+			setConfig(cfg);
+			setMessage({ kind: "ok", text: "Disconnected Claude Pro/Max login." });
+		} catch (err) {
+			setMessage({
+				kind: "error",
+				text: err instanceof Error ? err.message : "failed to disconnect",
+			});
+		}
+	}
+
 	// Providers that have a dilna-managed (stored) API key, driving the
 	// "Added providers" list. Config carries these from GET /api/config; the
 	// test fixture may omit the field, so default to [] rather than crash.
@@ -229,6 +317,11 @@ export function SettingsPage({ onBack }: Props) {
 	// Which provider actually runs current sessions (override ?? env).
 	const activeProvider = config?.effective.provider || "";
 	const usingEnv = !hasOverride && !!config?.envDefault.provider;
+
+	// Anthropic OAuth ("Sign in with Claude") — outranks a stored Anthropic API
+	// key when connected (see providerCredentials.ts). Config carries this from
+	// GET /api/config; the test fixture may omit the field.
+	const anthropicOAuthConnected = config?.oauthConnected?.anthropic ?? false;
 
 	return (
 		<div className="flex flex-1 flex-col overflow-y-auto">
@@ -437,6 +530,48 @@ export function SettingsPage({ onBack }: Props) {
 								</ul>
 							)}
 						</div>
+
+						{/* Anthropic OAuth ("Sign in with Claude" — see providerOAuth.ts).
+							Independent of the stored-API-key list above: a connected login
+							outranks a stored Anthropic key, but doesn't replace it — both
+							can be kept around at once. */}
+						<div className="space-y-2 border-t border-border pt-4">
+							<div className="flex items-center justify-between gap-3">
+								<div>
+									<h2 className="text-lg font-semibold tracking-tight">
+										Claude Pro/Max login
+									</h2>
+									<p className="mt-0.5 text-xs text-muted-foreground">
+										Sign in with a Claude Pro/Max subscription instead of an API
+										key. Takes precedence over a stored Anthropic key.
+									</p>
+								</div>
+								{!anthropicOAuthConnected && (
+									<Button
+										type="button"
+										variant="outline"
+										onClick={() => void openOAuthDialog()}
+									>
+										<LogIn className="mr-1.5 size-4" />
+										Sign in with Claude
+									</Button>
+								)}
+							</div>
+							{anthropicOAuthConnected && (
+								<div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2">
+									<span className="text-sm">Connected — Claude Pro/Max</span>
+									<button
+										type="button"
+										onClick={() => void handleDisconnectOAuth()}
+										title="Disconnect Claude Pro/Max login"
+										aria-label="Disconnect Claude Pro/Max login"
+										className="ml-auto rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+									>
+										<X className="size-3.5" />
+									</button>
+								</div>
+							)}
+						</div>
 					</>
 				)}
 
@@ -512,6 +647,74 @@ export function SettingsPage({ onBack }: Props) {
 								disabled={addPending || !addProvider || !addKey.trim()}
 							>
 								{addPending ? "Saving…" : "Save key"}
+							</Button>
+						</DialogFooter>
+					</DialogContent>
+				</Dialog>
+
+				<Dialog open={oauthOpen} onOpenChange={handleOAuthOpenChange}>
+					<DialogContent className="sm:max-w-md">
+						<DialogHeader>
+							<DialogTitle>Sign in with Claude</DialogTitle>
+							<DialogDescription>
+								Opens Anthropic's login in a new tab. After approving, paste the
+								code — or the full redirect URL if it doesn't land back here
+								automatically — into the field below to finish connecting.
+							</DialogDescription>
+						</DialogHeader>
+						{oauthStarting && (
+							<p className="text-sm text-muted-foreground">
+								Preparing sign-in…
+							</p>
+						)}
+						{oauthAuthUrl && (
+							<form
+								id="oauth-login-form"
+								onSubmit={handleOAuthSubmit}
+								className="space-y-4"
+							>
+								<a
+									href={oauthAuthUrl}
+									target="_blank"
+									rel="noreferrer"
+									className="text-sm text-primary underline underline-offset-2"
+								>
+									Open Anthropic's login page
+								</a>
+								<div className="space-y-1.5">
+									<Label htmlFor="oauth-input">Code or redirect URL</Label>
+									<Input
+										id="oauth-input"
+										placeholder="Paste here after approving"
+										value={oauthInput}
+										onChange={(e) => setOauthInput(e.target.value)}
+										autoComplete="off"
+									/>
+								</div>
+							</form>
+						)}
+						{oauthError && (
+							<p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+								{oauthError}
+							</p>
+						)}
+						<DialogFooter>
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() => handleOAuthOpenChange(false)}
+								disabled={oauthSubmitting}
+							>
+								Cancel
+							</Button>
+							<Button
+								type="submit"
+								form="oauth-login-form"
+								disabled={
+									!oauthAuthUrl || oauthSubmitting || !oauthInput.trim()
+								}
+							>
+								{oauthSubmitting ? "Connecting…" : "Connect"}
 							</Button>
 						</DialogFooter>
 					</DialogContent>

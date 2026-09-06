@@ -15,10 +15,17 @@ import {
 } from "../agents/providerConfigStore";
 import {
 	clearProviderApiKey,
+	clearProviderOAuthCredential,
+	hasOAuthCredential,
 	listStoredProviderKeys,
 	type StoredProviderKey,
 	setProviderApiKey,
 } from "../agents/providerCredentials";
+import {
+	cancelAnthropicLogin,
+	completeAnthropicLogin,
+	startAnthropicLogin,
+} from "../agents/providerOAuth";
 
 type ProviderModelOption = { id: string; name: string };
 
@@ -42,6 +49,12 @@ type GetConfigResponse = {
 	 * support) — distinct from `apiKeysConfigured`, which also counts env
 	 * keys. Drives the "Added providers" list in the Settings view. */
 	keyedStoredProviders: StoredProviderKey[];
+	/** Providers with a connected OAuth login ("Sign in with Claude") — today
+	 * only ever `{ anthropic: boolean }`, since it's the only allowlisted
+	 * provider `pi-ai` ships an OAuth flow for. Drives the Settings view's
+	 * "Connected" indicator; an OAuth login outranks a stored API key for the
+	 * same provider (see providerCredentials.ts). */
+	oauthConnected: Record<string, boolean>;
 };
 
 export const configRoute = new Hono();
@@ -50,7 +63,7 @@ function modelsFor(provider: DilnaProvider): ProviderModelOption[] {
 	return getBuiltinModels(provider).map((m) => ({ id: m.id, name: m.name }));
 }
 
-configRoute.get("/", (c) => {
+configRoute.get("/", async (c) => {
 	const override = getOverride();
 	const envProvider = process.env.DILNA_PROVIDER ?? "";
 	const envModel = process.env.DILNA_MODEL ?? "";
@@ -59,9 +72,11 @@ configRoute.get("/", (c) => {
 		modelsByProvider[provider] = modelsFor(provider);
 	}
 	const apiKeysConfigured: Record<string, boolean> = {};
-	for (const provider of PROVIDER_ALLOWLIST) {
-		apiKeysConfigured[provider] = providerApiKeyConfigured(provider);
-	}
+	await Promise.all(
+		PROVIDER_ALLOWLIST.map(async (provider) => {
+			apiKeysConfigured[provider] = await providerApiKeyConfigured(provider);
+		}),
+	);
 	const body: GetConfigResponse = {
 		override,
 		envDefault: { provider: envProvider, model: envModel },
@@ -73,6 +88,7 @@ configRoute.get("/", (c) => {
 		apiKeysConfigured,
 		modelsByProvider,
 		keyedStoredProviders: listStoredProviderKeys(),
+		oauthConnected: { anthropic: hasOAuthCredential("anthropic") },
 	};
 	return c.json(body);
 });
@@ -90,7 +106,7 @@ configRoute.put("/", async (c) => {
 			message: "Expected { provider, model } to set a provider/model override.",
 		});
 	}
-	const result = setOverride(body.provider, body.model);
+	const result = await setOverride(body.provider, body.model);
 	if (!result.ok) {
 		throw new HTTPException(400, { message: result.error });
 	}
@@ -131,5 +147,62 @@ configRoute.put("/credentials", async (c) => {
 /** Forget a provider's stored key (falls back to its env key thereafter). */
 configRoute.delete("/credentials/:provider", (c) => {
 	clearProviderApiKey(c.req.param("provider"));
+	return c.json({ ok: true });
+});
+
+// ---- Anthropic OAuth ("Sign in with Claude" — see providerOAuth.ts) --------
+
+/** Begin an Anthropic OAuth login: returns a URL to open plus a `loginId` to
+ * complete it with once the user pastes back the resulting code/redirect
+ * URL. */
+configRoute.post("/providers/anthropic/oauth/start", async (c) => {
+	const result = await startAnthropicLogin();
+	if (!result.ok) {
+		throw new HTTPException(502, { message: result.error });
+	}
+	return c.json({ loginId: result.loginId, authUrl: result.authUrl });
+});
+
+type CompleteOAuthBody = { loginId: string; input: string };
+
+/** Finish a pending login with the code/redirect URL the user pasted back. */
+configRoute.post("/providers/anthropic/oauth/complete", async (c) => {
+	const body = (await c.req
+		.json()
+		.catch(() => null)) as CompleteOAuthBody | null;
+	if (
+		!body ||
+		typeof body.loginId !== "string" ||
+		typeof body.input !== "string"
+	) {
+		throw new HTTPException(400, {
+			message: "Expected { loginId, input } to complete a login.",
+		});
+	}
+	const result = await completeAnthropicLogin(body.loginId, body.input);
+	if (!result.ok) {
+		throw new HTTPException(400, { message: result.error });
+	}
+	return c.json({ ok: true });
+});
+
+type CancelOAuthBody = { loginId: string };
+
+/** Abandon a pending login (e.g. the user closed the dialog). */
+configRoute.post("/providers/anthropic/oauth/cancel", async (c) => {
+	const body = (await c.req.json().catch(() => null)) as CancelOAuthBody | null;
+	if (!body || typeof body.loginId !== "string") {
+		throw new HTTPException(400, {
+			message: "Expected { loginId } to cancel a login.",
+		});
+	}
+	cancelAnthropicLogin(body.loginId);
+	return c.json({ ok: true });
+});
+
+/** Disconnect Anthropic's OAuth login (falls back to a stored API key or env
+ * thereafter). */
+configRoute.delete("/providers/anthropic/oauth", (c) => {
+	clearProviderOAuthCredential("anthropic");
 	return c.json({ ok: true });
 });
