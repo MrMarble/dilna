@@ -28,7 +28,11 @@ Coding agents are great until you close the lid. dilna moves the agent, the work
 docker compose up
 ```
 
-Set `DILNA_PROVIDER` and `DILNA_MODEL` (one global choice for the whole instance — valid providers are `anthropic`, `deepseek`, `moonshotai`, `zai`) plus the matching API key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, or `ZAI_API_KEY`) in your environment or a `.env` file, mount your SSH keys, and you're driving agents from a browser tab. Set `GH_TOKEN` too if you want agents to open PRs or read/comment on issues via the `gh` CLI — generate one with `gh auth login` then `gh auth token` on a machine where you already have `gh` set up, or create a classic PAT at https://github.com/settings/tokens with `repo` scope (add `workflow` if agents need to edit workflow files, `read:org` for org-owned repos).
+Set `DILNA_PROVIDER` and `DILNA_MODEL` (one global choice for the whole instance — valid providers are `anthropic`, `deepseek`, `moonshotai`, `zai`) plus the matching API key (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, or `ZAI_API_KEY`) in your environment or a `.env` file. Prefer not to pin one up front? Leave them unset and pick a provider/model from the web Settings view once the container is up — it's saved to disk and survives restarts.
+
+`docker-compose.yml` mounts your host's `~/.ssh` read-only by default, so agents can push/pull without extra setup — and you're driving them from a browser tab. If SSH auth fails inside the container, set `PUID`/`PGID` to your host user's `id -u`/`id -g`: the container runs as an unprivileged user (uid 1000 by default) that needs matching ownership to read a tightly-permissioned private key.
+
+Set `GH_TOKEN` too if you want agents to open PRs or read/comment on issues via the `gh` CLI — generate one with `gh auth login` then `gh auth token` on a machine where you already have `gh` set up, or create a classic PAT at https://github.com/settings/tokens with `repo` scope (add `workflow` if agents need to edit workflow files, `read:org` for org-owned repos).
 
 ## Local development
 
