@@ -75,6 +75,7 @@ import { isDilnaProvider } from "./providerConfig";
 import { effectiveModel, effectiveProvider } from "./providerConfigStore";
 import { resolveApiKey } from "./providerCredentials";
 import type { AgentChatOptions } from "./types";
+import { createWebFetchTool } from "./webFetchTool";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -622,6 +623,10 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		}),
 		createReadRepoMemoryTool(opts.repoId),
 		createUpdateRepoMemoryTool(opts.repoId),
+		// Runs in the server process, not sandboxed bash — no new capability
+		// vs. curl-through-bash (the sandbox network policy already allows all
+		// domains); see webFetchTool.ts's module doc comment and ADR-0026.
+		createWebFetchTool(),
 	];
 
 	const agent = new Agent({

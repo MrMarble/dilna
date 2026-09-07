@@ -24,11 +24,13 @@
 		"drizzle-orm": "^0.45.2",
 		"hono": "^4.12.34",
 		"nanoid": "^5.1.16",
+		"turndown": "^7.2.4",
 		"zod": "^3.25.76"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^26.1.0",
+		"@types/turndown": "^5.0.6",
 		"drizzle-kit": "^0.31.10",
 		"tsup": "^8.5.1",
 		"tsx": "^4.23.0",
