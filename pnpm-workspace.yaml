@@ -11,10 +11,12 @@ allowBuilds:
   protobufjs: false
   better-sqlite3: true
   esbuild: true
+  lefthook: true
 
 onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
+  - lefthook
 # Force every transitive esbuild onto a patched release: tsup and
 # drizzle-kit's @esbuild-kit chain otherwise resolve versions flagged by
 # GHSA-67mh-4wv8-2f99 / GHSA-g7r4-m6w7-qqqr.
