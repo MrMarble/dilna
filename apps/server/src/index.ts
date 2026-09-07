@@ -10,6 +10,10 @@ import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { primeProviderCredentials } from "./agents/providerCredentials";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
+import {
+	bearerAuthMiddleware,
+	hostAllowlistMiddleware,
+} from "./middleware/security";
 import { repoManager } from "./repos/manager";
 import { configRoute } from "./routes/config";
 import { reposRoute } from "./routes/repos";
@@ -59,27 +63,13 @@ const allowedHosts = process.env.DILNA_ALLOWED_HOSTS?.split(",")
 	.map((h) => h.trim())
 	.filter(Boolean);
 if (allowedHosts?.length) {
-	app.use("*", async (c, next) => {
-		const host = c.req.header("host");
-		if (!host || !allowedHosts.includes(host)) {
-			return c.text("Forbidden", 403);
-		}
-		return next();
-	});
+	app.use("*", hostAllowlistMiddleware(allowedHosts));
 }
 
-// Opt-in bearer auth, same off-by-default rationale as above. Skips
-// /api/health so orchestrator liveness/readiness probes don't need the
-// token.
+// Opt-in bearer auth, same off-by-default rationale as above.
 const authToken = process.env.DILNA_AUTH_TOKEN;
 if (authToken) {
-	app.use("/api/*", async (c, next) => {
-		if (c.req.path === "/api/health") return next();
-		if (c.req.header("authorization") !== `Bearer ${authToken}`) {
-			return c.json({ error: "unauthorized" }, 401);
-		}
-		return next();
-	});
+	app.use("/api/*", bearerAuthMiddleware(authToken, "/api/health"));
 }
 
 app.use(
