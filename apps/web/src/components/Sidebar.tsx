@@ -204,14 +204,14 @@ export function Sidebar({
 					>
 						<Plus className="size-3.5" />
 						{creatingSession ? "Creating…" : "New session"}
-						<span className="ml-auto text-xs font-normal text-primary-foreground/60">
+						<span className="ml-auto hidden text-xs font-normal text-primary-foreground/60 md:inline">
 							{NEW_SESSION_SHORTCUT}
 						</span>
 					</button>
 					<button
 						type="button"
 						onClick={onOpenMetrics}
-						className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground"
+						className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70"
 					>
 						<BarChart3 className="size-3.5 shrink-0" />
 						Metrics
@@ -219,7 +219,7 @@ export function Sidebar({
 					<button
 						type="button"
 						onClick={onOpenSettings}
-						className="mt-0.5 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground"
+						className="mt-0.5 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70"
 					>
 						<Settings className="size-3.5 shrink-0" />
 						Settings
@@ -304,7 +304,7 @@ function CurrentSessionRow({
 				type="button"
 				onClick={() => onDelete(session.id)}
 				title="Delete session"
-				className="shrink-0 rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive"
+				className="shrink-0 rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-destructive active:scale-90 active:bg-accent active:text-destructive"
 			>
 				<Trash2 className="size-3.5" />
 			</button>
@@ -351,7 +351,7 @@ function OrchestratorSection({
 									"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
 									session.id === selectedSessionId
 										? "bg-sidebar-accent font-medium text-foreground"
-										: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground",
+										: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70",
 								)}
 							>
 								<StatusDot status={session.status} />
@@ -442,7 +442,7 @@ function ReposSection({
 											if (!expanded) onSelectRepo(repo.id);
 										}}
 										aria-expanded={expanded}
-										className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent/40"
+										className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent/40 active:bg-sidebar-accent/70"
 									>
 										<ChevronRight
 											className={cn(
@@ -596,7 +596,7 @@ function NotificationsToggle({
 			onClick={onClick}
 			title={title}
 			className={cn(
-				"relative rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground",
+				"relative rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent",
 				className,
 			)}
 		>
@@ -665,7 +665,7 @@ function BackgroundAgentsSection({
 							<button
 								type="button"
 								onClick={() => onSelect(session)}
-								className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50"
+								className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50 active:bg-accent/80"
 							>
 								<span className="flex items-center gap-1.5 overflow-hidden">
 									<StatusDot status={session.status} />
@@ -774,7 +774,7 @@ function SidebarSectionHeader({
 					<button
 						type="button"
 						onClick={onRefresh}
-						className="rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+						className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent"
 						title={refreshTitle}
 					>
 						<RefreshCw className="size-4" />
@@ -783,7 +783,7 @@ function SidebarSectionHeader({
 				<button
 					type="button"
 					onClick={onNew}
-					className="rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
+					className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent"
 					title={newTitle}
 				>
 					<Plus className="size-4" />

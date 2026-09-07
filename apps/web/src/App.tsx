@@ -528,7 +528,7 @@ export function App() {
 
 	return (
 		<>
-			<div className="flex h-dvh w-screen">
+			<div className="flex h-dvh w-screen pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)]">
 				{isDesktop && !sidebarCollapsed && (
 					<Sidebar
 						{...sidebarProps}
@@ -589,7 +589,7 @@ export function App() {
 							{selectedRepo ? (
 								<RepoEmpty repo={selectedRepo} />
 							) : (
-								<EmptyState />
+								<EmptyState onNewRepo={() => setNewRepoOpen(true)} />
 							)}
 						</div>
 					)}
@@ -633,7 +633,7 @@ export function App() {
 	);
 }
 
-function EmptyState() {
+function EmptyState({ onNewRepo }: { onNewRepo: () => void }) {
 	return (
 		<div className="max-w-sm text-center">
 			<span className="mx-auto mb-4 flex size-12 items-center justify-center rounded-xl border border-border bg-card shadow-sm">
@@ -644,8 +644,15 @@ function EmptyState() {
 				self-hosted workspace for AI coding agents
 			</p>
 			<p className="mt-1 text-balance text-xs text-muted-foreground">
-				Clone a repository from the sidebar to get started.
+				Clone a repository to get started.
 			</p>
+			<button
+				type="button"
+				onClick={onNewRepo}
+				className="mt-4 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97]"
+			>
+				Clone a repository
+			</button>
 		</div>
 	);
 }
