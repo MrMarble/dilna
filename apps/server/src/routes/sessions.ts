@@ -20,6 +20,14 @@ import { runSseLoop } from "./sse";
 
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
 
+// Bounds the ?limit= query param on GET /:id/commits — falls back to
+// SessionManager.getRecentCommits' own default (5) for anything missing,
+// non-numeric, or out of a sane range, rather than passing it through raw.
+export function parseCommitsLimit(raw: string | undefined): number | undefined {
+	const n = Number(raw);
+	return Number.isInteger(n) && n > 0 && n <= 50 ? n : undefined;
+}
+
 type ListResponse = { sessions: SessionView[] };
 type OneResponse = {
 	session: SessionView;
@@ -136,7 +144,8 @@ sessionsRoute.get("/:id/commits", async (c) => {
 	const id = c.req.param("id");
 	const session = await sessionManager.get(id);
 	if (!session) throw new HTTPException(404, { message: "session not found" });
-	const commits = await sessionManager.getRecentCommits(id);
+	const limit = parseCommitsLimit(c.req.query("limit"));
+	const commits = await sessionManager.getRecentCommits(id, limit);
 	const body: { commits: CommitInfo[] } = { commits };
 	return c.json(body);
 });

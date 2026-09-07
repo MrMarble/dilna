@@ -10,9 +10,9 @@
 		"includes": [
 			"**",
 			"!**/*.css",
-			"!!**/dist",
-			"!!**/build",
-			"!!**/node_modules",
+			"!**/dist",
+			"!**/build",
+			"!**/node_modules",
 			"!apps/web/src/components/ui",
 			"!seccomp-bubblewrap.json"
 		]
