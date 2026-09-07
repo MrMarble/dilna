@@ -5,7 +5,7 @@
 	"license": "MIT",
 	"type": "module",
 	"scripts": {
-		"prepare": "lefthook install",
+		"prepare": "lefthook install || true",
 		"dev": "pnpm -r --parallel run dev",
 		"build": "pnpm -r --filter \"./apps/*\" run build",
 		"typecheck": "pnpm -r run typecheck",
