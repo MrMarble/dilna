@@ -61,6 +61,7 @@ describe("getUsageSummary", () => {
 			costUsd: 0,
 		});
 		expect(summary.daily).toEqual([]);
+		expect(summary.dailyByModel).toEqual([]);
 		expect(summary.byRepo).toEqual([]);
 		expect(summary.byModel).toEqual([]);
 	});
@@ -105,6 +106,23 @@ describe("getUsageSummary", () => {
 				model: "claude-opus-5",
 			}),
 		]);
+
+		// a+b share a day/model (0.03 combined), c is a different day.
+		expect(summary.dailyByModel).toHaveLength(2);
+		expect(summary.dailyByModel).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					provider: "anthropic",
+					model: "claude-opus-5",
+					costUsd: expect.closeTo(0.03, 6),
+				}),
+				expect.objectContaining({
+					provider: "anthropic",
+					model: "claude-opus-5",
+					costUsd: 0.05,
+				}),
+			]),
+		);
 	});
 
 	it("since=0 includes every row regardless of age", () => {

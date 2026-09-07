@@ -23,9 +23,17 @@ export type UsageModelBreakdown = {
 	model: string;
 } & UsageTotalsDetailed;
 
+/** Same `date` bucket as `UsageDailyPoint`, split by `provider`/`model` — powers the stacked-by-model daily chart. */
+export type UsageDailyModelBreakdown = {
+	date: string;
+	provider: string;
+	model: string;
+} & UsageTotalsDetailed;
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
+	dailyByModel: UsageDailyModelBreakdown[];
 	byRepo: UsageRepoBreakdown[];
 	byModel: UsageModelBreakdown[];
 };

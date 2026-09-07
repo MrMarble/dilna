@@ -15,6 +15,7 @@ const ZERO_TOTALS = {
 let nextSummary: UsageSummary = {
 	totals: { ...ZERO_TOTALS },
 	daily: [],
+	dailyByModel: [],
 	byRepo: [],
 	byModel: [],
 };
@@ -35,6 +36,7 @@ describe("MetricsPage", () => {
 		nextSummary = {
 			totals: { ...ZERO_TOTALS },
 			daily: [],
+			dailyByModel: [],
 			byRepo: [],
 			byModel: [],
 		};
@@ -68,6 +70,35 @@ describe("MetricsPage", () => {
 					costUsd: 0.5345,
 				},
 			],
+			dailyByModel: [
+				{
+					date: "2026-08-27",
+					provider: "anthropic",
+					model: "claude-opus-5",
+					...ZERO_TOTALS,
+					inputTokens: 600,
+					outputTokens: 300,
+					costUsd: 0.7,
+				},
+				{
+					date: "2026-08-28",
+					provider: "anthropic",
+					model: "claude-opus-5",
+					...ZERO_TOTALS,
+					inputTokens: 250,
+					outputTokens: 100,
+					costUsd: 0.3345,
+				},
+				{
+					date: "2026-08-28",
+					provider: "deepseek",
+					model: "deepseek-v4-pro",
+					...ZERO_TOTALS,
+					inputTokens: 150,
+					outputTokens: 100,
+					costUsd: 0.2,
+				},
+			],
 			byRepo: [
 				{
 					repoId: "repo-1",
@@ -99,5 +130,9 @@ describe("MetricsPage", () => {
 		// $1.23 (same underlying total, since there's only one repo).
 		expect(await screen.findAllByText("$1.23")).toHaveLength(2);
 		expect(screen.getByText("my-repo")).toBeInTheDocument();
+
+		// Legend lists every model present in the stacked daily chart.
+		expect(screen.getAllByText("claude-opus-5").length).toBeGreaterThan(0);
+		expect(screen.getAllByText("deepseek-v4-pro").length).toBeGreaterThan(0);
 	});
 });

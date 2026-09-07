@@ -1,6 +1,7 @@
 import type {
 	DiskUsage,
 	Repo,
+	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
 	UsageSummary,
@@ -133,7 +134,10 @@ export function MetricsPage({ repos, onBack }: Props) {
 				{summary && !isEmpty && (
 					<>
 						<SummaryCards summary={summary} />
-						<DailyUsageChart daily={summary.daily} />
+						<DailyUsageChart
+							daily={summary.daily}
+							dailyByModel={summary.dailyByModel}
+						/>
 						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 					</>
@@ -187,21 +191,97 @@ function SummaryCards({ summary }: { summary: UsageSummary }) {
 }
 
 /**
- * Daily cost bar chart — hand-rolled inline SVG (no chart dependency in this
- * app). Single series/single hue (`--primary`, the app's existing accent
- * token), so the multi-hue categorical palette rules don't apply here.
- * Hover reveals the day's exact cost/token breakdown above the chart rather
- * than a cursor-following tooltip, keeping bars as comfortably-sized hit
- * targets on touch too.
+ * Fixed categorical hue order (`--chart-1`..`--chart-8` in index.css) — see
+ * the dataviz skill: assign colors by fixed slot order, validated for
+ * CVD-safe adjacency/contrast against this app's card surface, never by
+ * on-screen rank so a model keeps its color as the date range filter
+ * changes which models are present.
  */
-function DailyUsageChart({ daily }: { daily: UsageDailyPoint[] }) {
+const SERIES_SLOTS = 8;
+
+/** djb2 string hash, used only as the starting point for slot assignment below. */
+function hashString(key: string): number {
+	let hash = 5381;
+	for (let i = 0; i < key.length; i++) {
+		hash = (hash * 33) ^ key.charCodeAt(i);
+	}
+	return Math.abs(hash);
+}
+
+function modelKey(m: { provider: string; model: string }): string {
+	return `${m.provider}/${m.model}`;
+}
+
+/**
+ * Assigns each model a slot: hash to a starting slot, then linearly probe
+ * to the next free one on collision. Keeps a given model's color stable
+ * across re-renders (models are visited in a fixed alphabetical order) while
+ * guaranteeing every model *currently in view* gets a distinct color — a
+ * plain hash can (and did) collide two models onto the same hue with only
+ * ~8 slots. Beyond 8 concurrently-visible models, slots wrap and repeat.
+ */
+function assignSeriesColors(keys: string[]): Map<string, number> {
+	const used = new Set<number>();
+	const map = new Map<string, number>();
+	for (const key of [...keys].sort()) {
+		let idx = hashString(key) % SERIES_SLOTS;
+		for (let tries = 0; used.has(idx) && tries < SERIES_SLOTS; tries++) {
+			idx = (idx + 1) % SERIES_SLOTS;
+		}
+		used.add(idx);
+		map.set(key, idx);
+	}
+	return map;
+}
+
+/**
+ * Daily cost bar chart — hand-rolled inline SVG (no chart dependency in
+ * this app). Stacked per model/provider so relative usage across models is
+ * visible per day, per the dataviz skill's categorical-color rules. Hover
+ * reveals the day's exact cost/token breakdown, plus a per-model line-item
+ * list ("one tooltip, every series"), above the chart rather than a
+ * cursor-following tooltip, keeping bars as comfortably-sized hit targets
+ * on touch too. A legend is always shown once >=2 models are present.
+ */
+function DailyUsageChart({
+	daily,
+	dailyByModel,
+}: {
+	daily: UsageDailyPoint[];
+	dailyByModel: UsageDailyModelBreakdown[];
+}) {
 	const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 	const width = 100;
 	const height = 40;
 	const maxCost = Math.max(...daily.map((d) => d.costUsd), 0.000001);
 	const barWidth = width / daily.length;
 	const gap = Math.min(barWidth * 0.25, 0.6);
+	// ~2px surface gap between stacked segments, in viewBox units (svg is
+	// rendered at h-32 = 128px tall for a 40-unit viewBox).
+	const segmentGap = (2 / 128) * height;
 	const hovered = hoverIndex !== null ? daily[hoverIndex] : null;
+
+	// Stable per-date model breakdown, sorted alphabetically so a model's
+	// stack position (and thus reading order) doesn't jump between bars.
+	const byDate = new Map<string, UsageDailyModelBreakdown[]>();
+	for (const row of dailyByModel) {
+		const rows = byDate.get(row.date) ?? [];
+		rows.push(row);
+		byDate.set(row.date, rows);
+	}
+	for (const rows of byDate.values()) {
+		rows.sort((a, b) => modelKey(a).localeCompare(modelKey(b)));
+	}
+
+	const legendModels = Array.from(
+		new Map(dailyByModel.map((m) => [modelKey(m), m])).values(),
+	).sort((a, b) => modelKey(a).localeCompare(modelKey(b)));
+
+	const colorSlots = assignSeriesColors(legendModels.map(modelKey));
+	const colorVar = (m: { provider: string; model: string }) =>
+		`var(--chart-${(colorSlots.get(modelKey(m)) ?? 0) + 1})`;
+
+	const hoveredModels = hovered ? (byDate.get(hovered.date) ?? []) : [];
 
 	return (
 		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -213,12 +293,30 @@ function DailyUsageChart({ daily }: { daily: UsageDailyPoint[] }) {
 						: `${daily[0]?.date} – ${daily[daily.length - 1]?.date}`}
 				</span>
 			</div>
+			{/* Reserve the row's height even when empty so hover doesn't shift layout. */}
+			<div className="mb-1 flex min-h-[1.1rem] flex-wrap items-center justify-end gap-x-3 gap-y-0.5 text-[0.7rem] text-muted-foreground">
+				{hoveredModels.map((m) => (
+					<span
+						key={modelKey(m)}
+						className="inline-flex items-center gap-1 tabular-nums"
+					>
+						<span
+							className="inline-block h-[2px] w-2.5 rounded-full"
+							style={{ backgroundColor: colorVar(m) }}
+						/>
+						<span className="font-mono">{m.model}</span>
+						<span className="font-medium text-foreground">
+							{formatUsd(m.costUsd)}
+						</span>
+					</span>
+				))}
+			</div>
 			<svg
 				viewBox={`0 0 ${width} ${height}`}
 				preserveAspectRatio="none"
 				className="h-32 w-full overflow-visible"
 				role="img"
-				aria-label="Daily cost over the selected range"
+				aria-label="Daily cost over the selected range, stacked by model"
 			>
 				{daily.map((d, i) => {
 					const barHeight = Math.max(
@@ -227,23 +325,79 @@ function DailyUsageChart({ daily }: { daily: UsageDailyPoint[] }) {
 					);
 					const x = i * barWidth + gap / 2;
 					const w = Math.max(barWidth - gap, 0.1);
+					const top = height - barHeight;
+					const opacity = hoverIndex === null || hoverIndex === i ? 1 : 0.35;
+					const segments = byDate.get(d.date) ?? [];
+
+					if (segments.length === 0 || d.costUsd <= 0) {
+						return (
+							// biome-ignore lint/a11y/noStaticElementInteractions: hover-only chart bar (mouse), decorative — not keyboard-actionable
+							<rect
+								key={d.date}
+								x={x}
+								y={top}
+								width={w}
+								height={barHeight}
+								rx={Math.min(w * 0.3, 1)}
+								fill="var(--muted-foreground)"
+								opacity={barHeight > 0 ? opacity * 0.3 : 0}
+								onMouseEnter={() => setHoverIndex(i)}
+								onMouseLeave={() => setHoverIndex(null)}
+							/>
+						);
+					}
+
+					let cursor = top;
 					return (
-						// biome-ignore lint/a11y/noStaticElementInteractions: hover-only chart bar (mouse), decorative — not keyboard-actionable
-						<rect
-							key={d.date}
-							x={x}
-							y={height - barHeight}
-							width={w}
-							height={barHeight}
-							rx={Math.min(w * 0.3, 1)}
-							fill="var(--primary)"
-							opacity={hoverIndex === null || hoverIndex === i ? 1 : 0.35}
-							onMouseEnter={() => setHoverIndex(i)}
-							onMouseLeave={() => setHoverIndex(null)}
-						/>
+						<g key={d.date}>
+							{segments.map((seg, si) => {
+								const segHeight = (seg.costUsd / d.costUsd) * barHeight;
+								const isTop = si === 0;
+								const isBottom = si === segments.length - 1;
+								const y = cursor;
+								cursor += segHeight;
+								const halfGap = segmentGap / 2;
+								const drawY = y + (isTop ? 0 : halfGap);
+								const drawHeight = Math.max(
+									segHeight - (isTop ? 0 : halfGap) - (isBottom ? 0 : halfGap),
+									0.1,
+								);
+								return (
+									// biome-ignore lint/a11y/noStaticElementInteractions: hover-only chart segment (mouse), decorative — not keyboard-actionable
+									<rect
+										key={modelKey(seg)}
+										x={x}
+										y={drawY}
+										width={w}
+										height={drawHeight}
+										rx={isTop ? Math.min(w * 0.3, 1) : 0}
+										fill={colorVar(seg)}
+										opacity={opacity}
+										onMouseEnter={() => setHoverIndex(i)}
+										onMouseLeave={() => setHoverIndex(null)}
+									/>
+								);
+							})}
+						</g>
 					);
 				})}
 			</svg>
+			{legendModels.length > 1 && (
+				<div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-border pt-3 text-xs text-muted-foreground">
+					{legendModels.map((m) => (
+						<span
+							key={modelKey(m)}
+							className="inline-flex items-center gap-1.5"
+						>
+							<span
+								className="inline-block size-2 rounded-[2px]"
+								style={{ backgroundColor: colorVar(m) }}
+							/>
+							<span className="font-mono">{m.model}</span>
+						</span>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }

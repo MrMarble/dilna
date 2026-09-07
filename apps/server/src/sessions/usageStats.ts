@@ -1,4 +1,5 @@
 import type {
+	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
 	UsageRepoBreakdown,
@@ -57,6 +58,19 @@ export function getUsageSummary(since: number): UsageSummary {
 		.orderBy(DAY_BUCKET)
 		.all() as UsageDailyPoint[];
 
+	const dailyByModel = db
+		.select({
+			date: DAY_BUCKET,
+			provider: usageEventsTable.provider,
+			model: usageEventsTable.model,
+			...SUM_COLUMNS,
+		})
+		.from(usageEventsTable)
+		.where(where)
+		.groupBy(DAY_BUCKET, usageEventsTable.provider, usageEventsTable.model)
+		.orderBy(DAY_BUCKET)
+		.all() as UsageDailyModelBreakdown[];
+
 	const byRepo = db
 		.select({ repoId: usageEventsTable.repoId, ...SUM_COLUMNS })
 		.from(usageEventsTable)
@@ -80,6 +94,7 @@ export function getUsageSummary(since: number): UsageSummary {
 	return {
 		totals: totals ?? { ...ZERO_TOTALS },
 		daily,
+		dailyByModel,
 		byRepo,
 		byModel,
 	};
