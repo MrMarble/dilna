@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.20.0](https://github.com/MrMarble/dilna/compare/v0.19.0...v0.20.0) (2026-09-07)
+
+
+### Features
+
+* **web:** mobile UI polish — perf, tap feedback, safe-area, discoverability ([#152](https://github.com/MrMarble/dilna/issues/152)) ([5ed54e0](https://github.com/MrMarble/dilna/commit/5ed54e0a05f757e24d801eda164dc84ea964ce36))
+* **web:** stack daily-cost chart by model ([#155](https://github.com/MrMarble/dilna/issues/155)) ([9ed99ea](https://github.com/MrMarble/dilna/commit/9ed99ea31dc1c8b3e32d17485d39e53b7700f692))
+
 ## [0.19.0](https://github.com/MrMarble/dilna/compare/v0.18.0...v0.19.0) (2026-09-07)
 
 
