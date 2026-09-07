@@ -87,7 +87,7 @@ export function ChatHeader({
 						onClick={filesTrigger.onToggle}
 						aria-label="Toggle changed files"
 						aria-pressed={filesTrigger.open}
-						className="rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+						className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-foreground active:scale-90 active:bg-accent md:hidden"
 					>
 						<FileDiff className="size-4" />
 					</button>
@@ -141,7 +141,7 @@ function CopyTranscriptLinkButton({ sessionId }: { sessionId: string }) {
 			type="button"
 			onClick={handleClick}
 			title="Copy transcript link"
-			className="hidden rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:inline-flex"
+			className="rounded-md p-2 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-foreground active:scale-90 active:bg-accent"
 		>
 			{copied ? (
 				<Check className="size-3.5" />
@@ -179,7 +179,7 @@ export function MobileMenuButton({ trigger }: { trigger: MobileSheetTrigger }) {
 			onClick={trigger.onToggle}
 			aria-label="Toggle menu"
 			aria-pressed={trigger.open}
-			className="-ml-2.5 rounded-md p-2.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:hidden"
+			className="-ml-2.5 rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-foreground active:scale-90 active:bg-accent md:hidden"
 		>
 			<Menu className="size-4" />
 		</button>

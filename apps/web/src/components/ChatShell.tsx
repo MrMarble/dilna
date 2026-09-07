@@ -630,7 +630,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 				</MessageScrollerProvider>
 			</div>
 
-			<div className="px-6 py-4">
+			<div className="px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
 				{degraded && (
 					<p className="mx-auto mb-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
 						Reconnecting…
@@ -850,7 +850,7 @@ function ThinkingBlock({
 				type="button"
 				onClick={() => setExpanded((v) => !v)}
 				disabled={!chunk}
-				className="flex w-full items-center gap-1 font-medium"
+				className="flex w-full items-center gap-1 rounded font-medium transition-colors hover:text-foreground active:text-foreground/80"
 			>
 				{chunk &&
 					(expanded ? (
@@ -894,7 +894,7 @@ function ToolCallGroup({
 				<button
 					type="button"
 					onClick={() => setExpanded((v) => !v)}
-					className="flex w-full cursor-pointer items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+					className="flex w-full cursor-pointer items-center gap-1 rounded text-xs font-medium text-muted-foreground transition-colors hover:text-foreground active:text-foreground/80"
 				>
 					{expanded ? (
 						<ChevronDown className="size-3" />
@@ -982,8 +982,8 @@ function ToolCallMarker({
 				type="button"
 				onClick={() => hasDetails && setOpen((v) => !v)}
 				className={cn(
-					"flex w-full items-center gap-2 px-2.5 py-1.5 text-left",
-					hasDetails && "cursor-pointer hover:bg-accent/30",
+					"flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors",
+					hasDetails && "cursor-pointer hover:bg-accent/30 active:bg-accent/50",
 				)}
 			>
 				{running ? (

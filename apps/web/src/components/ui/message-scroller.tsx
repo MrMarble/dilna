@@ -73,7 +73,13 @@ function MessageScrollerItem({
       data-slot="message-scroller-item"
       scrollAnchor={scrollAnchor}
       className={cn(
-        "min-w-0 shrink-0",
+        // Off-screen items skip layout/paint entirely (native browser
+        // support, no virtualization library needed) — a long chat's DOM
+        // stays intact for scroll-anchor math, but only visible bubbles cost
+        // render time. `auto` in contain-intrinsic-size remembers each
+        // item's last real height so scrollHeight doesn't jump around as
+        // items enter/exit the viewport.
+        "min-w-0 shrink-0 [content-visibility:auto] [contain-intrinsic-size:auto_180px]",
         className
       )}
       {...props}
