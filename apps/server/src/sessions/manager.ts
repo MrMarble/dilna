@@ -20,6 +20,7 @@ import type {
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
+	type AgentEvent,
 	buildInitialMessages,
 	chatPi,
 	checkSessionContext,
@@ -29,6 +30,7 @@ import {
 	type PiHandle,
 	type PiStartOptions,
 	piMessagesToDilna,
+	piRoundToDilnaMessage,
 	type SessionCompaction,
 	startOrchestrator,
 	startPi,
@@ -293,6 +295,16 @@ export class SessionNotFoundError extends Error {
 	}
 }
 
+/** Thrown by `beginTurn` once `drain()` has started (ADR-0026) — distinguished
+ * from the "already in progress" 409 so the route can map it to its own,
+ * client-retryable status (503) instead. */
+export class SessionManagerDrainingError extends Error {
+	constructor() {
+		super("server is shutting down");
+		this.name = "SessionManagerDrainingError";
+	}
+}
+
 type TurnFailedClass = Extract<
 	AgentStreamEvent,
 	{ type: "turn_failed" }
@@ -395,6 +407,65 @@ class SessionManager {
 	 * lifetime as `ActiveAgent.liveTurn`. */
 	private lastTurnActivity = new Map<string, AgentStreamEvent>();
 	private lastNotice = new Map<string, AgentStreamEvent>();
+	/** Set by `drain()` (ADR-0026, graceful shutdown): once true, `beginTurn`
+	 * rejects every new turn claim so a draining process stops accepting work
+	 * it won't have time to finish. Never reset — a drained SessionManager is
+	 * on its way to `process.exit`, not a state to recover from. */
+	private draining = false;
+	/** Session id -> the in-flight `runTurn` promise a caller kicked off after
+	 * `beginTurn` claimed the slot (routes/sessions.ts, and this file's own
+	 * orchestrator `createChildSession`). Populated by `trackRunningTurn`,
+	 * which every `runTurn` call site must use instead of a bare
+	 * fire-and-forget `.catch()` — it's the only way `drain()` can find
+	 * out what to wait for. Entries remove themselves once their turn
+	 * settles. */
+	private runningTurns = new Map<string, Promise<void>>();
+
+	/** Register an in-flight `runTurn` call so `drain()` can wait on it. Every
+	 * `runTurn(...)` call site (routes/sessions.ts, and this file's own
+	 * orchestrator `createChildSession`) must call this with the promise it
+	 * got back — `runTurn` doesn't register itself, since it has no way to
+	 * refer to its own outer promise from inside its own body. Callers keep
+	 * their own `.catch()` for logging; this only tracks completion, it
+	 * doesn't consume the promise's rejection. */
+	trackRunningTurn(id: string, promise: Promise<void>): void {
+		this.runningTurns.set(id, promise);
+		promise
+			.catch(() => {
+				// Swallowed here — the caller's own `.catch()` (routes/sessions.ts
+				// or the orchestrator path) already logs it. This handler exists
+				// only so an unawaited rejection inside `finally` below doesn't
+				// surface as an unhandled rejection.
+			})
+			.finally(() => {
+				if (this.runningTurns.get(id) === promise) {
+					this.runningTurns.delete(id);
+				}
+			});
+	}
+
+	/**
+	 * Graceful shutdown (ADR-0026): stop accepting new turns and wait, up to
+	 * `timeoutMs`, for every currently in-flight turn to reach its own
+	 * `finally` in `runTurn` and persist. Only helps against a plannable
+	 * termination signal (`SIGTERM`) — a hard `SIGKILL` (e.g. an OOM kill)
+	 * gives nothing running in-process a chance to run this at all. A turn
+	 * still running past `timeoutMs` is abandoned, not aborted — `index.ts`
+	 * proceeds to close the server and exit either way; incremental
+	 * persistence (ADR-0026) is what bounds the resulting loss, not this.
+	 */
+	async drain(timeoutMs: number): Promise<void> {
+		this.draining = true;
+		const inFlight = [...this.runningTurns.values()];
+		if (inFlight.length === 0) return;
+		console.log(
+			`[sessions] draining ${inFlight.length} in-flight turn(s), up to ${timeoutMs / 1000}s...`,
+		);
+		await Promise.race([
+			Promise.allSettled(inFlight),
+			new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+		]);
+	}
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
 		const db = getDb();
@@ -500,7 +571,9 @@ class SessionManager {
 					orchestratorSessionId,
 				);
 				this.beginTurn(view.id, prompt);
-				this.runTurn(view.id, prompt).catch((err) => {
+				const turnPromise = this.runTurn(view.id, prompt);
+				this.trackRunningTurn(view.id, turnPromise);
+				turnPromise.catch((err) => {
 					console.error(
 						`[sessions] orchestrator-spawned runTurn failed for ${view.id}:`,
 						err,
@@ -872,15 +945,27 @@ class SessionManager {
 	}
 
 	/**
-	 * Boot-time recovery (ADR-0014). Any session still marked
-	 * working/starting/stopping had a turn in flight when the previous server
-	 * process died. Unlike Claude's file-backed transcript, pi's in-process
-	 * `Agent` keeps no independent record of that turn — there is nothing to
-	 * backfill (an accepted regression vs. Claude's crash-recovery guarantee,
-	 * see ADR-0020's Consequences). The user's own message still survives
-	 * either way: promote its pending placeholder to a permanent row rather
-	 * than losing it — a restart must never delete the user's message, even
-	 * though the assistant's response to it is gone.
+	 * Boot-time recovery (ADR-0014, hardened by ADR-0026). Any session still
+	 * marked working/starting/stopping had a turn in flight when the previous
+	 * server process died. Unlike Claude's file-backed transcript, pi's
+	 * in-process `Agent` keeps no independent record of that turn — there is
+	 * nothing to backfill beyond whatever incremental per-round persistence
+	 * (ADR-0026) already landed before the interruption (an accepted
+	 * regression vs. Claude's crash-recovery guarantee, see ADR-0020's
+	 * Consequences). The user's own message still survives either way:
+	 * promote its pending placeholder to a permanent row rather than losing
+	 * it — a restart must never delete the user's message, even though the
+	 * rest of the assistant's response to it may be gone.
+	 *
+	 * ADR-0026 also adds a durable, visible marker: a synthetic `role:
+	 * "system"` row explaining the interruption, so a client that reconnects
+	 * long after the fact (nobody was necessarily watching when the process
+	 * died) sees *why* the turn stops abruptly instead of silent nothing.
+	 * This is a deliberate, narrow departure from ADR-0016's `notice` event,
+	 * which is explicitly transient/non-persisted by design for a different
+	 * problem (a live, in-turn hint to an already-connected client) — that
+	 * decision is untouched; this is a new, distinct concept scoped to
+	 * boot-time interruption recovery only.
 	 */
 	async resetAllToIdle(): Promise<void> {
 		const db = getDb();
@@ -892,6 +977,18 @@ class SessionManager {
 			.all();
 		for (const row of rows) {
 			this.promotePendingUserMessage(row.id);
+			this.persistMessage(row.id, {
+				id: nanoid(),
+				sessionId: row.id,
+				role: "system",
+				parts: [
+					{
+						type: "text",
+						text: "This turn was interrupted before it could finish — the server restarted mid-response. Your message was saved; you can try again.",
+					},
+				],
+				createdAt: Math.floor(Date.now() / 1000),
+			});
 		}
 		db.update(sessionsTable)
 			.set({ status: "idle" })
@@ -1117,6 +1214,9 @@ class SessionManager {
 	 * routes/sessions.ts turns the former into the 409.
 	 */
 	beginTurn(id: string, text: string): Message {
+		if (this.draining) {
+			throw new SessionManagerDrainingError();
+		}
 		if (this.turnsInProgress.has(id)) {
 			throw new Error("session already has a chat in progress");
 		}
@@ -1275,6 +1375,22 @@ class SessionManager {
 				this.broadcast(id, outgoing);
 			};
 
+			// Incremental persistence (ADR-0026): a raw pi-agent-core subscription,
+			// independent of the normalized `onEvent` stream above — see
+			// `persistRoundEvent`'s doc comment for what it does and why.
+			// `turnSettled` mirrors the existing `deliberatelyAborted` guard on the
+			// stall-timeout path below: a stalled turn's abandoned background
+			// `chatPi` call keeps running after this turn has already been given up
+			// on, and any round it completes after that point must not touch
+			// `active.persistedCount` — that content isn't lost, it's simply left
+			// for the next turn's wider, overlapping retry slice to pick up instead
+			// (same fallback `persistRoundEvent`'s own persist-failure catch
+			// already relies on).
+			let turnSettled = false;
+			const unsubscribeRounds = handle.agent.subscribe((event) => {
+				if (!turnSettled) this.persistRoundEvent(id, active, event);
+			});
+
 			let timedOut = false;
 			let crashed = false;
 			let crashMessage = "";
@@ -1311,6 +1427,12 @@ class SessionManager {
 				}
 			} finally {
 				clearTimeout(stallTimer);
+				// Stop the incremental round listener from touching
+				// `active.persistedCount` from here on — see its setup comment
+				// above for why a stale background call can still fire after this
+				// point, and why that's safe to just ignore.
+				turnSettled = true;
+				unsubscribeRounds();
 
 				// Persist everything this turn produced that we don't already
 				// have. The placeholder is only dropped once the turn's real user
@@ -1599,6 +1721,51 @@ class SessionManager {
 				outputTokens: row.outputTokens,
 			},
 		};
+	}
+
+	/**
+	 * ADR-0026's incremental-persistence handler: one raw pi-agent-core event
+	 * from `runTurn`'s dedicated `handle.agent.subscribe` (independent of the
+	 * normalized `onEvent` stream), advancing `active.persistedCount` in step
+	 * with `handle.agent.state.messages`'s real growth and persisting each
+	 * completed round as its own row as soon as it's known-complete. Split out
+	 * from `runTurn` as its own method purely so it's unit-testable without a
+	 * real spawned `pi-agent-core` `Agent` — `runTurn` is still the only
+	 * caller.
+	 *
+	 * Two event types matter here: `message_end` for the turn's own leading
+	 * user-role entry (pi's `agent-loop.js` always pushes this, once, before
+	 * any round starts — no DB write, dilna's own placeholder already covers
+	 * it, this just keeps the index in sync) and `turn_end` (one per
+	 * completed round — converts and persists via `piRoundToDilnaMessage`).
+	 * Every other event type is a no-op here. A persistence failure is caught
+	 * and logged, not re-thrown into the agent's own event dispatch: leaving
+	 * `persistedCount` unadvanced is enough for the turn-end safety net
+	 * (`persistMessagesFromAgent`) to retry this same content as part of its
+	 * wider, overlapping slice.
+	 */
+	private persistRoundEvent(
+		sessionId: string,
+		active: ActiveAgent,
+		event: AgentEvent,
+	): void {
+		if (event.type === "message_end" && event.message.role === "user") {
+			active.persistedCount += 1;
+			return;
+		}
+		if (event.type === "turn_end") {
+			const advance = 1 + event.toolResults.length;
+			try {
+				const message = piRoundToDilnaMessage(sessionId, event);
+				if (message) this.persistMessage(sessionId, message);
+				active.persistedCount += advance;
+			} catch (err) {
+				console.error(
+					`[sessions] failed to incrementally persist a round for ${sessionId} (will retry at turn end):`,
+					err,
+				);
+			}
+		}
 	}
 
 	/**

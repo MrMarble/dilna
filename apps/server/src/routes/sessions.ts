@@ -10,7 +10,11 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { repoManager } from "../repos/manager";
-import { SessionNotFoundError, sessionManager } from "../sessions/manager";
+import {
+	SessionManagerDrainingError,
+	SessionNotFoundError,
+	sessionManager,
+} from "../sessions/manager";
 import { renderTranscript } from "../sessions/transcript";
 import { runSseLoop } from "./sse";
 
@@ -155,6 +159,11 @@ sessionsRoute.post("/:id/messages", async (c) => {
 		if (err instanceof SessionNotFoundError) {
 			throw new HTTPException(404, { message: err.message });
 		}
+		if (err instanceof SessionManagerDrainingError) {
+			// Client-retryable: a new pod is (or will shortly be) up to accept
+			// this same send (ADR-0026's graceful-shutdown drain).
+			throw new HTTPException(503, { message: err.message });
+		}
 		const msg = err instanceof Error ? err.message : "send failed";
 		throw new HTTPException(409, { message: msg });
 	}
@@ -164,7 +173,9 @@ sessionsRoute.post("/:id/messages", async (c) => {
 	// the chat can keep streaming even if this request times out. The 202
 	// body echoes the same persisted row already broadcast as `user_message`
 	// (ADR-0016 §6), so every client converges on one message id.
-	sessionManager.runTurn(id, body.text).catch((err) => {
+	const turnPromise = sessionManager.runTurn(id, body.text);
+	sessionManager.trackRunningTurn(id, turnPromise);
+	turnPromise.catch((err) => {
 		console.error(`[sessions] runTurn failed for ${id}:`, err);
 	});
 	return c.json({ ok: true, message }, 202);

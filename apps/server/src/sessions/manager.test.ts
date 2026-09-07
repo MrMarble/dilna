@@ -215,6 +215,35 @@ describe("SessionManager", () => {
 		await repoManager.delete(repo.id);
 	});
 
+	// ADR-0026: resetAllToIdle must leave a durable, visible trace that a
+	// turn was interrupted — a client reconnecting long after the restart
+	// (nobody necessarily watching when the process died) should see why
+	// the turn stops abruptly instead of silent nothing.
+	it("resetAllToIdle persists a system-role interruption notice", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`reset-notice-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+
+		sessionManager.beginTurn(session.id, "do the thing");
+		await sessionManager.setStatus(session.id, "working");
+
+		await sessionManager.resetAllToIdle();
+
+		const persisted = await sessionManager.getMessages(session.id);
+		const notice = persisted.find((m) => m.role === "system");
+		expect(notice).toBeDefined();
+		expect(notice?.parts).toEqual([
+			{ type: "text", text: expect.stringContaining("interrupted") },
+		]);
+		// The user's own message survives too (promoted, not the notice).
+		expect(persisted.some((m) => m.role === "user")).toBe(true);
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
 	// ADR-0016 §2: beginTurn claims the turn slot synchronously (no `await`
 	// between the check and the claim), so a second concurrent call sees the
 	// claim immediately rather than racing it — this is what makes the pre-202
@@ -330,6 +359,77 @@ describe("idle-kill", () => {
 	});
 });
 
+/** ADR-0026: graceful shutdown. `drain()` is only ever called once per real
+ * process (on the way to `process.exit`), so these tests reset `draining`
+ * back to `false` afterward — a leaked `true` would break every later
+ * `beginTurn` call in this file. */
+describe("graceful shutdown", () => {
+	it("beginTurn rejects new turns once drain() has started", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`drain-reject-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const manager = sessionManager as unknown as { draining: boolean };
+
+		try {
+			await sessionManager.drain(0);
+			expect(() => sessionManager.beginTurn(session.id, "hi")).toThrow(
+				"server is shutting down",
+			);
+		} finally {
+			manager.draining = false;
+		}
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
+	it("drain() resolves once a tracked in-flight turn finishes, before the timeout", async () => {
+		const manager = sessionManager as unknown as {
+			draining: boolean;
+			runningTurns: Map<string, Promise<void>>;
+		};
+		let resolveTurn: () => void = () => {};
+		const turnPromise = new Promise<void>((resolve) => {
+			resolveTurn = resolve;
+		});
+		manager.runningTurns.set("fake-drain-session", turnPromise);
+
+		vi.useFakeTimers();
+		try {
+			const drainPromise = sessionManager.drain(5000);
+			await vi.advanceTimersByTimeAsync(1000);
+			resolveTurn();
+			await drainPromise;
+		} finally {
+			vi.useRealTimers();
+			manager.draining = false;
+			manager.runningTurns.delete("fake-drain-session");
+		}
+	});
+
+	it("drain() gives up after the timeout if a turn never finishes", async () => {
+		const manager = sessionManager as unknown as {
+			draining: boolean;
+			runningTurns: Map<string, Promise<void>>;
+		};
+		const neverResolves = new Promise<void>(() => {});
+		manager.runningTurns.set("stuck-drain-session", neverResolves);
+
+		vi.useFakeTimers();
+		try {
+			const drainPromise = sessionManager.drain(5000);
+			await vi.advanceTimersByTimeAsync(5000);
+			await drainPromise;
+		} finally {
+			vi.useRealTimers();
+			manager.draining = false;
+			manager.runningTurns.delete("stuck-drain-session");
+		}
+	});
+});
+
 /**
  * The live-turn snapshot that lets a subscriber joining mid-turn (page
  * reload, second device) catch up on the in-flight assistant message — see
@@ -429,5 +529,155 @@ describe("live turn snapshot", () => {
 		};
 		const types = liveTurnReplayEvents(turn).map((e) => e.type);
 		expect(types).toEqual(["message_start", "tool_call_start"]);
+	});
+});
+
+/**
+ * ADR-0026: incremental persistence. `persistRoundEvent` is exercised
+ * directly (via the same private-access-cast pattern as `idle-kill` above)
+ * with hand-built raw pi-agent-core event shapes — synthesizing a real
+ * `pi-agent-core` `Agent`/turn just to reach `turn_end` would be a much
+ * heavier test for the same coverage.
+ */
+describe("incremental persistence (ADR-0026)", () => {
+	function userMessageEnd(text: string, timestamp: number) {
+		return {
+			type: "message_end",
+			message: { role: "user", content: text, timestamp },
+		};
+	}
+
+	function turnEnd(
+		assistantContent: unknown[],
+		toolResults: { toolCallId: string; text: string; timestamp: number }[],
+		timestamp: number,
+	) {
+		return {
+			type: "turn_end",
+			message: { role: "assistant", content: assistantContent, timestamp },
+			toolResults: toolResults.map((r) => ({
+				role: "toolResult",
+				toolCallId: r.toolCallId,
+				toolName: "bash",
+				content: [{ type: "text", text: r.text }],
+				isError: false,
+				timestamp: r.timestamp,
+			})),
+		};
+	}
+
+	function withPersistRoundEvent() {
+		return sessionManager as unknown as {
+			persistRoundEvent: (
+				id: string,
+				active: { persistedCount: number },
+				event: unknown,
+			) => void;
+		};
+	}
+
+	it("advances persistedCount and persists a row per completed round", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`round-event-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const manager = withPersistRoundEvent();
+		const active = { persistedCount: 0 };
+
+		manager.persistRoundEvent(session.id, active, userMessageEnd("hi", 1_000));
+		expect(active.persistedCount).toBe(1);
+
+		manager.persistRoundEvent(
+			session.id,
+			active,
+			turnEnd(
+				[
+					{ type: "text", text: "Running tests…" },
+					{
+						type: "toolCall",
+						id: "c1",
+						name: "bash",
+						arguments: { command: "npm test" },
+					},
+				],
+				[{ toolCallId: "c1", text: "3 passed", timestamp: 1_200 }],
+				1_100,
+			),
+		);
+		// 1 assistant message + 1 tool result = advance by 2, on top of the
+		// user message's +1 above.
+		expect(active.persistedCount).toBe(3);
+
+		const persisted = await sessionManager.getMessages(session.id);
+		const round = persisted.find((m) => m.role === "assistant");
+		expect(round?.parts).toEqual([
+			{ type: "text", text: "Running tests…" },
+			{
+				type: "tool_call",
+				callId: "c1",
+				tool: "bash",
+				input: { command: "npm test" },
+				output: "3 passed",
+				error: undefined,
+			},
+		]);
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
+	// The actual end-to-end scenario this plan exists to fix: a turn dies
+	// mid-flight (process kill) after some rounds already landed
+	// incrementally — the completed round, the user's own message, and a
+	// visible interruption notice must all survive resetAllToIdle's boot-time
+	// recovery, even though the turn never reached its own end-of-turn
+	// persist (which only runs from inside runTurn's own finally block).
+	it("survives a simulated mid-turn kill: completed round + user message + interruption notice all persist", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`round-kill-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const manager = withPersistRoundEvent();
+		const active = { persistedCount: 0 };
+
+		sessionManager.beginTurn(session.id, "do a big refactor");
+		await sessionManager.setStatus(session.id, "working");
+
+		manager.persistRoundEvent(
+			session.id,
+			active,
+			userMessageEnd("do a big refactor", 1_000),
+		);
+		manager.persistRoundEvent(
+			session.id,
+			active,
+			turnEnd(
+				[{ type: "text", text: "Starting with the first file." }],
+				[],
+				1_100,
+			),
+		);
+		// The process dies here — runTurn's own end-of-turn persist never runs.
+
+		await sessionManager.resetAllToIdle();
+
+		const persisted = await sessionManager.getMessages(session.id);
+		expect(persisted.find((m) => m.role === "user")?.parts).toEqual([
+			{ type: "text", text: "do a big refactor" },
+		]);
+		expect(persisted.find((m) => m.role === "assistant")?.parts).toEqual([
+			{ type: "text", text: "Starting with the first file." },
+		]);
+		expect(persisted.find((m) => m.role === "system")?.parts).toEqual([
+			{ type: "text", text: expect.stringContaining("interrupted") },
+		]);
+
+		const updated = await sessionManager.get(session.id);
+		expect(updated?.status).toBe("idle");
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
 	});
 });
