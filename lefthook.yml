@@ -1,0 +1,10 @@
+pre-commit:
+  jobs:
+    - name: biome check
+      run: pnpm exec biome check --write --staged
+      stage_fixed: true
+
+commit-msg:
+  jobs:
+    - name: commitlint
+      run: pnpm exec commitlint --edit {1}
