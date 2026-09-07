@@ -10,6 +10,10 @@ import {
 	repoMemory as repoMemoryTable,
 	repos as reposTable,
 } from "../db/schema";
+// Cyclical with sessions/manager.ts (which imports `repoManager` from this
+// file) — safe here because both sides only reach for the other singleton
+// from inside async method bodies, never at module-evaluation time.
+import { sessionManager } from "../sessions/manager";
 import { languagesFromFiles, type TreeFile } from "./languages";
 
 const execFileAsync = promisify(execFile);
@@ -69,6 +73,16 @@ function uniqueSlug(used: Set<string>, base: string): string {
  * `dilna_list_repos` tool.
  */
 export const ORCHESTRATOR_REPO_SLUG = "_dilna-orchestrator";
+
+/** Distinguished from a generic thrown Error so callers (e.g.
+ * SessionManager.create, routes/sessions.ts) can map it to its own HTTP
+ * status (404) instead of a message-string catch-all. */
+export class RepoNotFoundError extends Error {
+	constructor(id: string) {
+		super(`repo not found: ${id}`);
+		this.name = "RepoNotFoundError";
+	}
+}
 
 export class RepoManager {
 	get reposDir(): string {
@@ -399,6 +413,17 @@ export class RepoManager {
 		const repo = await this.get(id);
 		if (!repo) return;
 		const db = getDb();
+
+		// Stop and fully clean up every Session still pointing at this repo
+		// before tearing down its worktrees/bare clone below — otherwise their
+		// rows (and any still-running agent) are orphaned, pointing at a
+		// worktree path that's about to stop existing. Reuses
+		// SessionManager.delete's own stop/archive/git-cleanup/row-delete
+		// rather than duplicating it here; its worktree/branch removal is
+		// redundant with the wholesale rmSync below but harmless.
+		for (const session of await sessionManager.listByRepo(id)) {
+			await sessionManager.delete(session.id);
+		}
 
 		const wtBase = this.worktreeBase(repo.slug);
 		try {

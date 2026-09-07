@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { sessionManager } from "../sessions/manager";
 import { repoManager } from "./manager";
 import { getRepoMemory, setRepoMemory } from "./memory";
 
@@ -149,6 +150,20 @@ describe("RepoManager", () => {
 		await repoManager.delete(repo.id);
 
 		expect(await getRepoMemory(repo.id)).toBe("");
+	});
+
+	it("deleting a repo also deletes its Sessions' rows, not just the repo/memory", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`del-cascade-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		expect(await sessionManager.get(session.id)).toBeTruthy();
+
+		await repoManager.delete(repo.id);
+
+		expect(await sessionManager.get(session.id)).toBeNull();
+		expect(await sessionManager.getMessages(session.id)).toEqual([]);
 	});
 
 	it("pull updates the default branch ref from origin without a working tree", async () => {

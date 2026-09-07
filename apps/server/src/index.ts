@@ -3,6 +3,7 @@ import path from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { logger } from "hono/logger";
 import { primeCustomProviders } from "./agents/customProviders";
@@ -79,6 +80,10 @@ app.use(
 		allowMethods: ["GET", "POST", "DELETE", "PATCH"],
 	}),
 );
+// Nothing here needs a payload anywhere near this large (the biggest is a
+// chat message's text) — this just puts a ceiling on the previously-uncapped
+// request body rather than tuning it tightly.
+app.use("/api/*", bodyLimit({ maxSize: 5 * 1024 * 1024 }));
 
 app.route("/api/config", configRoute);
 app.route("/api/repos", reposRoute);

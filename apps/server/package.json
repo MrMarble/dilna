@@ -20,6 +20,7 @@
 		"@earendil-works/pi-ai": "0.84.3",
 		"@earendil-works/pi-coding-agent": "0.84.3",
 		"@hono/node-server": "^2.0.10",
+		"@hono/zod-validator": "^0.9.1",
 		"better-sqlite3": "^12.11.1",
 		"drizzle-orm": "^0.45.2",
 		"hono": "^4.12.34",
