@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import type {
 	AgentStreamEvent,
 	AgentType,
@@ -9,7 +6,6 @@ import type {
 	CommitInfo,
 	ContextUsageEstimate,
 	Message,
-	MessagePart,
 	RateLimitWindow,
 	RateLimitWindowKind,
 	Session,
@@ -31,7 +27,6 @@ import {
 	type PiStartOptions,
 	piMessagesToDilna,
 	piRoundToDilnaMessage,
-	type SessionCompaction,
 	startOrchestrator,
 	startPi,
 	summarizeSessionForArchive,
@@ -47,10 +42,8 @@ import {
 } from "../agents/types";
 import { getDb } from "../db";
 import {
-	messages as messagesTable,
 	rateLimits as rateLimitsTable,
 	sessions as sessionsTable,
-	usageEvents as usageEventsTable,
 } from "../db/schema";
 import { RepoNotFoundError, repoManager } from "../repos/manager";
 import {
@@ -58,216 +51,37 @@ import {
 	getArchivedSession,
 	listArchivedSessions,
 } from "./archive";
+import { type Listener, SessionBroadcaster } from "./broadcaster";
 import { computeChangedFiles } from "./diff";
+import {
+	applyEventToLiveTurn,
+	type LiveTurn,
+	liveTurnReplayEvents,
+} from "./liveTurn";
+import * as messageStore from "./messageStore";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
+import {
+	defaultSessionTitle,
+	rowToSession,
+	sessionCompactionOf,
+	toView,
+} from "./sessionStore";
+import { type Turn, TurnRegistry } from "./turnRegistry";
+import { accumulateSessionUsage } from "./usageAccounting";
+import {
+	createWorktree,
+	initCodegraph,
+	recentCommits,
+	removeWorktree,
+} from "./worktree";
 
-const execFileAsync = promisify(execFile);
-
-async function git(args: string[], opts: { cwd?: string } = {}) {
-	return execFileAsync("git", args, { ...opts, maxBuffer: 50 * 1024 * 1024 });
-}
-
-/**
- * Best-effort `codegraph init --yes` against a freshly created Worktree
- * (see Dockerfile's `codegraph` install comment for why this is a plain CLI
- * call, not an MCP wire-up). Failure — binary missing, unsupported repo,
- * whatever — never blocks Session creation; it just means `startPi` won't
- * find a `.codegraph/` dir and skips the codegraph note in the system
- * prompt. Runs once per Worktree, not once per Repo: each Worktree checks
- * out its own branch, and the graph is derived from that checkout's files.
- */
-async function initCodegraph(worktreePath: string): Promise<void> {
-	try {
-		await execFileAsync("codegraph", ["init", "--yes"], {
-			cwd: worktreePath,
-			maxBuffer: 50 * 1024 * 1024,
-		});
-	} catch (err) {
-		console.error(
-			`[sessions] codegraph init failed for ${worktreePath} (continuing without it):`,
-			err,
-		);
-	}
-}
-
-function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
-	return {
-		id: row.id,
-		repoId: row.repoId,
-		worktreePath: row.worktreePath,
-		worktreeDirName: row.worktreeDirName,
-		branchName: row.branchName,
-		agentType: row.agentType as AgentType,
-		kind: row.kind as SessionKind,
-		title: row.title,
-		status: row.status as Session["status"],
-		usage: { inputTokens: row.inputTokens, outputTokens: row.outputTokens },
-		compactedSummary: row.compactedSummary,
-		compactedThroughMessageId: row.compactedThroughMessageId,
-		spawnedBy: row.spawnedBy,
-		provider: row.provider,
-		model: row.model,
-		createdAt: row.createdAt,
-		lastActiveAt: row.lastActiveAt,
-	};
-}
-
-/**
- * The framework-generated placeholder every ordinary (non-orchestrator)
- * Session is created with, before its first turn's title derivation runs
- * (see {@link SessionManager.maybeDeriveTitle}). `create()` and the
- * first-turn guard share this so they can stay in lockstep about what
- * "still needs a derived title" means.
- */
-function defaultSessionTitle(id: string): string {
-	return `Session ${id.slice(0, 4)}`;
-}
-
-/** `Session`'s two compaction columns (ADR-0023), reshaped into pi.ts's
- * `SessionCompaction` — the one place that pairing happens, so every caller
- * (the turn-end check, the idle-session REST estimate) treats "only one of
- * the two columns is set" the same way (falls back to `null`, i.e. no
- * compaction — shouldn't happen since both are always written together, but
- * there's no DB constraint enforcing that). */
-function sessionCompactionOf(session: Session): SessionCompaction {
-	return session.compactedSummary && session.compactedThroughMessageId
-		? {
-				summary: session.compactedSummary,
-				throughMessageId: session.compactedThroughMessageId,
-			}
-		: null;
-}
-
-function toView(s: Session): SessionView {
-	return {
-		id: s.id,
-		repoId: s.repoId,
-		title: s.title,
-		agentType: s.agentType,
-		kind: s.kind,
-		provider: s.provider,
-		model: s.model,
-		status: s.status,
-		usage: s.usage,
-		createdAt: s.createdAt,
-		lastActiveAt: s.lastActiveAt,
-	};
-}
-
-/**
- * The in-flight turn's assistant message accumulated so far, mirrored
- * server-side from the same events broadcast to subscribers (same merging
- * rules as ChatShell's live state: streamed chunks join the trailing text
- * part, tool results fill their tool_call part in place). Kept in memory on
- * the ActiveAgent — never persisted; the DB stays the sole durable record
- * (ADR-0004/0014). Its purpose is the mid-turn subscribe gap: `message_start`
- * and earlier tool/token events are emitted once, so a subscriber that
- * connects mid-turn (page reload, second device) would otherwise render
- * nothing until the turn's next text token.
- */
-export type LiveTurn = { messageId: string; parts: MessagePart[] };
-
-/** Fold one broadcast event into the session's live-turn snapshot. Events
- * that don't carry message content (status, usage, diff, crash) pass the
- * snapshot through untouched. */
-export function applyEventToLiveTurn(
-	turn: LiveTurn | null,
-	ev: AgentStreamEvent,
-): LiveTurn | null {
-	switch (ev.type) {
-		case "message_start":
-			// One assistant messageId per turn (see NormalizeState in
-			// agents/claude.ts), so a start simply opens a fresh snapshot.
-			return ev.role === "assistant"
-				? { messageId: ev.messageId, parts: [] }
-				: turn;
-		case "token": {
-			const t = turn ?? { messageId: ev.messageId, parts: [] };
-			const last = t.parts[t.parts.length - 1];
-			const parts: MessagePart[] =
-				last?.type === "text"
-					? [
-							...t.parts.slice(0, -1),
-							{ type: "text", text: last.text + ev.chunk },
-						]
-					: [...t.parts, { type: "text", text: ev.chunk }];
-			return { messageId: t.messageId, parts };
-		}
-		case "tool_call_start": {
-			const t = turn ?? { messageId: ev.messageId, parts: [] };
-			return {
-				messageId: t.messageId,
-				parts: [
-					...t.parts,
-					{
-						type: "tool_call",
-						callId: ev.callId,
-						tool: ev.tool,
-						input: ev.input,
-						// null = still running, matching the client's convention for
-						// an unresolved tool call (see ChatShell's ToolCallMarker).
-						output: null,
-					},
-				],
-			};
-		}
-		case "tool_call_end":
-			if (!turn) return turn;
-			return {
-				messageId: turn.messageId,
-				parts: turn.parts.map((p) =>
-					p.type === "tool_call" && p.callId === ev.callId
-						? { ...p, output: ev.output, error: ev.error }
-						: p,
-				),
-			};
-		default:
-			return turn;
-	}
-}
-
-/**
- * Re-express a live-turn snapshot as the minimal event sequence a client
- * that missed the turn's start needs to catch up: one message_start, then
- * the parts in stream order (each text part as a single token chunk, each
- * tool call as start + end-if-resolved). Applying these through
- * {@link applyEventToLiveTurn} reproduces the same snapshot, so replayed and
- * live-from-the-start subscribers converge on identical state.
- */
-export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
-	const events: AgentStreamEvent[] = [
-		{ type: "message_start", messageId: turn.messageId, role: "assistant" },
-	];
-	for (const part of turn.parts) {
-		if (part.type === "text") {
-			events.push({
-				type: "token",
-				messageId: turn.messageId,
-				chunk: part.text,
-			});
-		} else {
-			events.push({
-				type: "tool_call_start",
-				messageId: turn.messageId,
-				callId: part.callId,
-				tool: part.tool,
-				input: part.input,
-			});
-			if (part.output !== null || part.error !== undefined) {
-				events.push({
-					type: "tool_call_end",
-					messageId: turn.messageId,
-					callId: part.callId,
-					output: part.output,
-					error: part.error,
-				});
-			}
-		}
-	}
-	return events;
-}
-
-type Listener = (event: AgentStreamEvent) => void;
+// The live-turn snapshot helpers moved to ./liveTurn (issue #149); re-exported
+// here because they're part of this module's established public surface.
+export {
+	applyEventToLiveTurn,
+	type LiveTurn,
+	liveTurnReplayEvents,
+} from "./liveTurn";
 
 /** Thrown by the race in `runTurn` when `TURN_TIMEOUT_MS` passes with no
  * event of any kind from the agent backend — an inactivity gap, not a cap
@@ -320,28 +134,6 @@ type TurnFailedClass = Extract<
 	{ type: "turn_failed" }
 >["class"];
 
-/**
- * Per-turn stop/abort state (ADR-0016 §3), claimed synchronously by
- * `beginTurn` — before `ensureStarted` even runs — so a Stop request lands
- * correctly whether the turn is still spawning (`starting`) or already
- * `working`. Kept independent of `ActiveAgent` (which doesn't exist until a
- * cold spawn finishes) in `SessionManager.turnsInProgress`, keyed by session
- * id; the single source of truth for "is a turn in flight" (`isChatInProgress`)
- * and for the 202-vs-409 accept race.
- */
-type Turn = {
-	abortController: AbortController;
-	/** Idempotency guard: a repeated Stop call while already stopping is
-	 * absorbed without restarting `escalationTimer`'s clock. */
-	stopRequested: boolean;
-	escalationTimer: NodeJS.Timeout | null;
-	/** Set once a `turn_failed` has already routed this turn to its terminal
-	 * status (stop-timeout escalation, or a crash mid-turn) — `runTurn`'s own
-	 * end-of-turn status transition is then redundant and skipped, since a
-	 * turn may only reach one terminal status. */
-	terminalized: boolean;
-};
-
 type ActiveAgent = {
 	handle: PiHandle;
 	idleTimer: NodeJS.Timeout | null;
@@ -365,6 +157,29 @@ type ActiveAgent = {
 	persistedCount: number;
 };
 
+/**
+ * Owns the Session lifecycle: worktree creation, spawning/resuming the agent
+ * process, the turn state machine, and idle-timeout kill.
+ *
+ * Issue #149 pulled the responsibilities that were merely *co-located* here
+ * into collaborators this class composes rather than owns the state of:
+ *
+ * - `messageStore` — every `messages` read/write, including the pending-user
+ *   placeholder protocol.
+ * - {@link SessionBroadcaster} — subscriber bookkeeping, event fan-out, and
+ *   the retained events that make up ADR-0016 §4's opening snapshot.
+ * - {@link TurnRegistry} — turn-slot claim/release and ADR-0026 draining.
+ * - `./worktree` — the git shell-outs.
+ * - `./usageAccounting`, `./sessionStore`, `./liveTurn` — usage rows, row
+ *   mapping, and the live-turn fold.
+ *
+ * What deliberately stayed: `runTurn` and everything it coordinates. The
+ * turn state machine's correctness properties (exactly one terminal status
+ * per turn, exactly one `turn_failed` on failure, the ordering between
+ * persistence and status transitions) are properties of the *sequence*, not
+ * of any one step, so splitting the sequence across objects would spread a
+ * single invariant over several files without making any of them simpler.
+ */
 class SessionManager {
 	/** Map of active dilna session id -> running agent process. */
 	private active = new Map<string, ActiveAgent>();
@@ -379,13 +194,10 @@ class SessionManager {
 	 * the second caller await and reuse the first caller's in-progress
 	 * start instead of racing it. */
 	private starting = new Map<string, Promise<ActiveAgent>>();
-	/** Map of dilna session id -> SSE subscribers (browser tabs etc). Kept
-	 * independent of the agent lifecycle so a UI tab can subscribe before
-	 * any agent is running and still receive events once it starts. */
-	private subscribers = new Map<string, Set<Listener>>();
-	/** Cross-session status subscribers (per ADR-0008): one subscription per
-	 * app load, notified on every status change of every session. */
-	private globalSubscribers = new Set<(event: SessionListEvent) => void>();
+	/** Subscriber bookkeeping and event fan-out (see {@link SessionBroadcaster}). */
+	private events = new SessionBroadcaster();
+	/** Turn-slot claims and graceful-shutdown tracking (see {@link TurnRegistry}). */
+	private turns = new TurnRegistry();
 	/** Last-known account-wide plan rate-limit reading per window. Nothing
 	 * currently writes new readings here — that mechanism was claude.ai-
 	 * OAuth-specific (a push `rate_limit_event` plus a post-turn usage pull,
@@ -397,84 +209,17 @@ class SessionManager {
 	 * stored. */
 	private rateLimits = new Map<RateLimitWindowKind, RateLimitSnapshot>();
 	private rateLimitsHydrated = false;
-	/** Session id -> in-flight turn's stop/abort state (ADR-0016 §2/§3). The
-	 * sole source of truth for "does this session have a turn in flight" —
-	 * claimed synchronously by `beginTurn`, before any spawn, so the pre-202
-	 * check-and-claim can't race a second accept (see `beginTurn`'s doc
-	 * comment). */
-	private turnsInProgress = new Map<string, Turn>();
-	/** Last `turn_failed` broadcast per session, retained until the next
-	 * accepted turn (`beginTurn` clears it) so a client that subscribes after
-	 * the failure — but before anything else happens — still sees why the
-	 * session is `crashed`/`idle` instead of just the bare status (ADR-0016
-	 * §4's snapshot rule). */
-	private lastTurnFailed = new Map<string, AgentStreamEvent>();
-	/** The in-flight turn's current `turn_activity`/`notice`, mirrored here so
-	 * a subscriber joining mid-turn sees them too (ADR-0016 §4/§5: both are
-	 * "present in the opening snapshot only mid-turn") — otherwise a
-	 * reconnecting tab renders nothing until the next discrete change.
-	 * Cleared at accept (`beginTurn`) and at turn end (`runTurn`), same
-	 * lifetime as `ActiveAgent.liveTurn`. */
-	private lastTurnActivity = new Map<string, AgentStreamEvent>();
-	private lastNotice = new Map<string, AgentStreamEvent>();
-	/** Set by `drain()` (ADR-0026, graceful shutdown): once true, `beginTurn`
-	 * rejects every new turn claim so a draining process stops accepting work
-	 * it won't have time to finish. Never reset — a drained SessionManager is
-	 * on its way to `process.exit`, not a state to recover from. */
-	private draining = false;
-	/** Session id -> the in-flight `runTurn` promise a caller kicked off after
-	 * `beginTurn` claimed the slot (routes/sessions.ts, and this file's own
-	 * orchestrator `createChildSession`). Populated by `trackRunningTurn`,
-	 * which every `runTurn` call site must use instead of a bare
-	 * fire-and-forget `.catch()` — it's the only way `drain()` can find
-	 * out what to wait for. Entries remove themselves once their turn
-	 * settles. */
-	private runningTurns = new Map<string, Promise<void>>();
 
-	/** Register an in-flight `runTurn` call so `drain()` can wait on it. Every
-	 * `runTurn(...)` call site (routes/sessions.ts, and this file's own
-	 * orchestrator `createChildSession`) must call this with the promise it
-	 * got back — `runTurn` doesn't register itself, since it has no way to
-	 * refer to its own outer promise from inside its own body. Callers keep
-	 * their own `.catch()` for logging; this only tracks completion, it
-	 * doesn't consume the promise's rejection. */
+	/** Register an in-flight `runTurn` call so `drain()` can wait on it — see
+	 * {@link TurnRegistry.track} for why every call site must do this rather
+	 * than fire-and-forget. */
 	trackRunningTurn(id: string, promise: Promise<void>): void {
-		this.runningTurns.set(id, promise);
-		promise
-			.catch(() => {
-				// Swallowed here — the caller's own `.catch()` (routes/sessions.ts
-				// or the orchestrator path) already logs it. This handler exists
-				// only so an unawaited rejection inside `finally` below doesn't
-				// surface as an unhandled rejection.
-			})
-			.finally(() => {
-				if (this.runningTurns.get(id) === promise) {
-					this.runningTurns.delete(id);
-				}
-			});
+		this.turns.track(id, promise);
 	}
 
-	/**
-	 * Graceful shutdown (ADR-0026): stop accepting new turns and wait, up to
-	 * `timeoutMs`, for every currently in-flight turn to reach its own
-	 * `finally` in `runTurn` and persist. Only helps against a plannable
-	 * termination signal (`SIGTERM`) — a hard `SIGKILL` (e.g. an OOM kill)
-	 * gives nothing running in-process a chance to run this at all. A turn
-	 * still running past `timeoutMs` is abandoned, not aborted — `index.ts`
-	 * proceeds to close the server and exit either way; incremental
-	 * persistence (ADR-0026) is what bounds the resulting loss, not this.
-	 */
+	/** Graceful shutdown (ADR-0026) — see {@link TurnRegistry.drain}. */
 	async drain(timeoutMs: number): Promise<void> {
-		this.draining = true;
-		const inFlight = [...this.runningTurns.values()];
-		if (inFlight.length === 0) return;
-		console.log(
-			`[sessions] draining ${inFlight.length} in-flight turn(s), up to ${timeoutMs / 1000}s...`,
-		);
-		await Promise.race([
-			Promise.allSettled(inFlight),
-			new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-		]);
+		await this.turns.drain(timeoutMs);
 	}
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
@@ -563,7 +308,7 @@ class SessionManager {
 				const lastMessagePreview = last
 					? last.parts
 							.filter(
-								(p): p is Extract<MessagePart, { type: "text" }> =>
+								(p): p is Extract<Message["parts"][number], { type: "text" }> =>
 									p.type === "text",
 							)
 							.map((p) => p.text)
@@ -615,6 +360,28 @@ class SessionManager {
 	}
 
 	/**
+	 * The provider/model to attribute a Session's work to. A live Session's
+	 * already-running `Agent` captured its provider/model at construction
+	 * (`PiHandle.provider`/`.model`); an idle one has none, so this falls
+	 * back to its own create-time snapshot and then to whatever's currently
+	 * configured — the same resolution `startAgent` would use if the Session
+	 * resumed right now (see `PiHandle`'s doc comment on why a long-lived
+	 * live Session can drift from that).
+	 */
+	private resolveProviderModel(session: Session): {
+		provider: string;
+		model: string;
+	} {
+		const active = this.active.get(session.id);
+		return {
+			provider: active
+				? active.handle.provider
+				: (session.provider ?? effectiveProvider()),
+			model: active ? active.handle.model : (session.model ?? effectiveModel()),
+		};
+	}
+
+	/**
 	 * `GET /api/sessions/:id`'s `contextUsage` field (ADR-0023's addendum) —
 	 * lets a page load/session switch show a Session's context occupancy
 	 * immediately, rather than the sidebar meter staying blank until the next
@@ -622,13 +389,6 @@ class SessionManager {
 	 * end). `null` for an orchestrator Session (no compaction, no model
 	 * concept meaningful to report) or one whose provider/model has since
 	 * fallen out of dilna's catalog.
-	 *
-	 * A live Session's already-running `Agent` captured its provider/model at
-	 * construction (`PiHandle.provider`/`.model`); an idle one has none, so
-	 * this falls back to whatever's currently configured — the same
-	 * resolution `startAgent` would use if the Session resumed right now (see
-	 * `PiHandle`'s doc comment on why a long-lived live Session can drift
-	 * from that).
 	 */
 	async getContextUsageEstimate(
 		id: string,
@@ -636,15 +396,8 @@ class SessionManager {
 		const session = await this.get(id);
 		if (session?.kind !== "session") return null;
 
-		const active = this.active.get(id);
-		const provider = active
-			? active.handle.provider
-			: (session.provider ?? effectiveProvider());
-		const model = active
-			? active.handle.model
-			: (session.model ?? effectiveModel());
-
-		const pendingId = this.pendingUserMessageId(id);
+		const { provider, model } = this.resolveProviderModel(session);
+		const pendingId = messageStore.pendingUserMessageId(id);
 		const history = (await this.getMessages(id)).filter(
 			(m) => m.id !== pendingId,
 		);
@@ -684,28 +437,13 @@ class SessionManager {
 			repoManager.worktreeBase(repo.slug),
 			worktreeDirName,
 		);
-		mkdirSync(path.dirname(worktreePath), { recursive: true });
 
-		try {
-			await git(
-				[
-					"worktree",
-					"add",
-					"-b",
-					branchName,
-					"--",
-					worktreePath,
-					repo.defaultBranch,
-				],
-				{ cwd: repo.path },
-			);
-		} catch (err) {
-			const e = err as { stderr?: string; message?: string };
-			throw new Error(
-				`git worktree add failed: ${e.stderr?.trim() || e.message}`,
-			);
-		}
-
+		await createWorktree({
+			repoPath: repo.path,
+			worktreePath,
+			branchName,
+			baseBranch: repo.defaultBranch,
+		});
 		await initCodegraph(worktreePath);
 
 		const now = Math.floor(Date.now() / 1000);
@@ -741,9 +479,9 @@ class SessionManager {
 			lastActiveAt: now,
 		};
 
-		const db = getDb();
 		try {
-			db.insert(sessionsTable)
+			getDb()
+				.insert(sessionsTable)
 				.values({
 					id: session.id,
 					repoId: session.repoId,
@@ -765,23 +503,16 @@ class SessionManager {
 			// Don't leak the worktree/branch just created above if the row
 			// insert fails (e.g. a DB error) — clean up the git side effect
 			// before rethrowing.
-			try {
-				await git(["worktree", "remove", "--force", worktreePath], {
-					cwd: repo.path,
-				});
-			} catch {
-				rmSync(worktreePath, { recursive: true, force: true });
-			}
-			try {
-				await git(["branch", "-D", branchName], { cwd: repo.path });
-			} catch {
-				// branch may not have been created
-			}
+			await removeWorktree({
+				repoPath: repo.path,
+				worktreePath,
+				branchName,
+			});
 			throw err;
 		}
 
 		const view = toView(session);
-		this.broadcastGlobal({ type: "session_status", session: view });
+		this.events.broadcastGlobal({ type: "session_status", session: view });
 		return view;
 	}
 
@@ -802,16 +533,8 @@ class SessionManager {
 
 		// Captured before `stopSession` below, which removes this Session's
 		// `ActiveAgent` entry (and with it, its live `PiHandle.provider`/
-		// `.model`) — an idle Session falls back to its own snapshot (taken at
-		// create; then the currently-effective config for pre-migration rows),
-		// same resolution `getContextUsageEstimate` uses.
-		const active = this.active.get(id);
-		const provider = active
-			? active.handle.provider
-			: (session.provider ?? effectiveProvider());
-		const model = active
-			? active.handle.model
-			: (session.model ?? effectiveModel());
+		// `.model`).
+		const { provider, model } = this.resolveProviderModel(session);
 
 		// Kill any running agent first.
 		await this.stopSession(id);
@@ -824,35 +547,18 @@ class SessionManager {
 		}
 
 		const repo = await repoManager.get(session.repoId);
+		await removeWorktree({
+			repoPath: repo?.path ?? null,
+			worktreePath: session.worktreePath,
+			branchName: session.branchName,
+		});
+
 		const db = getDb();
-
-		if (repo) {
-			try {
-				await git(["worktree", "remove", "--force", session.worktreePath], {
-					cwd: repo.path,
-				});
-			} catch {
-				rmSync(session.worktreePath, { recursive: true, force: true });
-				try {
-					await git(["worktree", "prune"], { cwd: repo.path });
-				} catch {
-					// ignore
-				}
-			}
-			try {
-				await git(["branch", "-D", session.branchName], { cwd: repo.path });
-			} catch {
-				// branch may already be gone
-			}
-		} else {
-			rmSync(session.worktreePath, { recursive: true, force: true });
-		}
-
 		db.transaction(() => {
-			db.delete(messagesTable).where(eq(messagesTable.sessionId, id)).run();
+			messageStore.deleteMessagesForSession(id);
 			db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
 		});
-		this.broadcastGlobal({ type: "session_deleted", sessionId: id });
+		this.events.broadcastGlobal({ type: "session_deleted", sessionId: id });
 	}
 
 	/**
@@ -907,7 +613,9 @@ class SessionManager {
 			.where(eq(sessionsTable.id, id))
 			.run();
 		const view = await this.getView(id);
-		if (view) this.broadcastGlobal({ type: "session_status", session: view });
+		if (view) {
+			this.events.broadcastGlobal({ type: "session_status", session: view });
+		}
 	}
 
 	/**
@@ -956,7 +664,9 @@ class SessionManager {
 			.where(eq(sessionsTable.id, id))
 			.run();
 		const view = await this.getView(id);
-		if (view) this.broadcastGlobal({ type: "session_status", session: view });
+		if (view) {
+			this.events.broadcastGlobal({ type: "session_status", session: view });
+		}
 	}
 
 	/**
@@ -972,7 +682,7 @@ class SessionManager {
 		status: Session["status"],
 	): Promise<void> {
 		await this.setStatus(id, status);
-		this.broadcast(id, { type: "session_status", status });
+		this.events.broadcast(id, { type: "session_status", status });
 	}
 
 	/**
@@ -1007,8 +717,8 @@ class SessionManager {
 			.where(inArray(sessionsTable.status, interrupted))
 			.all();
 		for (const row of rows) {
-			this.promotePendingUserMessage(row.id);
-			this.persistMessage(row.id, {
+			messageStore.promotePendingUserMessage(row.id);
+			messageStore.persistMessage(row.id, {
 				id: nanoid(),
 				sessionId: row.id,
 				role: "system",
@@ -1034,20 +744,7 @@ class SessionManager {
 	 * ADR-0008) without the caller subscribing to each session individually.
 	 */
 	subscribeAll(listener: (event: SessionListEvent) => void): () => void {
-		this.globalSubscribers.add(listener);
-		return () => {
-			this.globalSubscribers.delete(listener);
-		};
-	}
-
-	private broadcastGlobal(event: SessionListEvent) {
-		for (const l of this.globalSubscribers) {
-			try {
-				l(event);
-			} catch {
-				// listener errors during broadcast are non-fatal
-			}
-		}
+		return this.events.subscribeAll(listener);
 	}
 
 	/**
@@ -1085,18 +782,18 @@ class SessionManager {
 	/**
 	 * Register a listener to receive events for the session. The listener
 	 * fires for every normalized StreamEvent broadcast while the subscriber
-	 * is registered.
+	 * is registered, and is first given ADR-0016 §4's opening snapshot:
+	 * whatever a client watching all along would currently have on screen.
 	 */
 	subscribe(id: string, listener: Listener): () => void {
-		if (!this.subscribers.has(id)) this.subscribers.set(id, new Set());
-		this.subscribers.get(id)?.add(listener);
+		const unsubscribe = this.events.subscribe(id, listener);
 
 		// Snapshot rule (ADR-0016 §4): reproduce what a live viewer of the
 		// current state would have seen. The last `turn_failed` (while still
 		// current — cleared by the next accepted turn) always precedes the
 		// opening status, preserving §2's "failure event precedes terminal
 		// status" ordering for a subscriber who missed the original broadcast.
-		const lastFailed = this.lastTurnFailed.get(id);
+		const lastFailed = this.events.getLastTurnFailed(id);
 		if (lastFailed) listener(lastFailed);
 
 		// Read the persisted status once (synchronously — no `await` — so this
@@ -1110,7 +807,7 @@ class SessionManager {
 		const persistedStatus = row?.status as Session["status"] | undefined;
 
 		const active = this.active.get(id);
-		const inProgress = this.turnsInProgress.has(id);
+		const inProgress = this.turns.has(id);
 		if (!active || !inProgress) {
 			// No turn in flight → open with the session's real persisted status
 			// (idle or crashed), not an unconditional idle — a crashed session
@@ -1130,60 +827,38 @@ class SessionManager {
 				type: "session_status",
 				status: persistedStatus ?? "working",
 			});
-			const notice = this.lastNotice.get(id);
-			if (notice) listener(notice);
-			const activity = this.lastTurnActivity.get(id);
-			if (activity) listener(activity);
+			for (const ev of this.events.midTurnSnapshot(id)) listener(ev);
 			if (active.liveTurn) {
 				for (const ev of liveTurnReplayEvents(active.liveTurn)) {
 					listener(ev);
 				}
 			}
 		}
-		return () => {
-			this.subscribers.get(id)?.delete(listener);
-		};
+		return unsubscribe;
 	}
 
 	/**
-	 * True if the session currently has a turn in flight. Backed by
-	 * `turnsInProgress`, claimed synchronously by `beginTurn` before any
+	 * True if the session currently has a turn in flight. Backed by the
+	 * {@link TurnRegistry}, claimed synchronously by `beginTurn` before any
 	 * `await` — see that method's doc comment for why this is what makes the
 	 * pre-202 409 the only duplicate-send surface (ADR-0016 §2).
 	 */
 	isChatInProgress(id: string): boolean {
-		return this.turnsInProgress.has(id);
+		return this.turns.has(id);
 	}
 
 	/**
-	 * The session's most recent `turn_failed`, best-effort only: in-memory
-	 * (per ADR-0016 §2, deliberately not persisted), cleared by the next
-	 * accepted turn or lost on server restart. Callers that need failure
-	 * detail to survive past that window must capture it while it's here —
-	 * e.g. a transcript export taken before the session's next turn runs.
+	 * The session's most recent `turn_failed`, best-effort only — see
+	 * {@link SessionBroadcaster.getLastTurnFailed}.
 	 */
 	getLastTurnFailed(
 		id: string,
 	): Extract<AgentStreamEvent, { type: "turn_failed" }> | undefined {
-		const ev = this.lastTurnFailed.get(id);
-		return ev?.type === "turn_failed" ? ev : undefined;
+		return this.events.getLastTurnFailed(id);
 	}
 
 	async getMessages(id: string): Promise<Message[]> {
-		const db = getDb();
-		const rows = db
-			.select()
-			.from(messagesTable)
-			.where(eq(messagesTable.sessionId, id))
-			.orderBy(asc(messagesTable.createdAt))
-			.all();
-		return rows.map((row) => ({
-			id: row.id,
-			sessionId: row.sessionId,
-			role: row.role as Message["role"],
-			parts: JSON.parse(row.partsJson) as MessagePart[],
-			createdAt: row.createdAt,
-		}));
+		return messageStore.getMessages(id);
 	}
 
 	/**
@@ -1200,29 +875,15 @@ class SessionManager {
 	}
 
 	/**
-	 * Most recent commits reachable from the Session's Worktree HEAD (its own
-	 * commits first, then inherited default-branch history), for the context
-	 * panel. Read live from git like getChangedFiles — never persisted.
-	 * Soft-fails to [] (e.g. worktree deleted out from under the session).
+	 * Most recent commits reachable from the Session's Worktree HEAD, for the
+	 * context panel. Read live from git like getChangedFiles — never
+	 * persisted. Soft-fails to [] (e.g. worktree deleted out from under the
+	 * session).
 	 */
 	async getRecentCommits(id: string, limit = 5): Promise<CommitInfo[]> {
 		const session = await this.get(id);
 		if (!session) return [];
-		try {
-			const { stdout } = await git(
-				["log", `-${limit}`, "--format=%h%x1f%s%x1f%at"],
-				{ cwd: session.worktreePath },
-			);
-			return stdout
-				.split("\n")
-				.filter(Boolean)
-				.map((line) => {
-					const [hash = "", subject = "", at = ""] = line.split("\x1f");
-					return { hash, subject, authoredAt: Number.parseInt(at, 10) || 0 };
-				});
-		} catch {
-			return [];
-		}
+		return recentCommits(session.worktreePath, limit);
 	}
 
 	/**
@@ -1231,8 +892,8 @@ class SessionManager {
 	 * ADR-0016 §2's post-202 duplicate-send race: the old check (in what is
 	 * now `runTurn`) happened after an `await ensureStarted(...)`, so a fast
 	 * second POST could pass the same check before the first request's claim
-	 * ever landed, and both would get their own 202. `turnsInProgress` is
-	 * claimed here instead — before `runTurn`'s spawn even starts — making the
+	 * ever landed, and both would get their own 202. The turn slot is claimed
+	 * here instead — before `runTurn`'s spawn even starts — making the
 	 * pre-202 409 the only duplicate-send surface (post-202 "already busy" is
 	 * now structurally impossible).
 	 *
@@ -1245,10 +906,10 @@ class SessionManager {
 	 * routes/sessions.ts turns the former into the 409.
 	 */
 	beginTurn(id: string, text: string): Message {
-		if (this.draining) {
+		if (this.turns.isDraining()) {
 			throw new SessionManagerDrainingError();
 		}
-		if (this.turnsInProgress.has(id)) {
+		if (this.turns.has(id)) {
 			throw new TurnInProgressError();
 		}
 		const row = getDb()
@@ -1258,28 +919,21 @@ class SessionManager {
 			.get();
 		if (!row) throw new SessionNotFoundError();
 
-		this.turnsInProgress.set(id, {
-			abortController: new AbortController(),
-			stopRequested: false,
-			escalationTimer: null,
-			terminalized: false,
-		});
+		if (!this.turns.claim(id)) throw new TurnInProgressError();
 		// A `turn_failed` is only "current" until the next accepted turn
 		// (ADR-0016 §4's snapshot rule); `turn_activity`/`notice` are valid
 		// only inside the turn that's about to start.
-		this.lastTurnFailed.delete(id);
-		this.lastTurnActivity.delete(id);
-		this.lastNotice.delete(id);
+		this.events.clearTurnSnapshot(id);
 
 		const message: Message = {
-			id: this.pendingUserMessageId(id),
+			id: messageStore.pendingUserMessageId(id),
 			sessionId: id,
 			role: "user",
 			parts: [{ type: "text", text }],
 			createdAt: Math.floor(Date.now() / 1000),
 		};
-		this.persistMessage(id, message);
-		this.broadcast(id, { type: "user_message", message });
+		messageStore.persistMessage(id, message);
+		this.events.broadcast(id, { type: "user_message", message });
 		return message;
 	}
 
@@ -1298,7 +952,7 @@ class SessionManager {
 	 * preceded by exactly one `turn_failed` on failure (ADR-0016 §2).
 	 */
 	async runTurn(id: string, text: string): Promise<void> {
-		const turn = this.turnsInProgress.get(id);
+		const turn = this.turns.get(id);
 		if (!turn) {
 			console.error(
 				`[sessions] runTurn invoked for ${id} with no claimed turn — dropping`,
@@ -1328,7 +982,7 @@ class SessionManager {
 			} catch (err) {
 				// Nothing spawned — the placeholder can only be promoted, never
 				// resolved from a transcript.
-				this.promotePendingUserMessage(id);
+				messageStore.promotePendingUserMessage(id);
 				this.failTurn(id, turn, {
 					class: "spawn_failure",
 					message: `failed to start agent: ${err instanceof Error ? err.message : String(err)}`,
@@ -1354,7 +1008,7 @@ class SessionManager {
 				// `pending-user-<id>` id in place is what makes the *next*
 				// turn's `beginTurn` INSERT collide on the messages primary key,
 				// rejecting the user's next send.
-				this.promotePendingUserMessage(id);
+				messageStore.promotePendingUserMessage(id);
 				await this.transitionStatus(id, "idle");
 				this.armIdleTimer(id, active);
 				return;
@@ -1395,15 +1049,10 @@ class SessionManager {
 					// replayed the turn-so-far (see subscribe).
 					active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
 				}
-				const outgoing = this.accumulateSessionUsage(id, ev, handle);
-				if (outgoing.type === "turn_failed") {
-					this.lastTurnFailed.set(id, outgoing);
-				} else if (outgoing.type === "turn_activity") {
-					this.lastTurnActivity.set(id, outgoing);
-				} else if (outgoing.type === "notice") {
-					this.lastNotice.set(id, outgoing);
-				}
-				this.broadcast(id, outgoing);
+				// The broadcaster retains the snapshot-relevant events
+				// (turn_failed/turn_activity/notice) on the way out — see
+				// SessionBroadcaster.record.
+				this.events.broadcast(id, accumulateSessionUsage(id, ev, handle));
 			};
 
 			// Incremental persistence (ADR-0026): a raw pi-agent-core subscription,
@@ -1496,17 +1145,16 @@ class SessionManager {
 					});
 				}
 				if (persistedUserMessage) {
-					this.deleteMessage(id, this.pendingUserMessageId(id));
+					messageStore.deleteMessage(id, messageStore.pendingUserMessageId(id));
 				} else {
-					this.promotePendingUserMessage(id);
+					messageStore.promotePendingUserMessage(id);
 				}
 				// The turn's rows are now in the DB (or promoted) — the in-memory
 				// snapshot has served its purpose. Cleared only after persisting so
 				// a subscriber connecting in between never sees neither.
 				active.liveTurn = null;
 				// turn_activity/notice are valid only inside a turn (ADR-0016 §5).
-				this.lastTurnActivity.delete(id);
-				this.lastNotice.delete(id);
+				this.events.clearInTurnSnapshot(id);
 
 				if (timedOut) {
 					// The agent is stalled, not merely slow — route through the
@@ -1539,7 +1187,7 @@ class SessionManager {
 					// turn's worktree edits (committed or not) have settled.
 					try {
 						const files = await this.getChangedFiles(id);
-						this.broadcast(id, { type: "changed_files", files });
+						this.events.broadcast(id, { type: "changed_files", files });
 					} catch (err) {
 						console.error(
 							`[sessions] failed to compute changed files for ${id}:`,
@@ -1547,58 +1195,66 @@ class SessionManager {
 						);
 					}
 
-					// Compaction + context-usage reporting (ADR-0023): only for
-					// ordinary Sessions — orchestrator Sessions (ADR-0021) are meant
-					// to stay short/fire-and-forget. Failure here is logged and
-					// swallowed, not routed through failTurn — the turn itself
-					// already completed successfully; a missed check just gets
-					// retried at the next turn's `agent_end`.
-					if (session.kind === "session") {
-						try {
-							const { estimate, compaction } = await checkSessionContext(
-								handle,
-								await this.getMessages(id),
-								sessionCompactionOf(session),
-							);
-							if (compaction) {
-								// `checkSessionContext` replaced `handle.agent.state.messages`
-								// wholesale with a reconstruction of already-persisted dilna
-								// rows (plus a synthetic summary message) — none of it is new
-								// data to persist, so the high-water mark must track the
-								// replacement array's own length, not grow from its prior
-								// value (see `ActiveAgent.persistedCount`'s doc comment).
-								active.persistedCount = handle.agent.state.messages.length;
-								getDb()
-									.update(sessionsTable)
-									.set({
-										compactedSummary: compaction.summary,
-										compactedThroughMessageId: compaction.throughMessageId,
-									})
-									.where(eq(sessionsTable.id, id))
-									.run();
-							}
-							if (estimate) {
-								this.broadcast(id, {
-									type: "context_usage",
-									tokens: estimate.tokens,
-									contextWindow: estimate.contextWindow,
-									reserveTokens: estimate.reserveTokens,
-								});
-							}
-						} catch (err) {
-							console.error(
-								`[sessions] compaction/context check failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
-							);
-						}
-					}
+					await this.checkContextAndCompact(id, session, active);
 
 					await this.transitionStatus(id, "idle");
 					this.armIdleTimer(id, active);
 				}
 			}
 		} finally {
-			if (turn.escalationTimer) clearTimeout(turn.escalationTimer);
-			this.turnsInProgress.delete(id);
+			this.turns.release(id);
+		}
+	}
+
+	/**
+	 * Compaction + context-usage reporting at a turn's normal end (ADR-0023):
+	 * only for ordinary Sessions — orchestrator Sessions (ADR-0021) are meant
+	 * to stay short/fire-and-forget. Failure here is logged and swallowed,
+	 * not routed through failTurn — the turn itself already completed
+	 * successfully; a missed check just gets retried at the next turn's
+	 * `agent_end`.
+	 */
+	private async checkContextAndCompact(
+		id: string,
+		session: Session,
+		active: ActiveAgent,
+	): Promise<void> {
+		if (session.kind !== "session") return;
+		try {
+			const { estimate, compaction } = await checkSessionContext(
+				active.handle,
+				await this.getMessages(id),
+				sessionCompactionOf(session),
+			);
+			if (compaction) {
+				// `checkSessionContext` replaced `handle.agent.state.messages`
+				// wholesale with a reconstruction of already-persisted dilna
+				// rows (plus a synthetic summary message) — none of it is new
+				// data to persist, so the high-water mark must track the
+				// replacement array's own length, not grow from its prior
+				// value (see `ActiveAgent.persistedCount`'s doc comment).
+				active.persistedCount = active.handle.agent.state.messages.length;
+				getDb()
+					.update(sessionsTable)
+					.set({
+						compactedSummary: compaction.summary,
+						compactedThroughMessageId: compaction.throughMessageId,
+					})
+					.where(eq(sessionsTable.id, id))
+					.run();
+			}
+			if (estimate) {
+				this.events.broadcast(id, {
+					type: "context_usage",
+					tokens: estimate.tokens,
+					contextWindow: estimate.contextWindow,
+					reserveTokens: estimate.reserveTokens,
+				});
+			}
+		} catch (err) {
+			console.error(
+				`[sessions] compaction/context check failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 
@@ -1622,9 +1278,10 @@ class SessionManager {
 		if (turn.terminalized) return;
 		turn.terminalized = true;
 
-		const ev: AgentStreamEvent = { type: "turn_failed", ...failure };
-		this.lastTurnFailed.set(id, ev);
-		this.broadcast(id, ev);
+		// The broadcaster retains this as the session's `lastTurnFailed` on the
+		// way out (SessionBroadcaster.record), so it's still in the opening
+		// snapshot for a client that subscribes after the fact.
+		this.events.broadcast(id, { type: "turn_failed", ...failure });
 
 		const crashy =
 			failure.class === "spawn_failure" ||
@@ -1650,7 +1307,7 @@ class SessionManager {
 	 * then, `escalateStopTimeout` hard-stops it instead.
 	 */
 	async requestStop(id: string): Promise<void> {
-		const turn = this.turnsInProgress.get(id);
+		const turn = this.turns.get(id);
 		if (!turn) return;
 		if (turn.stopRequested) return;
 		turn.stopRequested = true;
@@ -1672,7 +1329,7 @@ class SessionManager {
 	 * wins; the other call is a no-op).
 	 */
 	private escalateStopTimeout(id: string): void {
-		const turn = this.turnsInProgress.get(id);
+		const turn = this.turns.get(id);
 		if (!turn || turn.terminalized) return;
 		console.error(
 			`[sessions] stop for ${id} did not complete within ${STOP_TIMEOUT_MS / 1000}s — killing the process`,
@@ -1681,85 +1338,6 @@ class SessionManager {
 			class: "turn_timeout",
 			message: `stop did not complete within ${STOP_TIMEOUT_MS / 1000}s with no response from the agent`,
 		});
-	}
-
-	/**
-	 * Fold a turn-end `usage_update` into the session's lifetime token totals,
-	 * and record the turn's full usage (tokens + cache + cost) as one
-	 * `usage_events` row for the usage dashboard (`sessions/usageStats.ts`).
-	 *
-	 * Despite the SDK docs describing result usage as cumulative "for the
-	 * session", in dilna's streaming-input mode it is per-turn — verified
-	 * empirically with two turns in one process (3319 then 2 input tokens,
-	 * not a running sum), and it also resets on every process respawn. So
-	 * the turn's value is simply added to the `sessions` row, and the
-	 * outgoing event's `cumulative` is rewritten to the persisted lifetime
-	 * total — the badge's live snap-to number is then the same one
-	 * `GET /api/sessions/:id` serves after a reload. Non-turn-end events
-	 * pass through untouched.
-	 *
-	 * `usage_events` deliberately only ever stores the token-only fields
-	 * that already exist on `sessions` plus the extra cache/cost fields —
-	 * it never reads back from `sessions`, so it's unaffected by the
-	 * rewrite below.
-	 */
-	private accumulateSessionUsage(
-		sessionId: string,
-		ev: AgentStreamEvent,
-		handle: PiHandle,
-	): AgentStreamEvent {
-		if (ev.type !== "usage_update" || !ev.cumulative) return ev;
-		const cumulative = ev.cumulative;
-
-		const db = getDb();
-		// Transactional so a crash/error between the update and the insert
-		// below can't leave `sessions`' running total bumped with no matching
-		// `usage_events` row (or vice versa).
-		const row = db.transaction(() => {
-			db.update(sessionsTable)
-				.set({
-					inputTokens: sql`${sessionsTable.inputTokens} + ${cumulative.inputTokens}`,
-					outputTokens: sql`${sessionsTable.outputTokens} + ${cumulative.outputTokens}`,
-				})
-				.where(eq(sessionsTable.id, sessionId))
-				.run();
-			const updated = db
-				.select({
-					inputTokens: sessionsTable.inputTokens,
-					outputTokens: sessionsTable.outputTokens,
-					repoId: sessionsTable.repoId,
-				})
-				.from(sessionsTable)
-				.where(eq(sessionsTable.id, sessionId))
-				.get();
-			if (!updated) return null;
-
-			db.insert(usageEventsTable)
-				.values({
-					id: nanoid(),
-					sessionId,
-					repoId: updated.repoId,
-					provider: handle.provider || "unknown",
-					model: handle.model || "unknown",
-					inputTokens: cumulative.inputTokens,
-					outputTokens: cumulative.outputTokens,
-					cacheReadTokens: cumulative.cacheReadTokens ?? 0,
-					cacheWriteTokens: cumulative.cacheWriteTokens ?? 0,
-					reasoningTokens: cumulative.reasoningTokens ?? 0,
-					costUsd: cumulative.costUsd ?? 0,
-				})
-				.run();
-			return updated;
-		});
-		if (!row) return ev;
-
-		return {
-			...ev,
-			cumulative: {
-				inputTokens: row.inputTokens,
-				outputTokens: row.outputTokens,
-			},
-		};
 	}
 
 	/**
@@ -1796,7 +1374,7 @@ class SessionManager {
 			const advance = 1 + event.toolResults.length;
 			try {
 				const message = piRoundToDilnaMessage(sessionId, event);
-				if (message) this.persistMessage(sessionId, message);
+				if (message) messageStore.persistMessage(sessionId, message);
 				active.persistedCount += advance;
 			} catch (err) {
 				console.error(
@@ -1829,7 +1407,7 @@ class SessionManager {
 		persistedCount: number,
 	): Promise<{ persistedUserMessage: boolean; newPersistedCount: number }> {
 		const newEntries = handle.agent.state.messages.slice(persistedCount);
-		const { persistedUserMessage } = await this.persistConverted(
+		const { persistedUserMessage } = messageStore.persistConverted(
 			sessionId,
 			piMessagesToDilna(sessionId, newEntries),
 		);
@@ -1837,55 +1415,6 @@ class SessionManager {
 			persistedUserMessage,
 			newPersistedCount: handle.agent.state.messages.length,
 		};
-	}
-
-	/** Persist every converted turn row dilna doesn't already have. */
-	private async persistConverted(
-		sessionId: string,
-		converted: Message[],
-	): Promise<{ persistedUserMessage: boolean }> {
-		const persisted = await this.getMessages(sessionId);
-		const existing = new Set(persisted.map((m) => m.id));
-		const fresh = converted.filter((msg) => !existing.has(msg.id));
-		if (fresh.length === 0) return { persistedUserMessage: false };
-
-		// Rows persisted before the past-stamping fix (a legacy claude.ts-era
-		// artifact) can carry timestamps minutes in the future; shift this
-		// batch above them so createdAt ordering stays monotonic for legacy
-		// sessions (drift then shrinks to nothing as wall clock catches up).
-		const pendingId = this.pendingUserMessageId(sessionId);
-		const maxExisting = Math.max(
-			0,
-			...persisted.filter((m) => m.id !== pendingId).map((m) => m.createdAt),
-		);
-		const minFresh = Math.min(...fresh.map((m) => m.createdAt));
-		if (minFresh <= maxExisting) {
-			const shift = maxExisting + 1 - minFresh;
-			for (const msg of fresh) msg.createdAt += shift;
-		}
-
-		// The pending placeholder row (written at send time) still wins for
-		// its exact createdAt when it doesn't break monotonic ordering, so a
-		// client that already rendered the placeholder doesn't see it jump
-		// position on reload — its *id* is always dropped below regardless
-		// (a fresh id from piMessagesToDilna takes its place).
-		const pending = persisted.find((m) => m.id === pendingId);
-		const turnUserRow = fresh.filter((m) => m.role === "user").at(-1);
-		if (pending && turnUserRow) {
-			const idx = fresh.indexOf(turnUserRow);
-			const prevStamp =
-				idx > 0 ? (fresh[idx - 1]?.createdAt ?? 0) : maxExisting;
-			if (pending.createdAt >= prevStamp) {
-				turnUserRow.createdAt = pending.createdAt;
-			}
-		}
-
-		getDb().transaction(() => {
-			for (const msg of fresh) {
-				this.persistMessage(sessionId, msg);
-			}
-		});
-		return { persistedUserMessage: fresh.some((m) => m.role === "user") };
 	}
 
 	/**
@@ -1948,7 +1477,7 @@ class SessionManager {
 		// beginTurn, before ensureStarted/startAgent ever runs) is not prior
 		// context — chatPi sends its own text as the new prompt, so including
 		// it here would duplicate it in the agent's seeded context.
-		const pendingId = this.pendingUserMessageId(id);
+		const pendingId = messageStore.pendingUserMessageId(id);
 		const history = (await this.getMessages(id)).filter(
 			(m) => m.id !== pendingId,
 		);
@@ -2016,7 +1545,7 @@ class SessionManager {
 
 	private async idleKill(id: string) {
 		const active = this.active.get(id);
-		if (!active || this.turnsInProgress.has(id)) return;
+		if (!active || this.turns.has(id)) return;
 		await this.stopSession(id);
 	}
 
@@ -2028,73 +1557,6 @@ class SessionManager {
 			void active.handle.stop().catch(() => {});
 		}
 		void this.transitionStatus(id, "crashed");
-	}
-
-	private broadcast(id: string, event: AgentStreamEvent) {
-		const subs = this.subscribers.get(id);
-		if (!subs) return;
-		for (const l of subs) {
-			try {
-				l(event);
-			} catch {
-				// listener errors during broadcast are non-fatal
-			}
-		}
-	}
-
-	private persistMessage(sessionId: string, message: Message): void {
-		const db = getDb();
-		db.insert(messagesTable)
-			.values({
-				id: message.id,
-				sessionId,
-				role: message.role,
-				partsJson: JSON.stringify(message.parts),
-				createdAt: message.createdAt,
-			})
-			.run();
-	}
-
-	/** Stable id for the one-per-session placeholder row that stands in for
-	 * the user's message while its turn is still in progress (see
-	 * sendMessage). A session has at most one in-flight turn at a time, so
-	 * this id never needs to be unique per-turn. */
-	private pendingUserMessageId(sessionId: string): string {
-		return `pending-user-${sessionId}`;
-	}
-
-	/**
-	 * Rename the pending-user placeholder into a permanent row (fresh unique
-	 * id, content and timestamp untouched) instead of deleting it. Used when
-	 * a turn ended without the transcript recording the user's message —
-	 * crash before the init handshake, interrupted first turn, unreadable
-	 * transcript — so the message is never lost, and the stable per-session
-	 * placeholder id is freed for the next turn. No-op when no placeholder
-	 * row exists.
-	 */
-	private promotePendingUserMessage(sessionId: string): void {
-		const db = getDb();
-		db.update(messagesTable)
-			.set({ id: nanoid() })
-			.where(
-				and(
-					eq(messagesTable.sessionId, sessionId),
-					eq(messagesTable.id, this.pendingUserMessageId(sessionId)),
-				),
-			)
-			.run();
-	}
-
-	private deleteMessage(sessionId: string, messageId: string): void {
-		const db = getDb();
-		db.delete(messagesTable)
-			.where(
-				and(
-					eq(messagesTable.sessionId, sessionId),
-					eq(messagesTable.id, messageId),
-				),
-			)
-			.run();
 	}
 }
 

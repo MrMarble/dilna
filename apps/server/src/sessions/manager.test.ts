@@ -362,15 +362,30 @@ describe("idle-kill", () => {
 /** ADR-0026: graceful shutdown. `drain()` is only ever called once per real
  * process (on the way to `process.exit`), so these tests reset `draining`
  * back to `false` afterward — a leaked `true` would break every later
- * `beginTurn` call in this file. */
+ * `beginTurn` call in this file.
+ *
+ * Both bits of state now live on the manager's `TurnRegistry` collaborator
+ * (issue #149), so the private-access cast reaches one level deeper; the
+ * behaviour under test is unchanged and still driven through the manager's
+ * own public `drain()`/`beginTurn()`. */
 describe("graceful shutdown", () => {
+	function registry() {
+		return (
+			sessionManager as unknown as {
+				turns: {
+					draining: boolean;
+					runningTurns: Map<string, Promise<void>>;
+				};
+			}
+		).turns;
+	}
+
 	it("beginTurn rejects new turns once drain() has started", async () => {
 		const repo = await repoManager.clone(
 			fixtureRepo,
 			`drain-reject-${Date.now()}`,
 		);
 		const session = await sessionManager.create(repo.id);
-		const manager = sessionManager as unknown as { draining: boolean };
 
 		try {
 			await sessionManager.drain(0);
@@ -378,7 +393,7 @@ describe("graceful shutdown", () => {
 				"server is shutting down",
 			);
 		} finally {
-			manager.draining = false;
+			registry().draining = false;
 		}
 
 		await sessionManager.delete(session.id);
@@ -386,15 +401,11 @@ describe("graceful shutdown", () => {
 	});
 
 	it("drain() resolves once a tracked in-flight turn finishes, before the timeout", async () => {
-		const manager = sessionManager as unknown as {
-			draining: boolean;
-			runningTurns: Map<string, Promise<void>>;
-		};
 		let resolveTurn: () => void = () => {};
 		const turnPromise = new Promise<void>((resolve) => {
 			resolveTurn = resolve;
 		});
-		manager.runningTurns.set("fake-drain-session", turnPromise);
+		sessionManager.trackRunningTurn("fake-drain-session", turnPromise);
 
 		vi.useFakeTimers();
 		try {
@@ -404,18 +415,14 @@ describe("graceful shutdown", () => {
 			await drainPromise;
 		} finally {
 			vi.useRealTimers();
-			manager.draining = false;
-			manager.runningTurns.delete("fake-drain-session");
+			registry().draining = false;
+			registry().runningTurns.delete("fake-drain-session");
 		}
 	});
 
 	it("drain() gives up after the timeout if a turn never finishes", async () => {
-		const manager = sessionManager as unknown as {
-			draining: boolean;
-			runningTurns: Map<string, Promise<void>>;
-		};
 		const neverResolves = new Promise<void>(() => {});
-		manager.runningTurns.set("stuck-drain-session", neverResolves);
+		sessionManager.trackRunningTurn("stuck-drain-session", neverResolves);
 
 		vi.useFakeTimers();
 		try {
@@ -424,8 +431,8 @@ describe("graceful shutdown", () => {
 			await drainPromise;
 		} finally {
 			vi.useRealTimers();
-			manager.draining = false;
-			manager.runningTurns.delete("stuck-drain-session");
+			registry().draining = false;
+			registry().runningTurns.delete("stuck-drain-session");
 		}
 	});
 });
