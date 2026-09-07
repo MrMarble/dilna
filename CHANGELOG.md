@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.19.0](https://github.com/MrMarble/dilna/compare/v0.18.0...v0.19.0) (2026-09-07)
+
+
+### Features
+
+* **security:** opt-in Host allowlist + bearer auth, docker hardening ([#146](https://github.com/MrMarble/dilna/issues/146)) ([6755c89](https://github.com/MrMarble/dilna/commit/6755c8914a0fed244040ceef77fd82d851c49240))
+* **server:** add web fetch tool ported from oh-my-pi's fetch pipeline ([#142](https://github.com/MrMarble/dilna/issues/142)) ([5e9dc4d](https://github.com/MrMarble/dilna/commit/5e9dc4dbc814fec06186d65a3e24fb3a754f0255)), closes [#138](https://github.com/MrMarble/dilna/issues/138)
+
+
+### Bug Fixes
+
+* biome.json glob bug and dead getRecentCommits limit param ([#147](https://github.com/MrMarble/dilna/issues/147)) ([56a477a](https://github.com/MrMarble/dilna/commit/56a477a7e69342eebe360247cb55e49997424f43))
+* **server:** route validation, transactional writes, repo-delete cascade ([#148](https://github.com/MrMarble/dilna/issues/148)) ([11153bc](https://github.com/MrMarble/dilna/commit/11153bc75e913586a313933b0c04c415fec8aba7))
+* **sessions:** harden turn durability against process interruption ([#144](https://github.com/MrMarble/dilna/issues/144)) ([b0393dd](https://github.com/MrMarble/dilna/commit/b0393dd6ebda0352b4925163d62aea58c353846a))
+
 ## [0.18.0](https://github.com/MrMarble/dilna/compare/v0.17.0...v0.18.0) (2026-09-06)
 
 
