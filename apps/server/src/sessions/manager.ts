@@ -52,7 +52,7 @@ import {
 	sessions as sessionsTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
-import { repoManager } from "../repos/manager";
+import { RepoNotFoundError, repoManager } from "../repos/manager";
 import {
 	archiveSession as archiveSessionRow,
 	getArchivedSession,
@@ -302,6 +302,16 @@ export class SessionManagerDrainingError extends Error {
 	constructor() {
 		super("server is shutting down");
 		this.name = "SessionManagerDrainingError";
+	}
+}
+
+/** Thrown by `beginTurn` when the session already has a turn in progress —
+ * distinguished so the route maps *only* this to 409, instead of falling
+ * back to 409 for any other unexpected error (e.g. a real DB failure). */
+export class TurnInProgressError extends Error {
+	constructor() {
+		super("session already has a chat in progress");
+		this.name = "TurnInProgressError";
 	}
 }
 
@@ -665,7 +675,7 @@ class SessionManager {
 			throw new Error(`${agentType} agent backend is not implemented`);
 		}
 		const repo = await repoManager.get(repoId);
-		if (!repo) throw new Error("repo not found");
+		if (!repo) throw new RepoNotFoundError(repoId);
 
 		const id = nanoid();
 		const branchName = `dilna/${id}`;
@@ -732,24 +742,43 @@ class SessionManager {
 		};
 
 		const db = getDb();
-		db.insert(sessionsTable)
-			.values({
-				id: session.id,
-				repoId: session.repoId,
-				worktreePath: session.worktreePath,
-				worktreeDirName: session.worktreeDirName,
-				branchName: session.branchName,
-				agentType: session.agentType,
-				kind: session.kind,
-				title: session.title,
-				status: session.status,
-				spawnedBy: session.spawnedBy,
-				provider: session.provider,
-				model: session.model,
-				createdAt: session.createdAt,
-				lastActiveAt: session.lastActiveAt,
-			})
-			.run();
+		try {
+			db.insert(sessionsTable)
+				.values({
+					id: session.id,
+					repoId: session.repoId,
+					worktreePath: session.worktreePath,
+					worktreeDirName: session.worktreeDirName,
+					branchName: session.branchName,
+					agentType: session.agentType,
+					kind: session.kind,
+					title: session.title,
+					status: session.status,
+					spawnedBy: session.spawnedBy,
+					provider: session.provider,
+					model: session.model,
+					createdAt: session.createdAt,
+					lastActiveAt: session.lastActiveAt,
+				})
+				.run();
+		} catch (err) {
+			// Don't leak the worktree/branch just created above if the row
+			// insert fails (e.g. a DB error) — clean up the git side effect
+			// before rethrowing.
+			try {
+				await git(["worktree", "remove", "--force", worktreePath], {
+					cwd: repo.path,
+				});
+			} catch {
+				rmSync(worktreePath, { recursive: true, force: true });
+			}
+			try {
+				await git(["branch", "-D", branchName], { cwd: repo.path });
+			} catch {
+				// branch may not have been created
+			}
+			throw err;
+		}
 
 		const view = toView(session);
 		this.broadcastGlobal({ type: "session_status", session: view });
@@ -819,8 +848,10 @@ class SessionManager {
 			rmSync(session.worktreePath, { recursive: true, force: true });
 		}
 
-		db.delete(messagesTable).where(eq(messagesTable.sessionId, id)).run();
-		db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
+		db.transaction(() => {
+			db.delete(messagesTable).where(eq(messagesTable.sessionId, id)).run();
+			db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
+		});
 		this.broadcastGlobal({ type: "session_deleted", sessionId: id });
 	}
 
@@ -1218,7 +1249,7 @@ class SessionManager {
 			throw new SessionManagerDrainingError();
 		}
 		if (this.turnsInProgress.has(id)) {
-			throw new Error("session already has a chat in progress");
+			throw new TurnInProgressError();
 		}
 		const row = getDb()
 			.select({ id: sessionsTable.id })
@@ -1678,41 +1709,49 @@ class SessionManager {
 		handle: PiHandle,
 	): AgentStreamEvent {
 		if (ev.type !== "usage_update" || !ev.cumulative) return ev;
+		const cumulative = ev.cumulative;
 
 		const db = getDb();
-		db.update(sessionsTable)
-			.set({
-				inputTokens: sql`${sessionsTable.inputTokens} + ${ev.cumulative.inputTokens}`,
-				outputTokens: sql`${sessionsTable.outputTokens} + ${ev.cumulative.outputTokens}`,
-			})
-			.where(eq(sessionsTable.id, sessionId))
-			.run();
-		const row = db
-			.select({
-				inputTokens: sessionsTable.inputTokens,
-				outputTokens: sessionsTable.outputTokens,
-				repoId: sessionsTable.repoId,
-			})
-			.from(sessionsTable)
-			.where(eq(sessionsTable.id, sessionId))
-			.get();
-		if (!row) return ev;
+		// Transactional so a crash/error between the update and the insert
+		// below can't leave `sessions`' running total bumped with no matching
+		// `usage_events` row (or vice versa).
+		const row = db.transaction(() => {
+			db.update(sessionsTable)
+				.set({
+					inputTokens: sql`${sessionsTable.inputTokens} + ${cumulative.inputTokens}`,
+					outputTokens: sql`${sessionsTable.outputTokens} + ${cumulative.outputTokens}`,
+				})
+				.where(eq(sessionsTable.id, sessionId))
+				.run();
+			const updated = db
+				.select({
+					inputTokens: sessionsTable.inputTokens,
+					outputTokens: sessionsTable.outputTokens,
+					repoId: sessionsTable.repoId,
+				})
+				.from(sessionsTable)
+				.where(eq(sessionsTable.id, sessionId))
+				.get();
+			if (!updated) return null;
 
-		db.insert(usageEventsTable)
-			.values({
-				id: nanoid(),
-				sessionId,
-				repoId: row.repoId,
-				provider: handle.provider || "unknown",
-				model: handle.model || "unknown",
-				inputTokens: ev.cumulative.inputTokens,
-				outputTokens: ev.cumulative.outputTokens,
-				cacheReadTokens: ev.cumulative.cacheReadTokens ?? 0,
-				cacheWriteTokens: ev.cumulative.cacheWriteTokens ?? 0,
-				reasoningTokens: ev.cumulative.reasoningTokens ?? 0,
-				costUsd: ev.cumulative.costUsd ?? 0,
-			})
-			.run();
+			db.insert(usageEventsTable)
+				.values({
+					id: nanoid(),
+					sessionId,
+					repoId: updated.repoId,
+					provider: handle.provider || "unknown",
+					model: handle.model || "unknown",
+					inputTokens: cumulative.inputTokens,
+					outputTokens: cumulative.outputTokens,
+					cacheReadTokens: cumulative.cacheReadTokens ?? 0,
+					cacheWriteTokens: cumulative.cacheWriteTokens ?? 0,
+					reasoningTokens: cumulative.reasoningTokens ?? 0,
+					costUsd: cumulative.costUsd ?? 0,
+				})
+				.run();
+			return updated;
+		});
+		if (!row) return ev;
 
 		return {
 			...ev,
@@ -1841,9 +1880,11 @@ class SessionManager {
 			}
 		}
 
-		for (const msg of fresh) {
-			this.persistMessage(sessionId, msg);
-		}
+		getDb().transaction(() => {
+			for (const msg of fresh) {
+				this.persistMessage(sessionId, msg);
+			}
+		});
 		return { persistedUserMessage: fresh.some((m) => m.role === "user") };
 	}
 

@@ -1,11 +1,17 @@
 import type { Repo, RepoStats, RepoSyncStatus } from "@dilna/shared";
+import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
 import { repoManager } from "../repos/manager";
 
 type ListResponse = { repos: Repo[] };
 type OneResponse = { repo: Repo };
-type CloneBody = { url: string; slug?: string };
+
+const cloneBodySchema = z.object({
+	url: z.string().min(1),
+	slug: z.string().min(1).optional(),
+});
 
 export const reposRoute = new Hono();
 
@@ -37,11 +43,8 @@ reposRoute.get("/:id/stats", async (c) => {
 	}
 });
 
-reposRoute.post("/", async (c) => {
-	const body = await c.req.json<CloneBody>();
-	if (!body?.url) {
-		throw new HTTPException(400, { message: "url is required" });
-	}
+reposRoute.post("/", zValidator("json", cloneBodySchema), async (c) => {
+	const body = c.req.valid("json");
 	try {
 		const repo = await repoManager.clone(body.url, body.slug);
 		const res: OneResponse = { repo };

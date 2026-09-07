@@ -1,5 +1,6 @@
+import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { parseCommitsLimit } from "./sessions";
+import { parseCommitsLimit, sessionsRoute } from "./sessions";
 
 describe("parseCommitsLimit", () => {
 	it("passes through a valid limit", () => {
@@ -16,5 +17,48 @@ describe("parseCommitsLimit", () => {
 		expect(parseCommitsLimit("-5")).toBeUndefined();
 		expect(parseCommitsLimit("51")).toBeUndefined();
 		expect(parseCommitsLimit("3.5")).toBeUndefined();
+	});
+});
+
+// zod validation happens in the zValidator middleware, before the handler
+// (and therefore the DB) is ever touched — so these can run with no DB
+// fixture at all.
+describe("sessionsRoute validation", () => {
+	const app = new Hono().route("/", sessionsRoute);
+
+	it("rejects POST / with no repoId", async () => {
+		const res = await app.request("/", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("rejects POST / with an unrecognized agentType", async () => {
+		const res = await app.request("/", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ repoId: "abc", agentType: "claude" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("rejects POST /:id/messages with no text", async () => {
+		const res = await app.request("/some-id/messages", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("rejects POST /:id/messages with an empty text string", async () => {
+		const res = await app.request("/some-id/messages", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "" }),
+		});
+		expect(res.status).toBe(400);
 	});
 });
