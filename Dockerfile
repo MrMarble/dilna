@@ -176,7 +176,7 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # (SessionManager.create, apps/server/src/sessions/manager.ts) since the
 # graph is derived from each Worktree's own checked-out branch, not from the
 # image.
-RUN npm install -g @colbymchenry/codegraph
+RUN npm install -g @colbymchenry/codegraph@1.6.0
 
 # mise (ADR-0012): the static binary built in the build stage, copied rather
 # than re-running the installer here. Runtime has a full compile toolchain
@@ -242,6 +242,9 @@ RUN mkdir -p \
 		/home/node/.local/share/pnpm \
 	&& chown -R node:node /home/node/.local /home/node/.cache /home/node/.config
 EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+	CMD curl -f http://localhost:3001/api/health || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "apps/server/dist/index.js"]

@@ -10,6 +10,10 @@ import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { primeProviderCredentials } from "./agents/providerCredentials";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
+import {
+	bearerAuthMiddleware,
+	hostAllowlistMiddleware,
+} from "./middleware/security";
 import { repoManager } from "./repos/manager";
 import { configRoute } from "./routes/config";
 import { reposRoute } from "./routes/repos";
@@ -47,6 +51,27 @@ if (!envProviderConfig.ok && !getOverride()) {
 
 const app = new Hono();
 app.use(logger());
+
+// Opt-in hardening against DNS rebinding / CSRF-style requests from a
+// browser tab: CORS alone only stops a script from *reading* a cross-origin
+// response, not from *sending* a same-site-cookie-free simple request (a
+// bare GET, or a POST with a CORS-safelisted content-type) that still
+// executes server-side — e.g. triggering a repo clone. Off by default (ADR-
+// 0009 explicitly defers app-level auth/gating for this single-user tool);
+// operators exposed beyond localhost/a trusted LAN can opt in.
+const allowedHosts = process.env.DILNA_ALLOWED_HOSTS?.split(",")
+	.map((h) => h.trim())
+	.filter(Boolean);
+if (allowedHosts?.length) {
+	app.use("*", hostAllowlistMiddleware(allowedHosts));
+}
+
+// Opt-in bearer auth, same off-by-default rationale as above.
+const authToken = process.env.DILNA_AUTH_TOKEN;
+if (authToken) {
+	app.use("/api/*", bearerAuthMiddleware(authToken, "/api/health"));
+}
+
 app.use(
 	cors({
 		origin: process.env.DILNA_WEB_ORIGIN ?? "http://localhost:5174",
