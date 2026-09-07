@@ -12,7 +12,11 @@ export type MessagePart =
 export type Message = {
 	id: string;
 	sessionId: string;
-	role: "user" | "assistant";
+	/** `"system"` (ADR-0026) is dilna's own synthetic role, never something an
+	 * agent backend produces — used exclusively for a durable, boot-time
+	 * interruption notice (`SessionManager.resetAllToIdle`). Render distinctly
+	 * from `"user"`/`"assistant"` (an inline notice, not a chat bubble). */
+	role: "user" | "assistant" | "system";
 	parts: MessagePart[];
 	createdAt: number;
 };

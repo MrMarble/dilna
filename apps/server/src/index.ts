@@ -61,9 +61,17 @@ app.route("/api/sessions", sessionsRoute);
 app.route("/api/stream", streamRoute);
 app.route("/api/usage", usageRoute);
 
-app.get("/api/health", (c) =>
-	c.json({ ok: true, dataDir: getDataDir(), db: getDbPath() }),
-);
+// Flipped by `shutdown()` before it starts draining in-flight turns, so a
+// k8s readiness probe hitting this stops routing new traffic to a
+// terminating pod instead of racing new sends against the drain window.
+let draining = false;
+
+app.get("/api/health", (c) => {
+	if (draining) {
+		return c.json({ ok: false, draining: true }, 503);
+	}
+	return c.json({ ok: true, dataDir: getDataDir(), db: getDbPath() });
+});
 
 // Serve the built web app in production single-container deployments (the
 // dev workflow serves it separately via Vite, so apps/web/dist won't exist
@@ -83,7 +91,7 @@ if (existsSync(webDistDir)) {
 }
 
 const port = Number(process.env.PORT ?? 3001);
-serve({ fetch: app.fetch, port }, async (info) => {
+const server = serve({ fetch: app.fetch, port }, async (info) => {
 	console.log(`dilna server listening on http://localhost:${info.port}`);
 	getDb();
 	// On boot, flip any non-idle sessions back to idle — their agent
@@ -96,10 +104,30 @@ serve({ fetch: app.fetch, port }, async (info) => {
 	await repoManager.ensureAllGitDefaults();
 });
 
+// Grace window for in-flight turns to finish and persist on a *plannable*
+// termination (deploy, `kubectl rollout restart`, node drain) — kept
+// comfortably under k8s's default 30s `terminationGracePeriodSeconds` so
+// this has time to also close the HTTP server and the DB before the kubelet
+// gives up and SIGKILLs. Doesn't help against an actual SIGKILL (e.g. an
+// OOM kill) — nothing running in-process can intercept that signal — see
+// ADR-0026.
+const SHUTDOWN_GRACE_MS = 25_000;
+
+let shuttingDown = false;
 async function shutdown() {
-	// Best-effort cleanup: stop all running agents, then close the DB.
-	// SessionManager doesn't expose a list-active method yet, so the
-	// per-session stop happens lazily; for MVP we just close the DB.
+	// A second signal (e.g. an impatient double Ctrl-C) shouldn't restart the
+	// drain from scratch.
+	if (shuttingDown) return;
+	shuttingDown = true;
+	draining = true;
+	console.log("[dilna] shutting down: draining in-flight turns...");
+	await sessionManager.drain(SHUTDOWN_GRACE_MS);
+	await new Promise<void>((resolve) => {
+		server.close((err) => {
+			if (err) console.error("[dilna] error closing HTTP server:", err);
+			resolve();
+		});
+	});
 	closeDb();
 	process.exit(0);
 }

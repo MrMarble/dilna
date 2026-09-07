@@ -524,7 +524,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		const liveIds = new Set(Object.keys(live));
 		const out: {
 			id: string;
-			role: "user" | "assistant";
+			role: "user" | "assistant" | "system";
 			parts: MessagePart[];
 			createdAt: number;
 		}[] = [];
@@ -562,24 +562,40 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 									<EmptyHint />
 								) : (
 									<>
-										{rendered.map((m, i) => (
-											<MessageScrollerItem key={m.id} messageId={m.id}>
-												<ChatMessageRow
-													id={m.id}
-													role={m.role}
-													parts={m.parts}
-													createdAt={m.createdAt}
-													showAttribution={
-														i === 0 || rendered[i - 1]?.role !== m.role
-													}
-													agentType={session.agentType}
-													modelName={session.model}
-													isStreaming={m.id in live}
-													thinkingChunk={thinkingBuffers[m.id]}
-													turnActivity={turnActivity}
-												/>
-											</MessageScrollerItem>
-										))}
+										{rendered.map((m, i) =>
+											m.role === "system" ? (
+												<MessageScrollerItem key={m.id} messageId={m.id}>
+													<Marker className="text-muted-foreground">
+														<MarkerIcon>
+															<Info className="size-4" />
+														</MarkerIcon>
+														<MarkerContent className="text-xs">
+															{m.parts
+																.filter((p) => p.type === "text")
+																.map((p) => p.text)
+																.join(" ")}
+														</MarkerContent>
+													</Marker>
+												</MessageScrollerItem>
+											) : (
+												<MessageScrollerItem key={m.id} messageId={m.id}>
+													<ChatMessageRow
+														id={m.id}
+														role={m.role}
+														parts={m.parts}
+														createdAt={m.createdAt}
+														showAttribution={
+															i === 0 || rendered[i - 1]?.role !== m.role
+														}
+														agentType={session.agentType}
+														modelName={session.model}
+														isStreaming={m.id in live}
+														thinkingChunk={thinkingBuffers[m.id]}
+														turnActivity={turnActivity}
+													/>
+												</MessageScrollerItem>
+											),
+										)}
 										{thinking && <ThinkingMarker word={thinkingWord} />}
 										{notice && (
 											<MessageScrollerItem messageId="__notice">

@@ -16,6 +16,7 @@ import {
 	normalizePiEvent,
 	pickCutPoint,
 	piMessagesToDilna,
+	piRoundToDilnaMessage,
 	summarizeSessionForArchive,
 } from "./pi";
 
@@ -156,6 +157,76 @@ describe("piMessagesToDilna", () => {
 		const entries: AgentMessage[] = [userMessage("hi", 1_000)];
 		const messages = piMessagesToDilna("s1", entries);
 		expect(messages[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
+	});
+});
+
+// ADR-0026: incremental persistence's conversion unit — one already-resolved
+// pi-agent-core round (raw `turn_end`'s own payload shape), as opposed to
+// `piMessagesToDilna`'s whole-`prompt()`-call slice above.
+describe("piRoundToDilnaMessage", () => {
+	it("converts a round's assistant message + resolved tool results into one row", () => {
+		const message = assistantMessage(
+			[
+				{ type: "text", text: "Running tests…" },
+				toolCall("c1", "bash", { command: "npm test" }),
+			],
+			1_100,
+		);
+		const toolResults = [toolResultMessage("c1", "3 passed", false, 1_200)];
+
+		// biome-ignore lint/suspicious/noExplicitAny: test helpers return AgentMessage; piRoundToDilnaMessage's toolResults param wants the narrower ToolResultMessage shape they already satisfy structurally.
+		const result = piRoundToDilnaMessage("s1", { message, toolResults } as any);
+
+		expect(result).toMatchObject({
+			sessionId: "s1",
+			role: "assistant",
+			createdAt: 1,
+			parts: [
+				{ type: "text", text: "Running tests…" },
+				{
+					type: "tool_call",
+					callId: "c1",
+					tool: "bash",
+					input: { command: "npm test" },
+					output: "3 passed",
+					error: undefined,
+				},
+			],
+		});
+		expect(result?.id).toMatch(/^[0-9a-f-]{36}$/);
+	});
+
+	it("handles a tool-less final round (plain text, no toolResults)", () => {
+		const message = assistantMessage(
+			[{ type: "text", text: "All done." }],
+			2_000,
+		);
+
+		const result = piRoundToDilnaMessage("s1", { message, toolResults: [] });
+
+		expect(result).toMatchObject({
+			role: "assistant",
+			parts: [{ type: "text", text: "All done." }],
+		});
+	});
+
+	it("returns null for an empty round", () => {
+		const message = assistantMessage([], 2_000);
+		expect(
+			piRoundToDilnaMessage("s1", { message, toolResults: [] }),
+		).toBeNull();
+	});
+
+	it("drops ThinkingContent, same as piMessagesToDilna", () => {
+		const message = assistantMessage(
+			[
+				{ type: "thinking", thinking: "let me consider this" },
+				{ type: "text", text: "hello" },
+			],
+			1_100,
+		);
+		const result = piRoundToDilnaMessage("s1", { message, toolResults: [] });
+		expect(result?.parts).toEqual([{ type: "text", text: "hello" }]);
 	});
 });
 

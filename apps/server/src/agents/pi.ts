@@ -31,6 +31,7 @@ import type {
 	Model,
 	Models,
 	SimpleStreamOptions,
+	ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import {
 	type AssistantMessage,
@@ -68,7 +69,7 @@ import {
 	type OrchestratorDeps,
 } from "./orchestratorTools";
 
-export type { OrchestratorDeps };
+export type { AgentEvent, OrchestratorDeps };
 
 import { buildCustomModel, getCustomProvider } from "./customProviders";
 import { isDilnaProvider } from "./providerConfig";
@@ -1098,6 +1099,68 @@ export function piMessagesToDilna(
 	}
 	flushTurn();
 	return messages;
+}
+
+/**
+ * Convert one already-resolved pi-agent-core round (ADR-0026's incremental
+ * persistence unit) into a single dilna `Message` row. A "round" is raw
+ * pi-agent-core's own `turn_end` payload: one assistant `AgentMessage` plus
+ * the `ToolResultMessage`s for every tool call it made — both already
+ * pushed onto `agent.state.messages` by the time `turn_end` fires (see
+ * `agent-loop.js`: the assistant message and each tool result get their own
+ * `message_end` before `turn_end` is emitted), so there is nothing partial
+ * here to guard against.
+ *
+ * Unlike `piMessagesToDilna`, which collapses every round in a whole
+ * `prompt()` call into one merged row with a freshly-minted id per call,
+ * this always produces at most one row, with its id minted here — safe
+ * because (per `sessions/manager.ts`'s `runTurn`) each round is persisted
+ * exactly once, immediately, never re-derived from a growing array on a
+ * later call. Returns `null` for an empty round (no text, no tool calls —
+ * mirrors `piMessagesToDilna`'s own `flushTurn` skipping empty turns), so
+ * the caller knows not to insert a row.
+ */
+export function piRoundToDilnaMessage(
+	sessionId: string,
+	round: { message: AgentMessage; toolResults: ToolResultMessage[] },
+): Message | null {
+	if (round.message.role !== "assistant") return null;
+
+	const toolResults = new Map<string, { output: string; error?: string }>();
+	for (const result of round.toolResults) {
+		const output = contentBlocksToText(result.content);
+		toolResults.set(result.toolCallId, {
+			output,
+			error: result.isError ? output : undefined,
+		});
+	}
+
+	const parts: MessagePart[] = [];
+	for (const block of round.message.content) {
+		if (block.type === "text") {
+			if (block.text) parts.push({ type: "text", text: block.text });
+		} else if (block.type === "toolCall") {
+			const result = toolResults.get(block.id);
+			parts.push({
+				type: "tool_call",
+				callId: block.id,
+				tool: block.name,
+				input: block.arguments,
+				output: result?.output ?? "",
+				error: result?.error,
+			});
+		}
+		// ThinkingContent dropped, same as piMessagesToDilna.
+	}
+	if (parts.length === 0) return null;
+
+	return {
+		id: randomUUID(),
+		sessionId,
+		role: "assistant",
+		parts,
+		createdAt: Math.floor(round.message.timestamp / 1000),
+	};
 }
 
 const EMPTY_USAGE: Usage = {
