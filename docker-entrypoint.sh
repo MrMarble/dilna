@@ -18,7 +18,14 @@ if [ "$(id -u)" = "0" ]; then
 		groupmod -o -g "$PGID" node
 		usermod -o -u "$PUID" node
 	fi
-	chown -R node:node "${DILNA_DATA_DIR:-/data}"
+	# Skip the recursive chown once ownership is already correct — with many
+	# cloned repos/worktrees under /data, walking the whole tree on every
+	# container start/restart gets slow and delays boot for no reason once
+	# it's already been fixed up.
+	data_dir="${DILNA_DATA_DIR:-/data}"
+	if [ "$(stat -c %u "$data_dir")" != "$PUID" ] || [ "$(stat -c %g "$data_dir")" != "$PGID" ]; then
+		chown -R node:node "$data_dir"
+	fi
 	exec gosu node "$0" "$@"
 fi
 

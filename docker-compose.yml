@@ -2,7 +2,19 @@ services:
   dilna:
     build: .
     ports:
-      - "${PORT:-3001}:3001"
+      # Bound to localhost by default — dilna has no app-level auth by
+      # default (ADR-0009), so publishing on all interfaces exposes a
+      # zero-auth instance (repo cloning, arbitrary prompts) to the whole
+      # network. Set BIND_ADDR=0.0.0.0 (and consider DILNA_AUTH_TOKEN /
+      # DILNA_ALLOWED_HOSTS, see apps/server/src/index.ts) for LAN/remote
+      # access.
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-3001}:3001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     environment:
       # Selects the LLM provider/model for every session on this instance —
       # one global choice for the whole dilna instance, not a per-session

@@ -47,6 +47,41 @@ if (!envProviderConfig.ok && !getOverride()) {
 
 const app = new Hono();
 app.use(logger());
+
+// Opt-in hardening against DNS rebinding / CSRF-style requests from a
+// browser tab: CORS alone only stops a script from *reading* a cross-origin
+// response, not from *sending* a same-site-cookie-free simple request (a
+// bare GET, or a POST with a CORS-safelisted content-type) that still
+// executes server-side — e.g. triggering a repo clone. Off by default (ADR-
+// 0009 explicitly defers app-level auth/gating for this single-user tool);
+// operators exposed beyond localhost/a trusted LAN can opt in.
+const allowedHosts = process.env.DILNA_ALLOWED_HOSTS?.split(",")
+	.map((h) => h.trim())
+	.filter(Boolean);
+if (allowedHosts?.length) {
+	app.use("*", async (c, next) => {
+		const host = c.req.header("host");
+		if (!host || !allowedHosts.includes(host)) {
+			return c.text("Forbidden", 403);
+		}
+		return next();
+	});
+}
+
+// Opt-in bearer auth, same off-by-default rationale as above. Skips
+// /api/health so orchestrator liveness/readiness probes don't need the
+// token.
+const authToken = process.env.DILNA_AUTH_TOKEN;
+if (authToken) {
+	app.use("/api/*", async (c, next) => {
+		if (c.req.path === "/api/health") return next();
+		if (c.req.header("authorization") !== `Bearer ${authToken}`) {
+			return c.json({ error: "unauthorized" }, 401);
+		}
+		return next();
+	});
+}
+
 app.use(
 	cors({
 		origin: process.env.DILNA_WEB_ORIGIN ?? "http://localhost:5174",
