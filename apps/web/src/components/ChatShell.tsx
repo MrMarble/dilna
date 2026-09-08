@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api } from "@/api/client";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import {
@@ -37,6 +38,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
+import { partsToMarkdown } from "@/lib/message-markdown";
 import { getToolMeta } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -787,6 +789,17 @@ function ChatMessageRow({
 	});
 	flushTools();
 
+	// Copying serializes the stored markdown source rather than the DOM, so
+	// list markers and code fences survive the trip (see partsToMarkdown).
+	// Hidden until hover/focus so it doesn't compete with the attribution row.
+	const copyText = rows.length > 0 && (
+		<CopyButton
+			getText={() => partsToMarkdown(parts)}
+			label="Copy message"
+			className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/message:opacity-100"
+		/>
+	);
+
 	return (
 		<Message className="group/message gap-3">
 			<div className="flex w-8 shrink-0 justify-center self-start">
@@ -809,10 +822,12 @@ function ChatMessageRow({
 						<span className="text-xs tabular-nums">
 							{formatClockTime(createdAt)}
 						</span>
+						{copyText}
 					</MessageHeader>
 				) : (
 					<MessageHeader className="gap-1.5 px-0 invisible text-xs tabular-nums group-hover/message:visible">
 						<span>{formatClockTime(createdAt)}</span>
+						{copyText}
 					</MessageHeader>
 				)}
 				{isStreaming && role === "assistant" && (
