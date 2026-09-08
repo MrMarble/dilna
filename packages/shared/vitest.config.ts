@@ -2,6 +2,9 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
 	test: {
-		projects: ["apps/server", "apps/web", "packages/shared"],
+		name: "shared",
+		environment: "node",
+		root: __dirname,
+		include: ["src/**/*.test.ts"],
 	},
 });

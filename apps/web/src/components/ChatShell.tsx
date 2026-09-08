@@ -38,6 +38,11 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
+import {
+	applyEventToLive,
+	type LiveMessage,
+	nowSeconds,
+} from "@/lib/live-messages";
 import { partsToMarkdown } from "@/lib/message-markdown";
 import { getToolMeta } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
@@ -51,24 +56,9 @@ type Props = {
 	isDesktop: boolean;
 };
 
-type LiveMessage = {
-	id: string;
-	role: "user" | "assistant";
-	/** Text and tool_call parts in the order they actually streamed in, so
-	 * live rendering matches the interleaving persisted after the turn. */
-	parts: MessagePart[];
-	/** Epoch seconds this message started streaming — used for the
-	 * attribution timestamp before it's persisted with a real createdAt. */
-	startedAt: number;
-};
-
 /** The in-turn feedback snapshot (ADR-0016 §5) — level-based, valid only
  * inside a turn: cleared on any terminal status, never re-derived from it. */
 type TurnActivity = Extract<AgentStreamEvent, { type: "turn_activity" }>;
-
-function nowSeconds() {
-	return Math.floor(Date.now() / 1000);
-}
 
 /** Rotating gerunds shown while the agent works (composer placeholder and
  * the in-chat thinking marker), instead of a static "Agent is working". */
@@ -282,7 +272,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 						});
 						break;
 					case "message_start":
-						// Always a new assistant turn message (claude.ts never emits
+						// Always a new assistant turn message (pi.ts never emits
 						// user-role starts); the optimistic temp user entry stays in
 						// place until the idle-time reconcile swaps in the DB rows.
 						sawTurnRef.current = true;
@@ -300,83 +290,16 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 						});
 						break;
 					case "token":
-						setThinking(false);
-						sawTurnRef.current = true;
-						setLive((prev) => {
-							const m = prev[ev.messageId];
-							if (m) {
-								// Append to the trailing text part so streamed chunks join up;
-								// start a new part if the turn just returned from a tool call,
-								// preserving the real text/tool_call interleaving order.
-								const last = m.parts[m.parts.length - 1];
-								const parts: MessagePart[] =
-									last?.type === "text"
-										? [
-												...m.parts.slice(0, -1),
-												{ type: "text", text: last.text + ev.chunk },
-											]
-										: [...m.parts, { type: "text", text: ev.chunk }];
-								return { ...prev, [ev.messageId]: { ...m, parts } };
-							}
-							return {
-								...prev,
-								[ev.messageId]: {
-									id: ev.messageId,
-									role: "assistant",
-									parts: [{ type: "text", text: ev.chunk }],
-									startedAt: nowSeconds(),
-								},
-							};
-						});
-						break;
 					case "tool_call_start":
-						setThinking(false);
-						sawTurnRef.current = true;
-						setLive((prev) => {
-							// A tab that connected mid-turn may not have this message yet
-							// (it missed message_start) — create it rather than dropping
-							// the event, or a tool-heavy turn renders nothing at all.
-							const m = prev[ev.messageId] ?? {
-								id: ev.messageId,
-								role: "assistant" as const,
-								parts: [],
-								startedAt: nowSeconds(),
-							};
-							return {
-								...prev,
-								[ev.messageId]: {
-									...m,
-									parts: [
-										...m.parts,
-										{
-											type: "tool_call",
-											callId: ev.callId,
-											tool: ev.tool,
-											input: ev.input,
-											output: null,
-											error: undefined,
-										} as MessagePart,
-									],
-								},
-							};
-						});
-						break;
 					case "tool_call_end":
-						setLive((prev) => {
-							const m = prev[ev.messageId];
-							if (!m) return prev;
-							return {
-								...prev,
-								[ev.messageId]: {
-									...m,
-									parts: m.parts.map((p) =>
-										p.type === "tool_call" && p.callId === ev.callId
-											? { ...p, output: ev.output, error: ev.error }
-											: p,
-									),
-								},
-							};
-						});
+						// Content stops the 'Thinking...' marker — except tool_call_end,
+						// which resolves a call whose _start already cleared it and can
+						// arrive while the next round is thinking again.
+						if (ev.type !== "tool_call_end") {
+							setThinking(false);
+							sawTurnRef.current = true;
+						}
+						setLive((prev) => applyEventToLive(prev, ev));
 						break;
 					case "message_end":
 						// Discard this message's thinking buffer — it never persists
