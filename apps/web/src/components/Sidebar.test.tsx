@@ -71,6 +71,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			creatingOrchestrator={false}
 			onSelectOrchestratorSession={noop}
 			unreadBySessionId={{}}
+			deletingSessionIds={[]}
 			notificationsEnabled={false}
 			toggleNotifications={async () => true}
 			{...overrides}
@@ -280,6 +281,94 @@ describe("Sidebar", () => {
 				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 95 })],
 			});
 			expect(container.querySelector(".bg-red-500")).not.toBeNull();
+		});
+	});
+
+	describe("pending-action feedback", () => {
+		it("spins the refresh icon and disables the button while fetching changes", () => {
+			const { container } = renderSidebar({ refreshingRepos: true });
+			const button = screen.getByTitle("Fetching changes…");
+			expect(button).toBeDisabled();
+			expect(container.querySelector(".animate-spin")).not.toBeNull();
+		});
+
+		it("leaves the refresh button idle and clickable when not fetching", async () => {
+			const onRefreshRepos = vi.fn();
+			renderSidebar({ refreshingRepos: false, onRefreshRepos });
+			const button = screen.getByTitle("Pull latest default-branch changes");
+			expect(button).not.toBeDisabled();
+			await userEvent.click(button);
+			expect(onRefreshRepos).toHaveBeenCalledTimes(1);
+		});
+
+		it("highlights a session being deleted in the repo submenu", () => {
+			const repo = makeRepo();
+			renderSidebar({
+				repos: [repo],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: {
+					[repo.id]: [
+						makeSession({ id: "s1", title: "doomed" }),
+						makeSession({ id: "s2", title: "survivor" }),
+					],
+				},
+				deletingSessionIds: ["s1"],
+			});
+			const doomed = screen.getByText("doomed").closest("button");
+			const survivor = screen.getByText("survivor").closest("button");
+			expect(doomed?.className).toMatch(/bg-destructive/);
+			expect(doomed).toBeDisabled();
+			expect(survivor?.className).not.toMatch(/bg-destructive/);
+			expect(survivor).not.toBeDisabled();
+		});
+
+		it("does not re-fire onSelectSession for a session being deleted", async () => {
+			const repo = makeRepo();
+			const onSelectSession = vi.fn();
+			renderSidebar({
+				repos: [repo],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: {
+					[repo.id]: [makeSession({ id: "s1", title: "doomed" })],
+				},
+				deletingSessionIds: ["s1"],
+				onSelectSession,
+			});
+			await userEvent.click(screen.getByText("doomed"));
+			expect(onSelectSession).not.toHaveBeenCalled();
+		});
+
+		it("highlights a background session being deleted", () => {
+			renderSidebar({
+				backgroundSessions: [makeSession({ id: "s1", title: "bg doomed" })],
+				deletingSessionIds: ["s1"],
+			});
+			expect(
+				screen.getByText("bg doomed").closest("button")?.className,
+			).toMatch(/bg-destructive/);
+		});
+
+		it("highlights an orchestrator session being deleted", () => {
+			renderSidebar({
+				orchestratorSessions: [
+					makeSession({ id: "o1", kind: "orchestrator", title: "orch doomed" }),
+				],
+				deletingSessionIds: ["o1"],
+			});
+			expect(
+				screen.getByText("orch doomed").closest("button")?.className,
+			).toMatch(/bg-destructive/);
+		});
+
+		it("shows a spinner instead of the trash icon on the sheet's current-session row while deleting", () => {
+			const session = makeSession({ id: "s1", title: "current" });
+			renderSidebar({
+				variant: "sheet",
+				currentSession: session,
+				onDeleteCurrentSession: noop,
+				deletingSessionIds: ["s1"],
+			});
+			expect(screen.getByTitle("Deleting session…")).toBeDisabled();
 		});
 	});
 

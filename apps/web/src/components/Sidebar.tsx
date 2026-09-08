@@ -12,6 +12,7 @@ import {
 	BellOff,
 	ChevronRight,
 	FolderGit2,
+	LoaderCircle,
 	PanelLeftClose,
 	Plus,
 	RefreshCw,
@@ -39,6 +40,18 @@ const IS_MAC =
 	/Mac|iPod|iPhone|iPad/.test(navigator.platform);
 const NEW_SESSION_SHORTCUT = IS_MAC ? "⌘K" : "Ctrl K";
 
+/** Stable identity so an omitted `deletingSessionIds` doesn't allocate a new
+ * array (and re-render every memoized child) on each render. */
+const EMPTY_IDS: string[] = [];
+
+/** Shared "this Session is being deleted" treatment for every session row
+ * (per-repo submenu, orchestrator, background card, mobile current-session).
+ * Destructive-tinted and non-interactive: the row is about to vanish, so
+ * hover/selection styling would be misleading and clicking into it pointless.
+ */
+const DELETING_ROW_CLASS =
+	"animate-pulse cursor-not-allowed bg-destructive/15 text-destructive hover:bg-destructive/15 hover:text-destructive";
+
 type Props = {
 	repos: Repo[];
 	loadingRepos: boolean;
@@ -46,6 +59,10 @@ type Props = {
 	selectedRepoId: string | null;
 	onSelectRepo: (id: string) => void;
 	onRefreshRepos: () => void;
+	/** True while the "fetch changes" pull is in flight (it takes seconds —
+	 * a network fetch per repo). Spins the refresh icon and blocks a second
+	 * concurrent pull. */
+	refreshingRepos?: boolean;
 	onNewRepo: () => void;
 	onNewSession: () => void;
 	creatingSession: boolean;
@@ -107,6 +124,11 @@ type Props = {
 	 * turns finished while that session wasn't focused. Rendered as small
 	 * badges on the session rows. Absent ids mean 0/read. */
 	unreadBySessionId: Record<string, number>;
+	/** Sessions with a delete in flight. Deleting takes up to ~10s server-side
+	 * (agent teardown + ADR-0024 archive + worktree removal), so the row stays
+	 * rendered but highlighted destructive-red until it disappears, instead of
+	 * looking like the click never registered. */
+	deletingSessionIds?: string[];
 	/** Whether browser Notifications are enabled (issue #52). Drives the
 	 * bell's state and tooltip. */
 	notificationsEnabled: boolean;
@@ -120,6 +142,7 @@ export function Sidebar({
 	selectedRepoId,
 	onSelectRepo,
 	onRefreshRepos,
+	refreshingRepos = false,
 	onNewRepo,
 	onNewSession,
 	creatingSession,
@@ -142,10 +165,12 @@ export function Sidebar({
 	creatingOrchestrator,
 	onSelectOrchestratorSession,
 	unreadBySessionId,
+	deletingSessionIds,
 	notificationsEnabled,
 	toggleNotifications,
 }: Props) {
 	const isSheet = variant === "sheet";
+	const deletingIds = deletingSessionIds ?? EMPTY_IDS;
 	const totalUnread = Object.values(unreadBySessionId).reduce(
 		(a, b) => a + b,
 		0,
@@ -230,6 +255,7 @@ export function Sidebar({
 					<CurrentSessionRow
 						session={currentSession}
 						onDelete={onDeleteCurrentSession}
+						deleting={deletingIds.includes(currentSession.id)}
 					/>
 				)}
 
@@ -255,6 +281,7 @@ export function Sidebar({
 					onNew={onNewOrchestratorSession}
 					onSelect={onSelectOrchestratorSession}
 					unreadBySessionId={unreadBySessionId}
+					deletingIds={deletingIds}
 				/>
 
 				<ReposSection
@@ -267,10 +294,12 @@ export function Sidebar({
 					onSelectRepo={onSelectRepo}
 					onSelectSession={onSelectSession}
 					onRefresh={onRefreshRepos}
+					refreshing={refreshingRepos}
 					onNew={onNewRepo}
 					primaryLanguageByRepoId={primaryLanguageByRepoId}
 					syncStatusByRepoId={syncStatusByRepoId}
 					unreadBySessionId={unreadBySessionId}
+					deletingIds={deletingIds}
 					isSheet={isSheet}
 				/>
 
@@ -279,6 +308,7 @@ export function Sidebar({
 					repoSlugById={repoSlugById}
 					onSelect={onSelectSession}
 					unreadBySessionId={unreadBySessionId}
+					deletingIds={deletingIds}
 				/>
 			</div>
 
@@ -290,12 +320,19 @@ export function Sidebar({
 function CurrentSessionRow({
 	session,
 	onDelete,
+	deleting,
 }: {
 	session: SessionView;
 	onDelete: (id: string) => void;
+	deleting: boolean;
 }) {
 	return (
-		<div className="flex items-center gap-2 border-b border-sidebar-border px-4 py-2">
+		<div
+			className={cn(
+				"flex items-center gap-2 border-b border-sidebar-border px-4 py-2",
+				deleting && "animate-pulse bg-destructive/15 text-destructive",
+			)}
+		>
 			<StatusDot status={session.status} />
 			<span className="min-w-0 flex-1 truncate text-sm font-medium">
 				{session.title}
@@ -303,10 +340,20 @@ function CurrentSessionRow({
 			<button
 				type="button"
 				onClick={() => onDelete(session.id)}
-				title="Delete session"
-				className="shrink-0 rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-destructive active:scale-90 active:bg-accent active:text-destructive"
+				disabled={deleting}
+				title={deleting ? "Deleting session…" : "Delete session"}
+				className={cn(
+					"shrink-0 rounded-md p-2.5 transition-[background-color,color,scale]",
+					deleting
+						? "cursor-not-allowed text-destructive"
+						: "text-muted-foreground hover:bg-accent hover:text-destructive active:scale-90 active:bg-accent active:text-destructive",
+				)}
 			>
-				<Trash2 className="size-3.5" />
+				{deleting ? (
+					<LoaderCircle className="size-3.5 animate-spin" />
+				) : (
+					<Trash2 className="size-3.5" />
+				)}
 			</button>
 		</div>
 	);
@@ -325,6 +372,7 @@ function OrchestratorSection({
 	onNew,
 	onSelect,
 	unreadBySessionId,
+	deletingIds,
 }: {
 	sessions: SessionView[];
 	selectedSessionId: string | null;
@@ -332,6 +380,7 @@ function OrchestratorSection({
 	onNew: () => void;
 	onSelect: (session: SessionView) => void;
 	unreadBySessionId: Record<string, number>;
+	deletingIds: string[];
 }) {
 	return (
 		<div className="border-b border-sidebar-border">
@@ -342,25 +391,35 @@ function OrchestratorSection({
 			/>
 			{sessions.length > 0 && (
 				<ul className="space-y-0.5 px-2 pb-2">
-					{sessions.map((session) => (
-						<li key={session.id}>
-							<button
-								type="button"
-								onClick={() => onSelect(session)}
-								className={cn(
-									"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-									session.id === selectedSessionId
-										? "bg-sidebar-accent font-medium text-foreground"
-										: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70",
-								)}
-							>
-								<StatusDot status={session.status} />
-								<Sparkles className="size-3.5 shrink-0" />
-								<span className="truncate">{session.title}</span>
-								<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
-							</button>
-						</li>
-					))}
+					{sessions.map((session) => {
+						const deleting = deletingIds.includes(session.id);
+						return (
+							<li key={session.id}>
+								<button
+									type="button"
+									onClick={() => onSelect(session)}
+									disabled={deleting}
+									title={deleting ? "Deleting session…" : undefined}
+									className={cn(
+										"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+										session.id === selectedSessionId
+											? "bg-sidebar-accent font-medium text-foreground"
+											: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70",
+										deleting && DELETING_ROW_CLASS,
+									)}
+								>
+									<StatusDot status={session.status} />
+									<Sparkles className="size-3.5 shrink-0" />
+									<span className="truncate">{session.title}</span>
+									{deleting ? (
+										<LoaderCircle className="ml-auto size-3 shrink-0 animate-spin" />
+									) : (
+										<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
+									)}
+								</button>
+							</li>
+						);
+					})}
 				</ul>
 			)}
 		</div>
@@ -386,10 +445,12 @@ function ReposSection({
 	onSelectRepo,
 	onSelectSession,
 	onRefresh,
+	refreshing,
 	onNew,
 	primaryLanguageByRepoId,
 	syncStatusByRepoId,
 	unreadBySessionId,
+	deletingIds,
 	isSheet,
 }: {
 	repos: Repo[];
@@ -401,10 +462,12 @@ function ReposSection({
 	onSelectRepo: (id: string) => void;
 	onSelectSession: (session: SessionView) => void;
 	onRefresh: () => void;
+	refreshing: boolean;
 	onNew: () => void;
 	primaryLanguageByRepoId: Record<string, string | undefined>;
 	syncStatusByRepoId: Record<string, RepoSyncStatus | undefined>;
 	unreadBySessionId: Record<string, number>;
+	deletingIds: string[];
 	isSheet: boolean;
 }) {
 	return (
@@ -414,6 +477,7 @@ function ReposSection({
 				newTitle="New repository"
 				onNew={onNew}
 				onRefresh={onRefresh}
+				refreshing={refreshing}
 				refreshTitle="Pull latest default-branch changes"
 			/>
 			<div
@@ -466,6 +530,7 @@ function ReposSection({
 											selectedSessionId={selectedSessionId}
 											onSelect={onSelectSession}
 											unreadBySessionId={unreadBySessionId}
+											deletingIds={deletingIds}
 										/>
 									)}
 								</li>
@@ -483,11 +548,13 @@ function RepoSessionsSubmenu({
 	selectedSessionId,
 	onSelect,
 	unreadBySessionId,
+	deletingIds,
 }: {
 	sessions: SessionView[];
 	selectedSessionId: string | null;
 	onSelect: (session: SessionView) => void;
 	unreadBySessionId: Record<string, number>;
+	deletingIds: string[];
 }) {
 	if (sessions.length === 0) {
 		return (
@@ -498,24 +565,34 @@ function RepoSessionsSubmenu({
 	}
 	return (
 		<ul className="ml-[19px] space-y-0.5 border-l border-muted-foreground/25 py-0.5 pl-3">
-			{sessions.map((session) => (
-				<li key={session.id}>
-					<button
-						type="button"
-						onClick={() => onSelect(session)}
-						className={cn(
-							"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-							session.id === selectedSessionId
-								? "bg-sidebar-accent font-medium text-foreground"
-								: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground",
-						)}
-					>
-						<StatusDot status={session.status} />
-						<span className="truncate">{session.title}</span>
-						<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
-					</button>
-				</li>
-			))}
+			{sessions.map((session) => {
+				const deleting = deletingIds.includes(session.id);
+				return (
+					<li key={session.id}>
+						<button
+							type="button"
+							onClick={() => onSelect(session)}
+							disabled={deleting}
+							title={deleting ? "Deleting session…" : undefined}
+							className={cn(
+								"flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+								session.id === selectedSessionId
+									? "bg-sidebar-accent font-medium text-foreground"
+									: "text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground",
+								deleting && DELETING_ROW_CLASS,
+							)}
+						>
+							<StatusDot status={session.status} />
+							<span className="truncate">{session.title}</span>
+							{deleting ? (
+								<LoaderCircle className="ml-auto size-3 shrink-0 animate-spin" />
+							) : (
+								<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
+							)}
+						</button>
+					</li>
+				);
+			})}
 		</ul>
 	);
 }
@@ -640,11 +717,13 @@ function BackgroundAgentsSection({
 	repoSlugById,
 	onSelect,
 	unreadBySessionId,
+	deletingIds,
 }: {
 	sessions: SessionView[];
 	repoSlugById: Record<string, string>;
 	onSelect: (session: SessionView) => void;
 	unreadBySessionId: Record<string, number>;
+	deletingIds: string[];
 }) {
 	if (sessions.length === 0) return null;
 
@@ -660,24 +739,36 @@ function BackgroundAgentsSection({
 			</div>
 			<div className="overflow-y-auto px-1.5 pb-1.5">
 				<ul className="space-y-0.5">
-					{sessions.map((session) => (
-						<li key={session.id}>
-							<button
-								type="button"
-								onClick={() => onSelect(session)}
-								className="flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50 active:bg-accent/80"
-							>
-								<span className="flex items-center gap-1.5 overflow-hidden">
-									<StatusDot status={session.status} />
-									<span className="truncate">{session.title}</span>
-									<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
-								</span>
-								<span className="truncate pl-3 text-xs text-muted-foreground">
-									{repoSlugById[session.repoId] ?? session.repoId}
-								</span>
-							</button>
-						</li>
-					))}
+					{sessions.map((session) => {
+						const deleting = deletingIds.includes(session.id);
+						return (
+							<li key={session.id}>
+								<button
+									type="button"
+									onClick={() => onSelect(session)}
+									disabled={deleting}
+									title={deleting ? "Deleting session…" : undefined}
+									className={cn(
+										"flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent/50 active:bg-accent/80",
+										deleting && DELETING_ROW_CLASS,
+									)}
+								>
+									<span className="flex items-center gap-1.5 overflow-hidden">
+										<StatusDot status={session.status} />
+										<span className="truncate">{session.title}</span>
+										{deleting ? (
+											<LoaderCircle className="ml-auto size-3 shrink-0 animate-spin" />
+										) : (
+											<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
+										)}
+									</span>
+									<span className="truncate pl-3 text-xs text-muted-foreground">
+										{repoSlugById[session.repoId] ?? session.repoId}
+									</span>
+								</button>
+							</li>
+						);
+					})}
 				</ul>
 			</div>
 		</div>
@@ -758,12 +849,16 @@ function SidebarSectionHeader({
 	newTitle,
 	onNew,
 	onRefresh,
+	refreshing = false,
 	refreshTitle = "Refresh",
 }: {
 	title: string;
 	newTitle: string;
 	onNew: () => void;
 	onRefresh?: () => void;
+	/** Spins the refresh icon and disables the button while the fetch is in
+	 * flight, so a multi-second pull doesn't look like a dead click. */
+	refreshing?: boolean;
 	refreshTitle?: string;
 }) {
 	return (
@@ -774,10 +869,12 @@ function SidebarSectionHeader({
 					<button
 						type="button"
 						onClick={onRefresh}
-						className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent"
-						title={refreshTitle}
+						disabled={refreshing}
+						aria-busy={refreshing}
+						className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+						title={refreshing ? "Fetching changes…" : refreshTitle}
 					>
-						<RefreshCw className="size-4" />
+						<RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
 					</button>
 				)}
 				<button
