@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.21.0](https://github.com/MrMarble/dilna/compare/v0.20.0...v0.21.0) (2026-09-08)
+
+
+### Features
+
+* **web:** cost/token, token composition chart, top sessions on Metrics ([#160](https://github.com/MrMarble/dilna/issues/160)) ([bc0730f](https://github.com/MrMarble/dilna/commit/bc0730f85c66c833109de16c3ea14262ee0d3ab9))
+* **web:** pending-state feedback for repo fetch and session delete ([#156](https://github.com/MrMarble/dilna/issues/156)) ([2e40430](https://github.com/MrMarble/dilna/commit/2e404303c1c8fcae98c96919bcb3d244843c1be7))
+
+
+### Bug Fixes
+
+* **server:** let pnpm hardlink its store inside the sandboxed bash tool ([#159](https://github.com/MrMarble/dilna/issues/159)) ([0ba3ca6](https://github.com/MrMarble/dilna/commit/0ba3ca680ec52ccaabc0e9f6824d4a458358bd8c))
+* **web:** make the orchestrator chat, Metrics and Settings real routes ([#157](https://github.com/MrMarble/dilna/issues/157)) ([28ef90f](https://github.com/MrMarble/dilna/commit/28ef90fd7ca369099423b55b8260ca69f8a283f0))
+
 ## [0.20.0](https://github.com/MrMarble/dilna/compare/v0.19.0...v0.20.0) (2026-09-07)
 
 
