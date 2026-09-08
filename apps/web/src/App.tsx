@@ -5,7 +5,7 @@ import type {
 	SessionListEvent,
 } from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
 import { AppVersion } from "@/components/AppVersion";
 import {
@@ -23,33 +23,9 @@ import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
 import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
+import { useRoute } from "@/hooks/useRoute";
 import { useSessionNotifications } from "@/hooks/useSessionNotifications";
-
-// Keeps the URL shareable/bookmarkable as /<repo-slug>/<session-id> — see
-// the App component's history hydration/popstate effects for the read side.
-function pushSessionPath(repoSlug: string, sessionId: string | null) {
-	const path = sessionId ? `/${repoSlug}/${sessionId}` : `/${repoSlug}`;
-	if (path !== window.location.pathname) {
-		window.history.pushState(null, "", path);
-	}
-}
-
-// The metrics dashboard (MetricsPage) — a standalone view, not scoped to
-// any repo/session, so it gets its own top-level path rather than nesting
-// under pushSessionPath's /<repo-slug> shape.
-function pushMetricsPath() {
-	if (window.location.pathname !== "/metrics") {
-		window.history.pushState(null, "", "/metrics");
-	}
-}
-
-// The LLM provider/model Settings view — same standalone-view treatment as
-// Metrics (above): top-level /settings path, orthogonal to repo/session.
-function pushSettingsPath() {
-	if (window.location.pathname !== "/settings") {
-		window.history.pushState(null, "", "/settings");
-	}
-}
+import { isReservedSlug, type Route } from "@/lib/routes";
 
 export function App() {
 	const [repos, setRepos] = useState<Repo[]>([]);
@@ -60,21 +36,36 @@ export function App() {
 	// Distinct from `loadingRepos` (the initial fetch) — see pullRepos.
 	const [pullingRepos, setPullingRepos] = useState(false);
 	const [repoError, setRepoError] = useState<string | null>(null);
-	const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
-	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
-		null,
-	);
-	// "metrics" replaces the chat area with the Metrics dashboard
-	// (MetricsPage) and "settings" with the provider/model Settings view —
-	// both orthogonal to which repo/session is selected, which stays put
-	// underneath so "back" restores it.
-	const [view, setView] = useState<"chat" | "metrics" | "settings">(
-		window.location.pathname === "/metrics"
-			? "metrics"
-			: window.location.pathname === "/settings"
-				? "settings"
-				: "chat",
-	);
+	// The URL is the single source of truth for which view is showing and what
+	// it's showing (see lib/routes.ts). Everything below derives from `route`
+	// rather than tracking its own copy, which is what keeps deep links, back/
+	// forward and refresh consistent for free — and what stops Metrics/Settings
+	// from behaving like overlays that the sidebar can't navigate out of.
+	const { route, navigate } = useRoute();
+
+	// Which repo/session the route points at. Resolving the slug needs the
+	// repo list, so until it lands `selectedRepo` is simply null and the app
+	// renders its loading/empty state — no hydration flag or one-shot effect,
+	// because re-deriving on every render is idempotent.
+	const selectedRepo =
+		route.kind === "repo"
+			? (repos.find((r) => r.slug === route.repoSlug) ?? null)
+			: null;
+	const selectedRepoId = selectedRepo?.id ?? null;
+	// Orchestrator Sessions are deliberately *not* attributed to a repo
+	// (ADR-0021): their meta-repo is excluded from `repos`, so `selectedRepo`
+	// stays null and ChatHeader/ContextPanel fall back to their no-repo
+	// rendering for free.
+	const selectedSessionId =
+		route.kind === "orchestrator"
+			? route.sessionId
+			: route.kind === "repo" && selectedRepo
+				? route.sessionId
+				: null;
+	const selectedSession = selectedSessionId
+		? (sessionsById[selectedSessionId] ?? null)
+		: null;
+
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
 	const [rateLimitWindows, setRateLimitWindows] = useState<RateLimitWindow[]>(
@@ -244,59 +235,22 @@ export function App() {
 		return unsubscribe;
 	}, []);
 
-	// Read the initial /<repo-slug>/<session-id> from the URL once repos are
-	// available to resolve the slug. Runs once; an unknown slug normalizes
-	// the URL back to "/" rather than leaving a dead link in the bar.
-	const hydratedFromUrl = useRef(false);
+	// A deep link naming a repo that doesn't exist shouldn't leave a dead URL
+	// in the bar. Only meaningful once the list has actually loaded — before
+	// that, an unresolved slug just means "not fetched yet".
 	useEffect(() => {
-		if (hydratedFromUrl.current || loadingRepos) return;
-		hydratedFromUrl.current = true;
-		if (
-			window.location.pathname === "/metrics" ||
-			window.location.pathname === "/settings"
-		)
-			return;
-		const [repoSlug, sessionId] = window.location.pathname
-			.split("/")
-			.filter(Boolean);
-		if (!repoSlug) return;
-		const repo = repos.find((r) => r.slug === repoSlug);
-		if (!repo) {
-			window.history.replaceState(null, "", "/");
-			return;
-		}
-		setSelectedRepoId(repo.id);
-		if (sessionId) setSelectedSessionId(sessionId);
-	}, [repos, loadingRepos]);
+		if (loadingRepos || route.kind !== "repo") return;
+		if (repos.some((r) => r.slug === route.repoSlug)) return;
+		navigate({ kind: "home" }, { replace: true });
+	}, [loadingRepos, repos, route, navigate]);
 
-	// Browser back/forward — the URL has already changed by the time this
-	// fires, so just re-derive selection from it.
+	// Selecting a Session marks it read (issue #52). Driven by the route
+	// rather than by each individual click handler, so landing on a Session
+	// via a deep link or the back button clears its badge too — it's on screen
+	// either way.
 	useEffect(() => {
-		function onPopState() {
-			if (window.location.pathname === "/metrics") {
-				setView("metrics");
-				return;
-			}
-			if (window.location.pathname === "/settings") {
-				setView("settings");
-				return;
-			}
-			setView("chat");
-			const [repoSlug, sessionId] = window.location.pathname
-				.split("/")
-				.filter(Boolean);
-			const repo = repoSlug ? repos.find((r) => r.slug === repoSlug) : null;
-			setSelectedRepoId(repo?.id ?? null);
-			setSelectedSessionId(repo && sessionId ? sessionId : null);
-		}
-		window.addEventListener("popstate", onPopState);
-		return () => window.removeEventListener("popstate", onPopState);
-	}, [repos]);
-
-	const selectedRepo = repos.find((r) => r.id === selectedRepoId) ?? null;
-	const selectedSession = selectedSessionId
-		? (sessionsById[selectedSessionId] ?? null)
-		: null;
+		if (selectedSessionId) markRead(selectedSessionId);
+	}, [selectedSessionId, markRead]);
 
 	// Every repo's Sessions, newest-active first — the Sidebar's per-repo
 	// submenu (issue: session switching moved out of the header dropdown and
@@ -345,63 +299,61 @@ export function App() {
 		[sessionsById],
 	);
 
+	// The route for a repo-bound Session (or the repo's bare path when there's
+	// no Session to land on). A repo whose slug collides with a standalone
+	// view's path can't be addressed — pushing `/metrics` for a repo *named*
+	// "metrics" would parse straight back to the Metrics page on reload — so
+	// it falls back to home rather than producing a URL that lies.
+	const repoRoute = useCallback(
+		(repoId: string, sessionId: string | null): Route => {
+			const repo = repos.find((r) => r.id === repoId);
+			if (!repo || isReservedSlug(repo.slug)) return { kind: "home" };
+			return { kind: "repo", repoSlug: repo.slug, sessionId };
+		},
+		[repos],
+	);
+
 	const handleSelectRepo = useCallback(
 		(id: string) => {
-			setSelectedRepoId(id);
 			const latest = Object.values(sessionsById)
 				.filter((s) => s.repoId === id)
 				.sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
-			setSelectedSessionId(latest?.id ?? null);
-			// Selecting a repo jumps to its latest session — treat that as
-			// reading its unread badge (issue #52).
-			if (latest) markRead(latest.id);
-			const repo = repos.find((r) => r.id === id);
-			if (repo) pushSessionPath(repo.slug, latest?.id ?? null);
+			navigate(repoRoute(id, latest?.id ?? null));
 			// Only close the mobile sheet when the repo has a session to land
 			// on — otherwise closing dumps the user on an empty state with no
 			// visible "New session" affordance, forcing them to reopen the
 			// sheet just to tap the button that's already right here.
 			if (latest) mobileSheet.close();
 		},
-		[sessionsById, repos, mobileSheet.close, markRead],
+		[sessionsById, repoRoute, navigate, mobileSheet.close],
 	);
 
 	const handleSelectSession = useCallback(
 		(session: SessionView) => {
-			setSelectedRepoId(session.repoId);
-			setSelectedSessionId(session.id);
-			// Reading the session clears its completed-turn badge (issue #52).
-			markRead(session.id);
-			const repo = repos.find((r) => r.id === session.repoId);
-			if (repo) pushSessionPath(repo.slug, session.id);
+			navigate(repoRoute(session.repoId, session.id));
 			mobileSheet.close();
 		},
-		[repos, mobileSheet.close, markRead],
+		[repoRoute, navigate, mobileSheet.close],
 	);
 
-	// Same as handleSelectSession, but never sets selectedRepoId to the
-	// orchestrator's meta-repo id — that repo is intentionally excluded from
-	// `repos` (ADR-0021), so ChatHeader/ContextPanel (both gated on
-	// `selectedRepo`) fall back to their no-repo-selected rendering for free.
+	// Orchestrator Sessions are global rather than repo-scoped (ADR-0021), so
+	// they live at their own top-level path instead of under the hidden
+	// meta-repo they technically belong to.
 	const handleSelectOrchestratorSession = useCallback(
 		(session: SessionView) => {
-			setSelectedRepoId(null);
-			setSelectedSessionId(session.id);
-			markRead(session.id);
+			navigate({ kind: "orchestrator", sessionId: session.id });
 			mobileSheet.close();
 		},
-		[mobileSheet.close, markRead],
+		[navigate, mobileSheet.close],
 	);
 
 	const handleSessionCreated = useCallback(
 		(session: SessionView) => {
 			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
-			setSelectedSessionId(session.id);
-			const repo = repos.find((r) => r.id === session.repoId);
-			if (repo) pushSessionPath(repo.slug, session.id);
+			navigate(repoRoute(session.repoId, session.id));
 			mobileSheet.close();
 		},
-		[repos, mobileSheet.close],
+		[repoRoute, navigate, mobileSheet.close],
 	);
 
 	// No agent picker to confirm (Claude is the only backend), so "New
@@ -429,15 +381,14 @@ export function App() {
 		try {
 			const { session } = await api.sessions.createOrchestrator();
 			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
-			setSelectedRepoId(null);
-			setSelectedSessionId(session.id);
+			navigate({ kind: "orchestrator", sessionId: session.id });
 			mobileSheet.close();
 		} catch (e) {
 			console.error(e);
 		} finally {
 			setCreatingOrchestrator(false);
 		}
-	}, [creatingOrchestrator, mobileSheet.close]);
+	}, [creatingOrchestrator, navigate, mobileSheet.close]);
 
 	// Cmd/Ctrl+K creates a new session for the currently selected repo,
 	// mirroring the sidebar button's shortcut hint. No-op with no repo
@@ -474,10 +425,14 @@ export function App() {
 					delete next[id];
 					return next;
 				});
+				// Deleting the Session that's currently routed to leaves the URL
+				// pointing at something that no longer exists — drop back to its
+				// repo (or home for an orchestrator Session, which has none).
 				if (selectedSessionId === id) {
-					setSelectedSessionId(null);
-					const repo = repos.find((r) => r.id === selectedRepoId);
-					if (repo) pushSessionPath(repo.slug, null);
+					navigate(
+						selectedRepoId ? repoRoute(selectedRepoId, null) : { kind: "home" },
+						{ replace: true },
+					);
 				}
 			} catch (e) {
 				console.error(e);
@@ -485,32 +440,34 @@ export function App() {
 				setDeletingSessionIds((prev) => prev.filter((x) => x !== id));
 			}
 		},
-		[selectedSessionId, selectedRepoId, repos, deletingSessionIds],
+		[
+			selectedSessionId,
+			selectedRepoId,
+			repoRoute,
+			navigate,
+			deletingSessionIds,
+		],
 	);
 
 	const handleOpenMetrics = useCallback(() => {
-		setView("metrics");
-		pushMetricsPath();
+		navigate({ kind: "metrics" });
 		mobileSheet.close();
-	}, [mobileSheet.close]);
+	}, [navigate, mobileSheet.close]);
 
 	const handleOpenSettings = useCallback(() => {
-		setView("settings");
-		pushSettingsPath();
+		navigate({ kind: "settings" });
 		mobileSheet.close();
-	}, [mobileSheet.close]);
+	}, [navigate, mobileSheet.close]);
 
-	// Restores whatever repo/session path was showing before the standalone
-	// Metrics/Settings views were opened (or "/" if none was selected) — the
-	// selection itself was never cleared, just visually replaced.
+	// The standalone views' own back arrow. These are real routes now, so
+	// "back" is literally the browser's back — which lands wherever the user
+	// actually came from, instead of guessing at a repo/session to restore.
+	// Falls back to home when the view was deep-linked into with no history
+	// behind it.
 	const handleBackFromStandalone = useCallback(() => {
-		setView("chat");
-		const repo = repos.find((r) => r.id === selectedRepoId);
-		if (repo) pushSessionPath(repo.slug, selectedSessionId);
-		else if (window.location.pathname !== "/") {
-			window.history.pushState(null, "", "/");
-		}
-	}, [repos, selectedRepoId, selectedSessionId]);
+		if (window.history.length > 1) window.history.back();
+		else navigate({ kind: "home" }, { replace: true });
+	}, [navigate]);
 
 	const repoSlugById = Object.fromEntries(
 		repos.map((r) => [r.id, r.slug] as const),
@@ -565,65 +522,72 @@ export function App() {
 					/>
 				)}
 				<main className="flex flex-1 flex-col overflow-hidden">
-					{view === "metrics" ? (
+					{/* Metrics and Settings are full pages of their own, rendered in
+					    place of the chat column — not over it. The Sidebar beside them
+					    stays live, and clicking anything in it routes away from here
+					    like any other navigation. */}
+					{route.kind === "metrics" ? (
 						<MetricsPage repos={repos} onBack={handleBackFromStandalone} />
-					) : view === "settings" ? (
+					) : route.kind === "settings" ? (
 						<SettingsPage onBack={handleBackFromStandalone} />
-					) : selectedRepo ? (
-						<ChatHeader
-							repo={selectedRepo}
-							selectedSession={selectedSession}
-							onDeleteSession={handleDeleteSession}
-							deletingSession={
-								selectedSession !== null &&
-								deletingSessionIds.includes(selectedSession.id)
-							}
-							menuTrigger={mobileSheet.menuTrigger}
-							filesTrigger={mobileSheet.filesTrigger}
-							sidebarCollapsed={isDesktop && sidebarCollapsed}
-							onExpandSidebar={() => setSidebarCollapsed(false)}
-							contextCollapsed={isDesktop && contextCollapsed}
-							onExpandContext={() => setContextCollapsed(false)}
-						/>
 					) : (
-						<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
-							<MobileMenuButton trigger={mobileSheet.menuTrigger} />
-							{isDesktop && sidebarCollapsed && (
-								<ExpandSidebarButton
-									onClick={() => setSidebarCollapsed(false)}
-								/>
-							)}
-							<span className="text-muted-foreground">dilna</span>
-							<AppVersion className="ml-1 max-w-none" />
-						</header>
-					)}
-					{view === "metrics" ||
-					view === "settings" ? null : selectedSession ? (
-						<div className="flex flex-1 overflow-hidden">
-							<div className="flex flex-1 flex-col overflow-hidden">
-								<ChatShell
-									sessionId={selectedSession.id}
-									session={selectedSession}
-									isDesktop={isDesktop}
-								/>
-							</div>
-							{selectedRepo && isDesktop && !contextCollapsed && (
-								<ContextPanel
-									session={selectedSession}
-									repo={selectedRepo}
-									stats={statsByRepoId[selectedRepo.id]}
-									onCollapse={() => setContextCollapsed(true)}
-								/>
-							)}
-						</div>
-					) : (
-						<div className="flex flex-1 items-center justify-center p-6">
+						<>
 							{selectedRepo ? (
-								<RepoEmpty repo={selectedRepo} />
+								<ChatHeader
+									repo={selectedRepo}
+									selectedSession={selectedSession}
+									onDeleteSession={handleDeleteSession}
+									deletingSession={
+										selectedSession !== null &&
+										deletingSessionIds.includes(selectedSession.id)
+									}
+									menuTrigger={mobileSheet.menuTrigger}
+									filesTrigger={mobileSheet.filesTrigger}
+									sidebarCollapsed={isDesktop && sidebarCollapsed}
+									onExpandSidebar={() => setSidebarCollapsed(false)}
+									contextCollapsed={isDesktop && contextCollapsed}
+									onExpandContext={() => setContextCollapsed(false)}
+								/>
 							) : (
-								<EmptyState onNewRepo={() => setNewRepoOpen(true)} />
+								<header className="relative z-[60] flex h-14 items-center gap-2 border-b border-border bg-background px-4">
+									<MobileMenuButton trigger={mobileSheet.menuTrigger} />
+									{isDesktop && sidebarCollapsed && (
+										<ExpandSidebarButton
+											onClick={() => setSidebarCollapsed(false)}
+										/>
+									)}
+									<span className="text-muted-foreground">dilna</span>
+									<AppVersion className="ml-1 max-w-none" />
+								</header>
 							)}
-						</div>
+							{selectedSession ? (
+								<div className="flex flex-1 overflow-hidden">
+									<div className="flex flex-1 flex-col overflow-hidden">
+										<ChatShell
+											sessionId={selectedSession.id}
+											session={selectedSession}
+											isDesktop={isDesktop}
+										/>
+									</div>
+									{selectedRepo && isDesktop && !contextCollapsed && (
+										<ContextPanel
+											session={selectedSession}
+											repo={selectedRepo}
+											stats={statsByRepoId[selectedRepo.id]}
+											onCollapse={() => setContextCollapsed(true)}
+										/>
+									)}
+								</div>
+							) : (
+								<div className="flex flex-1 items-center justify-center p-6">
+									{selectedRepo ? (
+										<RepoEmpty repo={selectedRepo} />
+									) : (
+										<EmptyState onNewRepo={() => setNewRepoOpen(true)} />
+									)}
+								</div>
+							)}
+						</>
 					)}
 				</main>
 			</div>
