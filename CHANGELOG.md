@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.2](https://github.com/MrMarble/dilna/compare/v0.23.1...v0.23.2) (2026-09-08)
+
+
+### Bug Fixes
+
+* **server:** bundle @dilna/shared into the build instead of leaving it external ([#172](https://github.com/MrMarble/dilna/issues/172)) ([dfd65ab](https://github.com/MrMarble/dilna/commit/dfd65abb3aed0dc882b1ed967f21d920db870ccf))
+
 ## [0.23.1](https://github.com/MrMarble/dilna/compare/v0.23.0...v0.23.1) (2026-09-08)
 
 
