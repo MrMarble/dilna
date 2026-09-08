@@ -1,7 +1,12 @@
 {
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
-		"noEmit": true
+		"noEmit": true,
+		// Adds `TextEncoder`/`TextDecoder`/`btoa`/`atob` (skill.ts's id codec) —
+		// all are standard globals in both Node and the browser, so DOM lib
+		// types are the portable way to declare them for a package consumed by
+		// both apps/server and apps/web, without pulling in Node-only globals.
+		"lib": ["ES2023", "DOM"]
 	},
 	"include": ["src/**/*.ts"]
 }

@@ -17,6 +17,7 @@ import type {
 	SkillSearchResult,
 	UsageSummary,
 } from "@dilna/shared";
+import { encodeSkillId } from "@dilna/shared";
 
 export type {
 	AgentStreamEvent,
@@ -466,18 +467,18 @@ export const api = {
 				body: JSON.stringify({ url }),
 			}),
 		/** Turn a skill on/off for one Repo. `id` (`{source}/{slug}`) is
-		 * encoded into one path segment — see skills.ts's route comment. */
+		 * base64url-encoded into one path segment — see encodeSkillId's doc
+		 * comment for why (an edge in front of the deployment can decode a
+		 * plain `%2F` back into `/` and redirect, so the id can't contain a
+		 * `/` at all, not even percent-encoded). */
 		setEnabled: (id: string, repoId: string, enabled: boolean) =>
-			request<{ ok: boolean }>(
-				`/api/skills/${encodeURIComponent(id)}/enabled`,
-				{
-					method: "POST",
-					body: JSON.stringify({ repoId, enabled }),
-				},
-			),
+			request<{ ok: boolean }>(`/api/skills/${encodeSkillId(id)}/enabled`, {
+				method: "POST",
+				body: JSON.stringify({ repoId, enabled }),
+			}),
 		/** Uninstall globally — files, catalog row, all enablement rows. */
 		uninstall: (id: string) =>
-			request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(id)}`, {
+			request<{ ok: boolean }>(`/api/skills/${encodeSkillId(id)}`, {
 				method: "DELETE",
 			}),
 	},

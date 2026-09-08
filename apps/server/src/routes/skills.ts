@@ -1,4 +1,5 @@
 import type { RepoSkill, Skill, SkillSearchResult } from "@dilna/shared";
+import { decodeSkillId } from "@dilna/shared";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -70,22 +71,25 @@ skillsRoute.post("/", zValidator("json", installBodySchema), async (c) => {
 /**
  * Turn a skill on/off for one Repo.
  *
- * `id` is `{source}/{slug}` (e.g. `owner/repo/skill`), so the client must
- * `encodeURIComponent` it into one path segment rather than sending it as a
- * literal multi-segment path. A prior version matched the raw slashes via
- * `/:id{.+}/enabled`, which worked in isolation but silently broke once
- * `sessionsRoute`'s `POST /orchestrator` + `POST /:id/messages` were also
- * registered — Hono's RegExpRouter merges every mounted sub-app into one
- * combined matcher, and that specific combination made it stop matching this
- * route at all (a plain 404, not a validation error). Keeping `id` a normal
- * single-segment param sidesteps the whole class of collision rather than
- * chasing which future route addition would retrigger it.
+ * `id` is `{source}/{slug}` (e.g. `owner/repo/skill`), so the client
+ * base64url-encodes it (`encodeSkillId`, `@dilna/shared`) into one path
+ * segment with no `/` in it at all. Two prior versions of this route each
+ * worked in isolation but broke in a real deployment: a raw multi-segment
+ * match (`/:id{.+}/enabled`) silently stopped matching once `sessionsRoute`'s
+ * `POST /orchestrator` + `POST /:id/messages` were also registered (Hono's
+ * RegExpRouter merges every mounted sub-app into one combined matcher), and
+ * switching to a single-segment `/:id/enabled` with `encodeURIComponent`
+ * (`%2F` for each `/`) still failed once deployed behind an edge that
+ * canonicalizes URL paths — confirmed via a HAR capture showing a 307
+ * redirect that decoded `%2F` back to `/` before the request ever reached
+ * dilna. Base64url has no `/` or `%` in its alphabet, so there's nothing left
+ * for any intermediary to "clean".
  */
 skillsRoute.post(
 	"/:id/enabled",
 	zValidator("json", enabledBodySchema),
 	async (c) => {
-		const id = c.req.param("id");
+		const id = decodeSkillId(c.req.param("id"));
 		const body = c.req.valid("json");
 		const repo = await repoManager.get(body.repoId);
 		if (!repo) throw new HTTPException(404, { message: "repo not found" });
@@ -97,8 +101,8 @@ skillsRoute.post(
 );
 
 /** Uninstall globally — files, catalog row, and every Repo's enablement.
- * Same encoded-single-segment `id` as the `/enabled` route above. */
+ * Same base64url-encoded `id` as the `/enabled` route above. */
 skillsRoute.delete("/:id", async (c) => {
-	await uninstallSkill(c.req.param("id"));
+	await uninstallSkill(decodeSkillId(c.req.param("id")));
 	return c.json({ ok: true });
 });

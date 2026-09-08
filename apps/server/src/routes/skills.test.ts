@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { decodeSkillId, encodeSkillId } from "@dilna/shared";
 import { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { closeDb, getDb } from "../db";
@@ -32,7 +33,7 @@ describe("skillsRoute validation", () => {
 
 	it("rejects an enable toggle with no repoId", async () => {
 		const res = await app.request(
-			`/${encodeURIComponent("owner/repo/skill")}/enabled`,
+			`/${encodeSkillId("owner/repo/skill")}/enabled`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -44,7 +45,7 @@ describe("skillsRoute validation", () => {
 
 	it("rejects an enable toggle with a non-boolean enabled", async () => {
 		const res = await app.request(
-			`/${encodeURIComponent("owner/repo/skill")}/enabled`,
+			`/${encodeSkillId("owner/repo/skill")}/enabled`,
 			{
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
@@ -62,16 +63,19 @@ describe("skillsRoute validation", () => {
 });
 
 /**
- * Regression coverage for a routing bug: `id` is `{source}/{slug}` (e.g.
- * "owner/repo/skill"), which the client encodes into one path segment. A
- * prior version instead matched the raw slashes via `/:id{.+}/enabled`,
- * which worked when `skillsRoute` was tested standalone but silently
- * stopped matching once mounted alongside `sessionsRoute`'s `POST
- * /orchestrator` + `POST /:id/messages` in the real app — Hono's
- * RegExpRouter merges every mounted sub-app into one combined matcher, and
- * that specific combination broke it (a plain 404, not a validation error).
- * These hit the route end-to-end (real DB, real handler) so a regression
- * shows up as a 404 here rather than only in production routing.
+ * Regression coverage for two routing bugs: `id` is `{source}/{slug}` (e.g.
+ * "owner/repo/skill"), which the client `encodeSkillId`s (base64url, no `/`
+ * or `%` in its alphabet — @dilna/shared) into one path segment. Two prior
+ * versions each worked in isolation but broke once actually deployed:
+ * matching the raw slashes via `/:id{.+}/enabled` silently stopped matching
+ * once mounted alongside `sessionsRoute`'s `POST /orchestrator` + `POST
+ * /:id/messages` in the real app (Hono's RegExpRouter merges every mounted
+ * sub-app into one combined matcher), and switching to `encodeURIComponent`
+ * (`%2F` for each `/`) still failed once deployed behind an edge that
+ * canonicalizes URL paths and 307-redirects `%2F` back to a literal `/`
+ * before the request reaches dilna. These hit the route end-to-end (real DB,
+ * real handler) so a regression shows up as a 404 here rather than only in
+ * production routing.
  */
 describe("skillsRoute /:id/enabled and DELETE /:id (real DB)", () => {
 	const app = new Hono().route("/", skillsRoute);
@@ -123,7 +127,7 @@ describe("skillsRoute /:id/enabled and DELETE /:id (real DB)", () => {
 
 	it("enables a multi-segment-id skill for a Repo", async () => {
 		seedSkillAndRepo();
-		const res = await app.request(`/${encodeURIComponent(skillId)}/enabled`, {
+		const res = await app.request(`/${encodeSkillId(skillId)}/enabled`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ repoId: "r1", enabled: true }),
@@ -133,9 +137,22 @@ describe("skillsRoute /:id/enabled and DELETE /:id (real DB)", () => {
 
 	it("uninstalls a multi-segment-id skill", async () => {
 		seedSkillAndRepo();
-		const res = await app.request(`/${encodeURIComponent(skillId)}`, {
+		const res = await app.request(`/${encodeSkillId(skillId)}`, {
 			method: "DELETE",
 		});
 		expect(res.status).toBe(200);
+	});
+});
+
+describe("encodeSkillId/decodeSkillId", () => {
+	it.each([
+		"owner/repo/skill",
+		"mattpocock/skills/improve-codebase-architecture",
+		"a",
+		"weird source/répo/名前",
+	])("round-trips %s with no '/' or '%%' in the encoded form", (id) => {
+		const encoded = encodeSkillId(id);
+		expect(encoded).not.toMatch(/[/%]/);
+		expect(decodeSkillId(encoded)).toBe(id);
 	});
 });
