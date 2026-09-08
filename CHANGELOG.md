@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.1](https://github.com/MrMarble/dilna/compare/v0.23.0...v0.23.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **server+web:** base64url-encode skill ids to survive edge canonicalization ([#171](https://github.com/MrMarble/dilna/issues/171)) ([c339de7](https://github.com/MrMarble/dilna/commit/c339de7d032bc9459bf88e2b39d02a2aa5e2a1a2))
+* **server:** pnpm still copied after [#159](https://github.com/MrMarble/dilna/issues/159) — wrong env var, then a false-negative auto-detect ([#169](https://github.com/MrMarble/dilna/issues/169)) ([7d064ff](https://github.com/MrMarble/dilna/commit/7d064ff7e250c66ab7f100f045814dbf8095b4ea))
+
 ## [0.23.0](https://github.com/MrMarble/dilna/compare/v0.22.0...v0.23.0) (2026-09-08)
 
 
