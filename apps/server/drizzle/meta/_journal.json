@@ -120,6 +120,20 @@
 			"when": 1788734402309,
 			"tag": "0016_flashy_anita_blake",
 			"breakpoints": true
+		},
+		{
+			"idx": 17,
+			"version": "6",
+			"when": 1788734402310,
+			"tag": "0017_skills_catalog",
+			"breakpoints": true
+		},
+		{
+			"idx": 18,
+			"version": "6",
+			"when": 1788734402311,
+			"tag": "0018_repo_skills",
+			"breakpoints": true
 		}
 	]
 }

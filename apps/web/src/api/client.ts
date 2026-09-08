@@ -8,10 +8,13 @@ import type {
 	Message,
 	RateLimitWindow,
 	Repo,
+	RepoSkill,
 	RepoStats,
 	RepoSyncStatus,
 	SessionListEvent,
 	SessionView,
+	Skill,
+	SkillSearchResult,
 	UsageSummary,
 } from "@dilna/shared";
 
@@ -24,10 +27,13 @@ export type {
 	Message,
 	RateLimitWindow,
 	Repo,
+	RepoSkill,
 	RepoStats,
 	RepoSyncStatus,
 	SessionListEvent,
 	SessionView,
+	Skill,
+	SkillSearchResult,
 	UsageSummary,
 };
 
@@ -439,5 +445,34 @@ export const api = {
 				`/api/config/custom-providers/${encodeURIComponent(id)}`,
 				{ method: "DELETE" },
 			),
+	},
+	/** Skill management (issue #60): skills install globally, then get
+	 * enabled per-Repo — there's only ever one copy of a skill on disk. */
+	skills: {
+		/** The global catalog: every installed skill. */
+		list: () => request<{ skills: Skill[] }>("/api/skills"),
+		/** The catalog, flagged with whether `repoId` has each one enabled. */
+		forRepo: (repoId: string) =>
+			request<{ skills: RepoSkill[] }>(`/api/skills/repo/${repoId}`),
+		/** Search skills.sh. Returns `[]` if the registry is unreachable. */
+		search: (q: string) =>
+			request<{ results: SkillSearchResult[] }>(
+				`/api/skills/search?q=${encodeURIComponent(q)}`,
+			),
+		/** Install globally from a skills.sh/GitHub URL. Does not enable it. */
+		install: (url: string) =>
+			request<{ skill: Skill }>("/api/skills", {
+				method: "POST",
+				body: JSON.stringify({ url }),
+			}),
+		/** Turn a skill on/off for one Repo. */
+		setEnabled: (id: string, repoId: string, enabled: boolean) =>
+			request<{ ok: boolean }>(`/api/skills/${id}/enabled`, {
+				method: "POST",
+				body: JSON.stringify({ repoId, enabled }),
+			}),
+		/** Uninstall globally — files, catalog row, all enablement rows. */
+		uninstall: (id: string) =>
+			request<{ ok: boolean }>(`/api/skills/${id}`, { method: "DELETE" }),
 	},
 };

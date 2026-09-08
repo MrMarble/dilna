@@ -114,6 +114,8 @@ type Props = {
 	onOpenMetrics: () => void;
 	/** Opens the LLM provider/model Settings view in place of the chat. */
 	onOpenSettings: () => void;
+	/** Opens the Skills management view in place of the chat. */
+	onOpenSkills: () => void;
 	/** Orchestrator Sessions (ADR-0021), newest-active first — a top-level
 	 * section, not nested under a repo, since the orchestrator is global. */
 	orchestratorSessions: SessionView[];
@@ -160,6 +162,7 @@ export function Sidebar({
 	onCollapse,
 	onOpenMetrics,
 	onOpenSettings,
+	onOpenSkills,
 	orchestratorSessions,
 	onNewOrchestratorSession,
 	creatingOrchestrator,
@@ -240,6 +243,14 @@ export function Sidebar({
 					>
 						<BarChart3 className="size-3.5 shrink-0" />
 						Metrics
+					</button>
+					<button
+						type="button"
+						onClick={onOpenSkills}
+						className="mt-0.5 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70"
+					>
+						<Sparkles className="size-3.5 shrink-0" />
+						Skills
 					</button>
 					<button
 						type="button"

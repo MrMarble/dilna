@@ -14,6 +14,7 @@ import {
 // file) — safe here because both sides only reach for the other singleton
 // from inside async method bodies, never at module-evaluation time.
 import { sessionManager } from "../sessions/manager";
+import { deleteRepoSkills } from "../skills/store";
 import { languagesFromFiles, type TreeFile } from "./languages";
 
 const execFileAsync = promisify(execFile);
@@ -434,6 +435,9 @@ export class RepoManager {
 		rmSync(wtBase, { recursive: true, force: true });
 		rmSync(repo.path, { recursive: true, force: true });
 		db.delete(repoMemoryTable).where(eq(repoMemoryTable.repoId, id)).run();
+		// Skills themselves are global and stay installed; only this Repo's
+		// enablement rows go (nothing else would ever clean them up).
+		deleteRepoSkills(id);
 		db.delete(reposTable).where(eq(reposTable.id, id)).run();
 	}
 }

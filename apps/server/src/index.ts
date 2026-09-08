@@ -19,6 +19,7 @@ import { repoManager } from "./repos/manager";
 import { configRoute } from "./routes/config";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
+import { skillsRoute } from "./routes/skills";
 import { streamRoute } from "./routes/stream";
 import { usageRoute } from "./routes/usage";
 import { sessionManager } from "./sessions/manager";
@@ -88,6 +89,7 @@ app.use("/api/*", bodyLimit({ maxSize: 5 * 1024 * 1024 }));
 app.route("/api/config", configRoute);
 app.route("/api/repos", reposRoute);
 app.route("/api/sessions", sessionsRoute);
+app.route("/api/skills", skillsRoute);
 app.route("/api/stream", streamRoute);
 app.route("/api/usage", usageRoute);
 

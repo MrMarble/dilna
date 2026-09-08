@@ -19,6 +19,7 @@ import { MetricsPage } from "@/components/MetricsPage";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { SettingsPage } from "@/components/SettingsPage";
 import { Sidebar } from "@/components/Sidebar";
+import { SkillsPage } from "@/components/SkillsPage";
 import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
@@ -459,6 +460,11 @@ export function App() {
 		mobileSheet.close();
 	}, [navigate, mobileSheet.close]);
 
+	const handleOpenSkills = useCallback(() => {
+		navigate({ kind: "skills" });
+		mobileSheet.close();
+	}, [navigate, mobileSheet.close]);
+
 	// The standalone views' own back arrow. These are real routes now, so
 	// "back" is literally the browser's back — which lands wherever the user
 	// actually came from, instead of guessing at a repo/session to restore.
@@ -509,6 +515,7 @@ export function App() {
 		onDeleteCurrentSession: handleDeleteSession,
 		onOpenMetrics: handleOpenMetrics,
 		onOpenSettings: handleOpenSettings,
+		onOpenSkills: handleOpenSkills,
 	};
 
 	return (
@@ -530,6 +537,8 @@ export function App() {
 						<MetricsPage repos={repos} onBack={handleBackFromStandalone} />
 					) : route.kind === "settings" ? (
 						<SettingsPage onBack={handleBackFromStandalone} />
+					) : route.kind === "skills" ? (
+						<SkillsPage repos={repos} onBack={handleBackFromStandalone} />
 					) : (
 						<>
 							{selectedRepo ? (
