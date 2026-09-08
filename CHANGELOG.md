@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.22.0](https://github.com/MrMarble/dilna/compare/v0.21.0...v0.22.0) (2026-09-08)
+
+
+### Features
+
+* **skills:** manual skill install with global store and per-repo enablement ([#165](https://github.com/MrMarble/dilna/issues/165)) ([3c5d082](https://github.com/MrMarble/dilna/commit/3c5d0827e1cee41e0ec18b493851799a7ffc2b52))
+* **web:** add copy buttons for messages and code blocks ([#163](https://github.com/MrMarble/dilna/issues/163)) ([3f14db5](https://github.com/MrMarble/dilna/commit/3f14db51b8ccc4c6ba375e1efac4697a16d5e420))
+
+
+### Bug Fixes
+
+* list pnpm before node in mise.toml to stop corepack shim shadowing ([#164](https://github.com/MrMarble/dilna/issues/164)) ([bf39950](https://github.com/MrMarble/dilna/commit/bf399503ca98c98fb7800e1cc184cdcd5d357b5a))
+* **web:** drop cache tokens from the Metrics composition bar ([#161](https://github.com/MrMarble/dilna/issues/161)) ([b23a7b2](https://github.com/MrMarble/dilna/commit/b23a7b2506d6bbf41891ae7ae23a9ad44e1ca924))
+
 ## [0.21.0](https://github.com/MrMarble/dilna/compare/v0.20.0...v0.21.0) (2026-09-08)
 
 
