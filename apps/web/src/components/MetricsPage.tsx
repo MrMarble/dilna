@@ -413,14 +413,21 @@ function DailyUsageChart({
  * Fixed slots from the app's `--chart-1`..`--chart-8` categorical palette
  * (see `DailyUsageChart`'s color-assignment doc comment) — assigned by fixed
  * order here rather than `assignSeriesColors`' hash-based slotting, since
- * these five categories (unlike per-day models) are a known, unchanging set.
+ * these categories (unlike per-day models) are a known, unchanging set.
+ *
+ * Deliberately excludes cache read/write: in a healthy cache-reuse pattern
+ * (the common case — the whole prior transcript re-sent and cache-hit each
+ * turn) cache read alone routinely accounts for ~98% of raw token volume,
+ * which in a linear stacked bar reduces input/output/reasoning to invisible
+ * slivers even though they're the categories that actually vary with prompt
+ * and response shape. The "Cache tokens" summary card above already covers
+ * the cache-specific read-vs-write question this bar would otherwise
+ * duplicate and drown out.
  */
 const TOKEN_SEGMENTS = [
 	{ key: "inputTokens", label: "Input", className: "bg-chart-1" },
 	{ key: "outputTokens", label: "Output", className: "bg-chart-2" },
-	{ key: "cacheReadTokens", label: "Cache read", className: "bg-chart-3" },
-	{ key: "cacheWriteTokens", label: "Cache write", className: "bg-chart-4" },
-	{ key: "reasoningTokens", label: "Reasoning", className: "bg-chart-5" },
+	{ key: "reasoningTokens", label: "Reasoning", className: "bg-chart-3" },
 ] as const satisfies {
 	key: keyof UsageTotalsDetailed;
 	label: string;
@@ -428,20 +435,14 @@ const TOKEN_SEGMENTS = [
 }[];
 
 /**
- * Where tokens actually went — input/output/cache-read/cache-write/reasoning
- * as a single stacked bar. Unlike the "Tokens" columns elsewhere on this page
- * (input+output only, matching the summary cards), this intentionally
- * includes cache and reasoning tokens too: the point is to see how much of
- * the total is cheap cache reuse vs. cache churn vs. genuinely fresh input,
- * which the "Tokens" figure alone hides.
+ * Where non-cache tokens actually went — input/output/reasoning as a single
+ * stacked bar, so the shape of what's actually being prompted/generated is
+ * visible without cache read/write's usual dominance drowning it out (see
+ * `TOKEN_SEGMENTS`'s doc comment).
  */
 function TokenCompositionChart({ totals }: { totals: UsageTotalsDetailed }) {
 	const total =
-		totals.inputTokens +
-		totals.outputTokens +
-		totals.cacheReadTokens +
-		totals.cacheWriteTokens +
-		totals.reasoningTokens;
+		totals.inputTokens + totals.outputTokens + totals.reasoningTokens;
 	if (total === 0) return null;
 
 	return (
@@ -463,7 +464,7 @@ function TokenCompositionChart({ totals }: { totals: UsageTotalsDetailed }) {
 					);
 				})}
 			</div>
-			<ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
+			<ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
 				{TOKEN_SEGMENTS.map((seg) => {
 					const value = totals[seg.key];
 					return (
