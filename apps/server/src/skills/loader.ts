@@ -1,6 +1,9 @@
 import { loadSkills, type Skill } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
+import { logger } from "../logger";
 import { getEnabledSkillDirs } from "./store";
+
+const log = logger.child({ component: "skills/loader" });
 
 /**
  * Loading a Repo's enabled skills for an Agent (issue #60).
@@ -40,14 +43,14 @@ export async function loadSkillsForRepo(
 		const env = new NodeExecutionEnv({ cwd: process.cwd() });
 		const { skills, diagnostics } = await loadSkills(env, dirs);
 		for (const d of diagnostics) {
-			console.warn(`[dilna] skill ${d.code} at ${d.path}: ${d.message}`);
+			log.warn(
+				{ code: d.code, path: d.path, repoId },
+				`skill ${d.code} at ${d.path}: ${d.message}`,
+			);
 		}
 		return skills;
 	} catch (err) {
-		console.warn(
-			`[dilna] failed to load skills for repo ${repoId}:`,
-			err instanceof Error ? err.message : err,
-		);
+		log.warn({ repoId, err }, "failed to load skills for repo");
 		return [];
 	}
 }

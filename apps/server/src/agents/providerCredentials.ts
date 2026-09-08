@@ -4,6 +4,7 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { providerCredentials as providerCredentialsTable } from "../db/schema";
+import { logger } from "../logger";
 import { isCustomProvider } from "./customProviders";
 import { isDilnaProvider, PROVIDER_ALLOWLIST } from "./providerConfig";
 
@@ -53,6 +54,8 @@ import { isDilnaProvider, PROVIDER_ALLOWLIST } from "./providerConfig";
  * only ever displays a masked sentinel / connected indicator, never key or
  * token material.
  */
+
+const log = logger.child({ component: "agents/providerCredentials" });
 
 export type StoredProviderKey = { provider: string };
 
@@ -273,10 +276,7 @@ async function resolveOAuthAccessToken(
 		setProviderOAuthCredential(provider, refreshed);
 		return refreshed.access;
 	} catch (err) {
-		console.error(
-			`[providerCredentials] OAuth refresh failed for ${provider}:`,
-			err,
-		);
+		log.error({ provider, err }, "OAuth refresh failed");
 		return oauth.access;
 	}
 }

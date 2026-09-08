@@ -45,6 +45,7 @@ import {
 	rateLimits as rateLimitsTable,
 	sessions as sessionsTable,
 } from "../db/schema";
+import { logger } from "../logger";
 import { RepoNotFoundError, repoManager } from "../repos/manager";
 import {
 	archiveSession as archiveSessionRow,
@@ -74,6 +75,8 @@ import {
 	recentCommits,
 	removeWorktree,
 } from "./worktree";
+
+const log = logger.child({ component: "sessions/manager" });
 
 // The live-turn snapshot helpers moved to ./liveTurn (issue #149); re-exported
 // here because they're part of this module's established public surface.
@@ -329,9 +332,9 @@ class SessionManager {
 				const turnPromise = this.runTurn(view.id, prompt);
 				this.trackRunningTurn(view.id, turnPromise);
 				turnPromise.catch((err) => {
-					console.error(
-						`[sessions] orchestrator-spawned runTurn failed for ${view.id}:`,
-						err,
+					log.error(
+						{ sessionId: view.id, err },
+						"orchestrator-spawned runTurn failed",
 					);
 				});
 				return view;
@@ -591,8 +594,9 @@ class SessionManager {
 				createdAt: session.createdAt,
 			});
 		} catch (err) {
-			console.error(
-				`[sessions] archival failed for ${session.id}, deleting without an archive: ${err instanceof Error ? err.message : String(err)}`,
+			log.error(
+				{ sessionId: session.id, err },
+				"archival failed, deleting without an archive",
 			);
 		}
 	}
@@ -954,8 +958,9 @@ class SessionManager {
 	async runTurn(id: string, text: string): Promise<void> {
 		const turn = this.turns.get(id);
 		if (!turn) {
-			console.error(
-				`[sessions] runTurn invoked for ${id} with no claimed turn — dropping`,
+			log.error(
+				{ sessionId: id },
+				"runTurn invoked with no claimed turn — dropping",
 			);
 			return;
 		}
@@ -971,9 +976,7 @@ class SessionManager {
 			// it), and any failure is logged and swallowed — the Session simply
 			// keeps its placeholder until a later turn retries it.
 			this.maybeDeriveTitle(session, text).catch((err) => {
-				console.error(
-					`[sessions] title derivation for ${id} failed: ${err instanceof Error ? err.message : String(err)}`,
-				);
+				log.error({ sessionId: id, err }, "title derivation failed");
 			});
 
 			let active: ActiveAgent;
@@ -1135,10 +1138,7 @@ class SessionManager {
 					// makes a wider, overlapping retry slice safe).
 					active.persistedCount = result.newPersistedCount;
 				} catch (err) {
-					console.error(
-						`[sessions] failed to persist turn messages for ${id}:`,
-						err,
-					);
+					log.error({ sessionId: id, err }, "failed to persist turn messages");
 					this.failTurn(id, turn, {
 						class: "persistence_failure",
 						message: `failed to persist turn messages: ${err instanceof Error ? err.message : String(err)}`,
@@ -1163,8 +1163,9 @@ class SessionManager {
 					// reusing (and re-hanging on) this one, and gives the client an
 					// explicit, visible signal instead of leaving it to infer
 					// nothing is happening.
-					console.error(
-						`[sessions] turn for ${id} exceeded ${TURN_TIMEOUT_MS / 1000}s with no response — treating as crashed`,
+					log.error(
+						{ sessionId: id, timeoutMs: TURN_TIMEOUT_MS },
+						"turn exceeded timeout with no response — treating as crashed",
 					);
 					this.failTurn(id, turn, {
 						class: "turn_timeout",
@@ -1189,9 +1190,9 @@ class SessionManager {
 						const files = await this.getChangedFiles(id);
 						this.events.broadcast(id, { type: "changed_files", files });
 					} catch (err) {
-						console.error(
-							`[sessions] failed to compute changed files for ${id}:`,
-							err,
+						log.error(
+							{ sessionId: id, err },
+							"failed to compute changed files",
 						);
 					}
 
@@ -1252,9 +1253,7 @@ class SessionManager {
 				});
 			}
 		} catch (err) {
-			console.error(
-				`[sessions] compaction/context check failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
-			);
+			log.error({ sessionId: id, err }, "compaction/context check failed");
 		}
 	}
 
@@ -1331,8 +1330,9 @@ class SessionManager {
 	private escalateStopTimeout(id: string): void {
 		const turn = this.turns.get(id);
 		if (!turn || turn.terminalized) return;
-		console.error(
-			`[sessions] stop for ${id} did not complete within ${STOP_TIMEOUT_MS / 1000}s — killing the process`,
+		log.error(
+			{ sessionId: id, stopTimeoutMs: STOP_TIMEOUT_MS },
+			"stop did not complete within timeout — killing the process",
 		);
 		this.failTurn(id, turn, {
 			class: "turn_timeout",
@@ -1377,9 +1377,9 @@ class SessionManager {
 				if (message) messageStore.persistMessage(sessionId, message);
 				active.persistedCount += advance;
 			} catch (err) {
-				console.error(
-					`[sessions] failed to incrementally persist a round for ${sessionId} (will retry at turn end):`,
-					err,
+				log.error(
+					{ sessionId, err },
+					"failed to incrementally persist a round (will retry at turn end)",
 				);
 			}
 		}

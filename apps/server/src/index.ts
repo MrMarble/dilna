@@ -5,12 +5,13 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
 import { primeCustomProviders } from "./agents/customProviders";
 import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { primeProviderCredentials } from "./agents/providerCredentials";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
+import { logger } from "./logger";
+import { requestLogger } from "./middleware/requestLogger";
 import {
 	bearerAuthMiddleware,
 	hostAllowlistMiddleware,
@@ -44,15 +45,15 @@ primeOverrideFromDb();
 primeProviderCredentials();
 const envProviderConfig = validateProviderConfig(process.env);
 if (!envProviderConfig.ok && !getOverride()) {
-	console.warn(
-		`[dilna] no override set and environment config is incomplete: ${envProviderConfig.error}. ` +
-			"Every session will fail until you set DILNA_PROVIDER/DILNA_MODEL (+ API key) or " +
-			"configure a provider/model in the Settings view.",
+	logger.warn(
+		{ reason: envProviderConfig.error },
+		"no override set and environment config is incomplete — every session will fail until you set " +
+			"DILNA_PROVIDER/DILNA_MODEL (+ API key) or configure a provider/model in the Settings view",
 	);
 }
 
 const app = new Hono();
-app.use(logger());
+app.use(requestLogger());
 
 // Opt-in hardening against DNS rebinding / CSRF-style requests from a
 // browser tab: CORS alone only stops a script from *reading* a cross-origin
@@ -124,7 +125,10 @@ if (existsSync(webDistDir)) {
 
 const port = Number(process.env.PORT ?? 3001);
 const server = serve({ fetch: app.fetch, port }, async (info) => {
-	console.log(`dilna server listening on http://localhost:${info.port}`);
+	logger.info(
+		{ port: info.port },
+		`dilna server listening on http://localhost:${info.port}`,
+	);
 	getDb();
 	// On boot, flip any non-idle sessions back to idle — their agent
 	// processes died when the previous server exited (ADR-0003).
@@ -152,11 +156,11 @@ async function shutdown() {
 	if (shuttingDown) return;
 	shuttingDown = true;
 	draining = true;
-	console.log("[dilna] shutting down: draining in-flight turns...");
+	logger.info("shutting down: draining in-flight turns...");
 	await sessionManager.drain(SHUTDOWN_GRACE_MS);
 	await new Promise<void>((resolve) => {
 		server.close((err) => {
-			if (err) console.error("[dilna] error closing HTTP server:", err);
+			if (err) logger.error({ err }, "error closing HTTP server");
 			resolve();
 		});
 	});

@@ -1,3 +1,7 @@
+import { logger } from "../logger";
+
+const log = logger.child({ component: "sessions/turnRegistry" });
+
 /**
  * Per-turn stop/abort state (ADR-0016 §3), claimed synchronously by
  * `SessionManager.beginTurn` — before `ensureStarted` even runs — so a Stop
@@ -128,8 +132,9 @@ export class TurnRegistry {
 		this.draining = true;
 		const inFlight = [...this.runningTurns.values()];
 		if (inFlight.length === 0) return;
-		console.log(
-			`[sessions] draining ${inFlight.length} in-flight turn(s), up to ${timeoutMs / 1000}s...`,
+		log.info(
+			{ inFlightCount: inFlight.length, timeoutMs },
+			`draining ${inFlight.length} in-flight turn(s), up to ${timeoutMs / 1000}s...`,
 		);
 		await Promise.race([
 			Promise.allSettled(inFlight),

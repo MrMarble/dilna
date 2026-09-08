@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { ChangedFile, ChangedFileStatus } from "@dilna/shared";
+import { logger } from "../logger";
+
+const log = logger.child({ component: "sessions/diff" });
 
 const execFileAsync = promisify(execFile);
 
@@ -150,9 +153,9 @@ export async function computeChangedFiles(
 			await git(["merge-base", defaultBranch, "HEAD"], worktreePath)
 		).trim();
 	} catch (err) {
-		console.error(
-			`[diff] failed to find merge-base with ${defaultBranch} in ${worktreePath}:`,
-			err,
+		log.error(
+			{ defaultBranch, worktreePath, err },
+			"failed to find merge-base",
 		);
 		return [];
 	}
