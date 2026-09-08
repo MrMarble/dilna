@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.23.0](https://github.com/MrMarble/dilna/compare/v0.22.0...v0.23.0) (2026-09-08)
+
+
+### Features
+
+* **server:** adopt pino structured logging ([#167](https://github.com/MrMarble/dilna/issues/167)) ([8a24d67](https://github.com/MrMarble/dilna/commit/8a24d67916a8d57263d315ea3a71fac63afd050c))
+
+
+### Bug Fixes
+
+* **server:** stop skill enable/uninstall 404ing behind other routes ([#166](https://github.com/MrMarble/dilna/issues/166)) ([5880ead](https://github.com/MrMarble/dilna/commit/5880eade9ee799f85708266b76d5ba1fced7de37))
+
 ## [0.22.0](https://github.com/MrMarble/dilna/compare/v0.21.0...v0.22.0) (2026-09-08)
 
 
