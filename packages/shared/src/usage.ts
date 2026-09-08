@@ -30,12 +30,25 @@ export type UsageDailyModelBreakdown = {
 	model: string;
 } & UsageTotalsDetailed;
 
+/**
+ * One of the top-spending Sessions in range (`usageStats.ts`'s
+ * `TOP_SESSIONS_LIMIT`). `title` is resolved server-side against the live
+ * `sessions` row or, for a deleted Session, its `sessionArchive` row
+ * (ADR-0024) — null only when neither exists (pre-archive-feature rows).
+ */
+export type UsageSessionBreakdown = {
+	sessionId: string;
+	repoId: string;
+	title: string | null;
+} & UsageTotalsDetailed;
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
 	dailyByModel: UsageDailyModelBreakdown[];
 	byRepo: UsageRepoBreakdown[];
 	byModel: UsageModelBreakdown[];
+	topSessions: UsageSessionBreakdown[];
 };
 
 /**

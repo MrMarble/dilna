@@ -3,12 +3,20 @@ import type {
 	UsageDailyPoint,
 	UsageModelBreakdown,
 	UsageRepoBreakdown,
+	UsageSessionBreakdown,
 	UsageSummary,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
-import { gte, sql } from "drizzle-orm";
+import { gte, inArray, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import { usageEvents as usageEventsTable } from "../db/schema";
+import {
+	sessionArchive as sessionArchiveTable,
+	sessions as sessionsTable,
+	usageEvents as usageEventsTable,
+} from "../db/schema";
+
+/** How many top-spending Sessions the "Top sessions" table shows. */
+const TOP_SESSIONS_LIMIT = 10;
 
 const ZERO_TOTALS: UsageTotalsDetailed = {
 	inputTokens: 0,
@@ -91,11 +99,65 @@ export function getUsageSummary(since: number): UsageSummary {
 		.all() as UsageModelBreakdown[];
 	byModel.sort((a, b) => b.costUsd - a.costUsd);
 
+	const topSessions = getTopSessions(where);
+
 	return {
 		totals: totals ?? { ...ZERO_TOTALS },
 		daily,
 		dailyByModel,
 		byRepo,
 		byModel,
+		topSessions,
 	};
+}
+
+/**
+ * Top-spending Sessions in range, with a display title resolved against
+ * whichever of `sessions`/`sessionArchive` still has a row for that id —
+ * `usage_events` deliberately has no FK to either (see its schema comment),
+ * so a Session can be deleted (hard-deleted from `sessions`, archived into
+ * `sessionArchive` per ADR-0024) without losing its historical spend here.
+ */
+function getTopSessions(
+	where: ReturnType<typeof gte>,
+): UsageSessionBreakdown[] {
+	const db = getDb();
+
+	const bySession = db
+		.select({
+			sessionId: usageEventsTable.sessionId,
+			repoId: usageEventsTable.repoId,
+			...SUM_COLUMNS,
+		})
+		.from(usageEventsTable)
+		.where(where)
+		.groupBy(usageEventsTable.sessionId, usageEventsTable.repoId)
+		.all() as (UsageTotalsDetailed & { sessionId: string; repoId: string })[];
+	bySession.sort((a, b) => b.costUsd - a.costUsd);
+	const top = bySession.slice(0, TOP_SESSIONS_LIMIT);
+	if (top.length === 0) return [];
+
+	const ids = top.map((s) => s.sessionId);
+	const titleById = new Map<string, string>();
+	for (const row of db
+		.select({
+			id: sessionArchiveTable.sessionId,
+			title: sessionArchiveTable.title,
+		})
+		.from(sessionArchiveTable)
+		.where(inArray(sessionArchiveTable.sessionId, ids))
+		.all()) {
+		titleById.set(row.id, row.title);
+	}
+	// Live sessions win over an archive row for the same id (shouldn't both
+	// exist, but a live row is the fresher source of truth if they do).
+	for (const row of db
+		.select({ id: sessionsTable.id, title: sessionsTable.title })
+		.from(sessionsTable)
+		.where(inArray(sessionsTable.id, ids))
+		.all()) {
+		titleById.set(row.id, row.title);
+	}
+
+	return top.map((s) => ({ ...s, title: titleById.get(s.sessionId) ?? null }));
 }

@@ -4,7 +4,9 @@ import type {
 	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
+	UsageSessionBreakdown,
 	UsageSummary,
+	UsageTotalsDetailed,
 } from "@dilna/shared";
 import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -138,8 +140,13 @@ export function MetricsPage({ repos, onBack }: Props) {
 							daily={summary.daily}
 							dailyByModel={summary.dailyByModel}
 						/>
+						<TokenCompositionChart totals={summary.totals} />
 						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
+						<TopSessionsTable
+							sessions={summary.topSessions}
+							repoNameById={repoNameById}
+						/>
 					</>
 				)}
 
@@ -403,6 +410,86 @@ function DailyUsageChart({
 }
 
 /**
+ * Fixed slots from the app's `--chart-1`..`--chart-8` categorical palette
+ * (see `DailyUsageChart`'s color-assignment doc comment) — assigned by fixed
+ * order here rather than `assignSeriesColors`' hash-based slotting, since
+ * these five categories (unlike per-day models) are a known, unchanging set.
+ */
+const TOKEN_SEGMENTS = [
+	{ key: "inputTokens", label: "Input", className: "bg-chart-1" },
+	{ key: "outputTokens", label: "Output", className: "bg-chart-2" },
+	{ key: "cacheReadTokens", label: "Cache read", className: "bg-chart-3" },
+	{ key: "cacheWriteTokens", label: "Cache write", className: "bg-chart-4" },
+	{ key: "reasoningTokens", label: "Reasoning", className: "bg-chart-5" },
+] as const satisfies {
+	key: keyof UsageTotalsDetailed;
+	label: string;
+	className: string;
+}[];
+
+/**
+ * Where tokens actually went — input/output/cache-read/cache-write/reasoning
+ * as a single stacked bar. Unlike the "Tokens" columns elsewhere on this page
+ * (input+output only, matching the summary cards), this intentionally
+ * includes cache and reasoning tokens too: the point is to see how much of
+ * the total is cheap cache reuse vs. cache churn vs. genuinely fresh input,
+ * which the "Tokens" figure alone hides.
+ */
+function TokenCompositionChart({ totals }: { totals: UsageTotalsDetailed }) {
+	const total =
+		totals.inputTokens +
+		totals.outputTokens +
+		totals.cacheReadTokens +
+		totals.cacheWriteTokens +
+		totals.reasoningTokens;
+	if (total === 0) return null;
+
+	return (
+		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+			<div className="mb-3 text-xs text-muted-foreground">
+				Token composition
+			</div>
+			<div className="flex h-3 w-full overflow-hidden rounded-full bg-muted">
+				{TOKEN_SEGMENTS.map((seg) => {
+					const value = totals[seg.key];
+					if (value === 0) return null;
+					return (
+						<div
+							key={seg.key}
+							className={seg.className}
+							style={{ width: `${(value / total) * 100}%` }}
+							title={`${seg.label}: ${formatTokenCount(value)}`}
+						/>
+					);
+				})}
+			</div>
+			<ul className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 sm:grid-cols-3">
+				{TOKEN_SEGMENTS.map((seg) => {
+					const value = totals[seg.key];
+					return (
+						<li
+							key={seg.key}
+							className="flex items-center gap-1.5 text-xs tabular-nums"
+						>
+							<span
+								className={cn("size-2 shrink-0 rounded-full", seg.className)}
+							/>
+							<span className="text-muted-foreground">{seg.label}</span>
+							<span className="ml-auto font-medium">
+								{formatTokenCount(value)}
+							</span>
+							<span className="w-9 text-right text-muted-foreground">
+								{total > 0 ? `${((value / total) * 100).toFixed(0)}%` : "0%"}
+							</span>
+						</li>
+					);
+				})}
+			</ul>
+		</div>
+	);
+}
+
+/**
  * Per-model breakdown — the model/provider attribution that makes sense now
  * that the provider+model is web-configurable (a single instance can run
  * turns under several models over time). Each row is one `provider`/`model`
@@ -422,26 +509,46 @@ function ModelBreakdownTable({ models }: { models: UsageModelBreakdown[] }) {
 						<th className="px-4 py-2 font-medium">Model</th>
 						<th className="px-4 py-2 text-right font-medium">Tokens</th>
 						<th className="px-4 py-2 text-right font-medium">Cost</th>
+						<th className="px-4 py-2 text-right font-medium">Cost / token</th>
+						<th className="px-4 py-2 text-right font-medium">Cost / 1M</th>
 					</tr>
 				</thead>
 				<tbody>
-					{models.map((m, i) => (
-						<tr
-							key={`${m.provider}/${m.model}`}
-							className={cn("tabular-nums", i > 0 && "border-t border-border")}
-						>
-							<td className="px-4 py-2">
-								<span className="font-mono text-xs">{m.model}</span>
-								<span className="ml-1 text-xs text-muted-foreground">
-									· {m.provider}
-								</span>
-							</td>
-							<td className="px-4 py-2 text-right">
-								{formatTokenCount(m.inputTokens + m.outputTokens)}
-							</td>
-							<td className="px-4 py-2 text-right">{formatUsd(m.costUsd)}</td>
-						</tr>
-					))}
+					{models.map((m, i) => {
+						// Same denominator as the "Tokens" column (input+output) so the
+						// rate math on this row stays consistent with what's displayed
+						// — a blended rate, not a real input-vs-output split, since the
+						// SDK only reports one combined costUsd per turn (see
+						// usageStats.ts's doc comment).
+						const tokens = m.inputTokens + m.outputTokens;
+						const perToken = tokens > 0 ? m.costUsd / tokens : 0;
+						return (
+							<tr
+								key={`${m.provider}/${m.model}`}
+								className={cn(
+									"tabular-nums",
+									i > 0 && "border-t border-border",
+								)}
+							>
+								<td className="px-4 py-2">
+									<span className="font-mono text-xs">{m.model}</span>
+									<span className="ml-1 text-xs text-muted-foreground">
+										· {m.provider}
+									</span>
+								</td>
+								<td className="px-4 py-2 text-right">
+									{formatTokenCount(tokens)}
+								</td>
+								<td className="px-4 py-2 text-right">{formatUsd(m.costUsd)}</td>
+								<td className="px-4 py-2 text-right text-muted-foreground">
+									{tokens > 0 ? `~${formatUsd(perToken)}` : "—"}
+								</td>
+								<td className="px-4 py-2 text-right text-muted-foreground">
+									{tokens > 0 ? `~${formatUsd(perToken * 1_000_000)}` : "—"}
+								</td>
+							</tr>
+						);
+					})}
 				</tbody>
 			</table>
 		</div>
@@ -478,6 +585,60 @@ function RepoBreakdownTable({
 								{formatTokenCount(r.inputTokens + r.outputTokens)}
 							</td>
 							<td className="px-4 py-2 text-right">{formatUsd(r.costUsd)}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
+/**
+ * Highest-spending Sessions in range (server-side top-`TOP_SESSIONS_LIMIT`,
+ * already sorted by cost). Deliberately survives Session deletion — see
+ * `usageEvents`'s schema comment and `usageStats.ts`'s `getTopSessions`:
+ * `title` is resolved against the live Session or, once deleted, its
+ * `sessionArchive` row (ADR-0024), falling back to a short id only for the
+ * rare pre-archive-feature row that has neither.
+ */
+function TopSessionsTable({
+	sessions,
+	repoNameById,
+}: {
+	sessions: UsageSessionBreakdown[];
+	repoNameById: Record<string, string>;
+}) {
+	if (sessions.length === 0) return null;
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				Top sessions
+			</div>
+			<table className="w-full text-sm">
+				<thead>
+					<tr className="border-b border-border text-left text-xs text-muted-foreground">
+						<th className="px-4 py-2 font-medium">Session</th>
+						<th className="px-4 py-2 font-medium">Repo</th>
+						<th className="px-4 py-2 text-right font-medium">Tokens</th>
+						<th className="px-4 py-2 text-right font-medium">Cost</th>
+					</tr>
+				</thead>
+				<tbody>
+					{sessions.map((s, i) => (
+						<tr
+							key={s.sessionId}
+							className={cn("tabular-nums", i > 0 && "border-t border-border")}
+						>
+							<td className="max-w-64 truncate px-4 py-2">
+								{s.title ?? `deleted session ${s.sessionId.slice(0, 8)}…`}
+							</td>
+							<td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+								{repoNameById[s.repoId] ?? `${s.repoId.slice(0, 8)}… (deleted)`}
+							</td>
+							<td className="px-4 py-2 text-right">
+								{formatTokenCount(s.inputTokens + s.outputTokens)}
+							</td>
+							<td className="px-4 py-2 text-right">{formatUsd(s.costUsd)}</td>
 						</tr>
 					))}
 				</tbody>
