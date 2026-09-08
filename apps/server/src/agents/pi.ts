@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import {
+	type Dirent,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,7 +187,68 @@ const XDG_CACHE_HOME = path.join(TOOLCHAIN_HOME, "cache");
 const XDG_DATA_HOME = path.join(TOOLCHAIN_HOME, "xdg-data");
 const XDG_CONFIG_HOME = path.join(TOOLCHAIN_HOME, "xdg-config");
 const GH_CONFIG_DIR = path.join(TOOLCHAIN_HOME, "gh-config");
-const PNPM_STORE_DIR = path.join(TOOLCHAIN_HOME, "pnpm", "store");
+
+/** Every session's worktree, one level down from `<slug>/<session-id>` — see
+ * `repos/manager.ts`'s identical `worktreesDir`/`worktreeBase`. Recomputed
+ * here (rather than imported) to keep this file's sandbox wiring
+ * self-contained; must stay in sync with that layout. */
+const WORKTREES_DIR = path.join(getDataDir(), "worktrees");
+
+/** Name reserved directly under `WORKTREES_DIR`, alongside every repo's
+ * `<slug>/` directory, for the shared pnpm store below. `listSiblingWorktreeDirs`
+ * skips it by this exact name so it's never mistaken for a repo slug and
+ * masked as a sibling session. */
+const SHARED_PNPM_STORE_DIRNAME = ".pnpm-store";
+
+/**
+ * Deliberately nested under `WORKTREES_DIR`, not `TOOLCHAIN_HOME` — and
+ * deliberately never listed on its own in any `filesystem.allowWrite`/
+ * `allowRead` array passed to `wrapWithSandbox` (see `TOOLCHAIN_WRITABLE_PATHS`
+ * below, which excludes it for exactly this reason).
+ *
+ * pnpm's speed comes from hardlinking store files into `node_modules`, and
+ * `link(2)` refuses to cross a mount boundary (`EXDEV`) even when both sides
+ * are the same underlying device — a mount-namespace rule, not a filesystem
+ * one. `sandbox-runtime`'s bwrap wrapper turns every entry in
+ * `filesystem.allowWrite` into its own identity bind (`--bind path path`
+ * against a `--ro-bind / /` root — confirmed by reading the installed
+ * `linux-sandbox-utils.js` directly), so two *separately listed* writable
+ * paths are always siblings in the mount table, never the same mount, no
+ * matter where they live on the host. That's why a store under
+ * `TOOLCHAIN_HOME` degraded every `pnpm install` in this sandbox to a full
+ * byte-for-byte copy (confirmed: store files and their `node_modules/.pnpm`
+ * counterparts both had link count 1) despite `df`/`stat -c %d` reporting
+ * the same device on both sides.
+ *
+ * The fix relies on the flip side of the same rule, verified directly with
+ * `bwrap` outside of dilna's code before writing this: a plain host
+ * subdirectory reached *through* an already-bound ancestor (no bind of its
+ * own) shares that ancestor's single mount, so `link()` between two such
+ * subdirectories succeeds — but re-adding an explicit `--bind` on either
+ * subdirectory (even redundantly, even though it's already reachable through
+ * the ancestor) immediately reintroduces `EXDEV`, since bwrap always creates
+ * a fresh mount entry for a bind target regardless of what already covers
+ * it. So `startPi` binds `WORKTREES_DIR` itself as the one writable ancestor
+ * and reaches both this store and `opts.worktreePath` as its plain,
+ * never-separately-bound children — never list either of those two paths in
+ * `filesystem.allowWrite`/`allowRead` directly, or the EXDEV regression comes
+ * back for whichever one gets listed.
+ *
+ * The corresponding isolation cost — this session's bash can now reach every
+ * *sibling* worktree under `WORKTREES_DIR`, not just its own, since they all
+ * share the one ancestor bind — is paid back by `listSiblingWorktreeDirs`,
+ * which enumerates and `denyRead`s every sibling session directory
+ * individually. This deliberately does NOT use ADR-0010's usual
+ * "`denyRead` the whole ancestor, then `allowRead`/`allowWrite` re-expose the
+ * one nested path" pattern: that pattern re-binds the reallowed path as its
+ * own separate mount to make it accessible again (same
+ * `linux-sandbox-utils.js`, `pushReadDenyDirMounts`'s `--bind`/`--ro-bind`
+ * re-application) — i.e. it reproduces the exact EXDEV-causing shape this
+ * whole change exists to avoid. Masking siblings individually instead keeps
+ * `opts.worktreePath` and this store as untouched, un-re-bound children of
+ * the one ancestor mount.
+ */
+const PNPM_STORE_DIR = path.join(WORKTREES_DIR, SHARED_PNPM_STORE_DIRNAME);
 // NOT redirected here on purpose: `PI_CODING_AGENT_DIR` (where
 // pi-coding-agent's grep/find tools self-download rg/fd if neither is on
 // PATH, per those tools' own `getBinDir()`) can't go through `toolchainEnv()`
@@ -240,6 +307,12 @@ const CLI_SCRATCH_PARENT_DIR = path.join(
  */
 const SANDBOX_DEFAULT_WRITE_PATHS = getDefaultWritePaths();
 
+/** `PNPM_STORE_DIR` is deliberately NOT here — see its own doc comment. It
+ * still needs pre-creating (`ensureWritablePathsExist` below adds it
+ * explicitly) but must never appear in the `filesystem.allowWrite`/
+ * `allowRead` array `startPi` builds from this list, or it gets its own
+ * bwrap bind and the EXDEV regression `PNPM_STORE_DIR`'s comment describes
+ * comes right back. */
 const TOOLCHAIN_WRITABLE_PATHS = [
 	MISE_DATA_DIR,
 	MISE_CONFIG_DIR,
@@ -251,7 +324,6 @@ const TOOLCHAIN_WRITABLE_PATHS = [
 	XDG_CONFIG_HOME,
 	GH_CONFIG_DIR,
 	path.join(XDG_CACHE_HOME, "gh"),
-	PNPM_STORE_DIR,
 	CLI_SCRATCH_PARENT_DIR,
 ];
 
@@ -260,10 +332,14 @@ const TOOLCHAIN_WRITABLE_PATHS = [
  * the sandboxed bash tool's first use. Sandbox-runtime's own default write
  * paths are included too (see `SANDBOX_DEFAULT_WRITE_PATHS`'s doc comment);
  * a leaf irrelevant to this platform (e.g. `/private/tmp/claude` on Linux)
- * fails harmlessly and is skipped rather than aborting the others. */
+ * fails harmlessly and is skipped rather than aborting the others.
+ * `PNPM_STORE_DIR` is created here too, even though (unlike every other leaf
+ * in this function) it's never passed to the sandbox directly — see its own
+ * doc comment for why. */
 function ensureWritablePathsExist(): void {
 	for (const dir of [
 		...TOOLCHAIN_WRITABLE_PATHS,
+		PNPM_STORE_DIR,
 		...SANDBOX_DEFAULT_WRITE_PATHS,
 	]) {
 		try {
@@ -410,6 +486,58 @@ function createUpdateRepoMemoryTool(
 			};
 		},
 	};
+}
+
+/**
+ * Every other session's worktree directory under `WORKTREES_DIR`
+ * (`<slug>/<session-id>`, per `repos/manager.ts`'s layout), excluding
+ * `ownWorktreePath` and the shared pnpm store. `startPi` masks each of these
+ * from the sandboxed bash tool's reads via `denyRead` — see `PNPM_STORE_DIR`'s
+ * doc comment for why this enumeration (rather than ADR-0010's usual
+ * deny-ancestor/reallow-one-child pattern) is what pays back the isolation
+ * cost of binding the whole `WORKTREES_DIR` ancestor writable.
+ *
+ * Best-effort by design: a session directory created or removed after this
+ * runs (concurrent session create/delete elsewhere in the same dilna
+ * instance) is missed until the next Bash tool call recomputes this list —
+ * matches `wrapWithSandbox`'s own per-call re-evaluation of `customConfig`,
+ * so the gap is at most one Bash call wide, not session-lifetime wide. A
+ * repo or session directory that vanishes between the `readdirSync` here and
+ * bwrap actually applying the resulting `denyRead` is harmless: `denyRead`
+ * silently skips a path that no longer exists (confirmed by reading
+ * `linux-sandbox-utils.js`'s own denyRead loop).
+ */
+function listSiblingWorktreeDirs(
+	worktreesDir: string,
+	ownWorktreePath: string,
+): string[] {
+	const siblings: string[] = [];
+	let repoEntries: Dirent[];
+	try {
+		repoEntries = readdirSync(worktreesDir, { withFileTypes: true });
+	} catch {
+		return siblings;
+	}
+	for (const repoEntry of repoEntries) {
+		if (
+			!repoEntry.isDirectory() ||
+			repoEntry.name === SHARED_PNPM_STORE_DIRNAME
+		)
+			continue;
+		const repoDir = path.join(worktreesDir, repoEntry.name);
+		let sessionEntries: Dirent[];
+		try {
+			sessionEntries = readdirSync(repoDir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const sessionEntry of sessionEntries) {
+			if (!sessionEntry.isDirectory()) continue;
+			const sessionDir = path.join(repoDir, sessionEntry.name);
+			if (sessionDir !== ownWorktreePath) siblings.push(sessionDir);
+		}
+	}
+	return siblings;
 }
 
 /**
@@ -601,10 +729,26 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 			: "") +
 		(hasCodegraph ? CODEGRAPH_SYSTEM_PROMPT_NOTE : "");
 
+	// `WORKTREES_DIR` (not `opts.worktreePath`) is the writable ancestor bound
+	// into the sandbox — see `PNPM_STORE_DIR`'s doc comment for why: it's what
+	// lets `opts.worktreePath` and the shared pnpm store share one bwrap mount
+	// instead of each getting its own (which is what broke pnpm's hardlinking).
+	// `opts.worktreePath` and `PNPM_STORE_DIR` are deliberately absent from
+	// this array — they're reached as WORKTREES_DIR's plain children, and
+	// listing either on its own would re-bind it as a separate mount.
 	const bashWritablePaths = [
-		opts.worktreePath,
+		WORKTREES_DIR,
 		...TOOLCHAIN_WRITABLE_PATHS,
 		...(gitCommonDir ? [gitCommonDir] : []),
+	];
+	// Isolation cost of binding the whole WORKTREES_DIR ancestor above: every
+	// sibling session's worktree is technically reachable through that same
+	// bind too. Paid back by masking each one from reads individually — see
+	// `listSiblingWorktreeDirs`'s doc comment for why this can't just be
+	// "denyRead WORKTREES_DIR, allowRead opts.worktreePath" instead.
+	const bashDenyReadPaths = [
+		...(nestedInCheckout ? [workspaceRoot] : []),
+		...listSiblingWorktreeDirs(WORKTREES_DIR, opts.worktreePath),
 	];
 
 	// biome-ignore lint/suspicious/noExplicitAny: AgentTool<any> is the library's own alias for a type-erased tool (pi-coding-agent's `Tool` type)
@@ -619,7 +763,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 			operations: createSandboxedBashOperations(
 				opts.worktreePath,
 				bashWritablePaths,
-				nestedInCheckout ? [workspaceRoot] : [],
+				bashDenyReadPaths,
 			),
 		}),
 		createReadRepoMemoryTool(opts.repoId),
