@@ -389,7 +389,40 @@ function toolchainEnv(worktreePath: string): NodeJS.ProcessEnv {
 		PATH: [path.join(MISE_DATA_DIR, "shims"), process.env.PATH]
 			.filter(Boolean)
 			.join(":"),
-		npm_config_store_dir: process.env.npm_config_store_dir ?? PNPM_STORE_DIR,
+		// NOT `npm_config_store_dir`, despite that being the convention every
+		// other pnpm/npm-shared config key in this function follows (confirmed
+		// working for e.g. `registry` via the same `npm_config_*` mechanism).
+		// Verified directly, outside dilna's code: `pnpm config get store-dir`
+		// stays `undefined` under `npm_config_store_dir`, no matter what else is
+		// set, while `PNPM_CONFIG_STORE_DIR` is honored immediately by both
+		// `pnpm store path` and a real `pnpm install` (installed files came back
+		// hardlinked — link count 2 — against a store placed via this var). This
+		// was live-broken in production: `pnpm store path` inside a real Session
+		// reported pnpm's own XDG-derived default (`$XDG_DATA_HOME/pnpm/store`,
+		// itself a separate bwrap mount from `WORKTREES_DIR` — see
+		// `PNPM_STORE_DIR`'s doc comment), never this value, so the ancestor-bind
+		// fix above had zero effect until this line was corrected.
+		PNPM_CONFIG_STORE_DIR: process.env.PNPM_CONFIG_STORE_DIR ?? PNPM_STORE_DIR,
+		// pnpm's own "auto" hardlink-capability detection (the unset default)
+		// is unreliable in this sandbox: it produced copies (link count 1) even
+		// once `PNPM_CONFIG_STORE_DIR` correctly pointed at a store colocated
+		// with the worktree on one bwrap mount, verified working via a plain
+		// `ln`/`fs.linkSync` between the exact same two paths in the same
+		// sandboxed process. The likely reason (not confirmed against pnpm's
+		// source, only observed): its probe most plausibly runs against
+		// `TMPDIR` rather than the real worktree — `sandbox-runtime` forces
+		// `TMPDIR` to its own default write path (see `SANDBOX_DEFAULT_WRITE_PATHS`'s
+		// doc comment), which is its own separate bwrap mount, genuinely
+		// cross-mount from the store — so "auto" isn't wrong about that pair,
+		// just testing the wrong one. Forcing `hardlink` here skips the
+		// unreliable probe and relies directly on the invariant `PNPM_STORE_DIR`'s
+		// doc comment establishes (store and worktree always share one mount);
+		// confirmed fixing it (link count 2) against the exact same environment
+		// that reproduced the copy. Same `PNPM_CONFIG_*` env-var family as
+		// `PNPM_CONFIG_STORE_DIR` above — `npm_config_package_import_method` is
+		// equally inert, checked the same way.
+		PNPM_CONFIG_PACKAGE_IMPORT_METHOD:
+			process.env.PNPM_CONFIG_PACKAGE_IMPORT_METHOD ?? "hardlink",
 		MISE_DATA_DIR: process.env.MISE_DATA_DIR ?? MISE_DATA_DIR,
 		MISE_CONFIG_DIR: process.env.MISE_CONFIG_DIR ?? MISE_CONFIG_DIR,
 		MISE_CACHE_DIR: process.env.MISE_CACHE_DIR ?? MISE_CACHE_DIR,
