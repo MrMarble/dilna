@@ -15,7 +15,10 @@ export default defineConfig({
 	test: {
 		name: "web",
 		environment: "happy-dom",
-		include: ["src/**/*.test.tsx"],
+		// Both extensions: plain-.ts suites (lib/rate-limits, lib/tool-meta,
+		// lib/routes) are real tests too, and a .tsx-only glob silently skipped
+		// them rather than failing loudly.
+		include: ["src/**/*.test.{ts,tsx}"],
 		setupFiles: ["./src/test/setup.ts"],
 	},
 	resolve: {
