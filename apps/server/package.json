@@ -5,7 +5,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "tsx watch src/index.ts",
-		"build": "tsup src/index.ts --format esm --dts --out-dir dist",
+		"build": "tsup",
 		"start": "node dist/index.js",
 		"test": "vitest run",
 		"test:watch": "vitest",
