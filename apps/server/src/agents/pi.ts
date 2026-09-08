@@ -63,6 +63,7 @@ import {
 	createWriteTool,
 } from "@earendil-works/pi-coding-agent";
 import { getDataDir } from "../db";
+import { logger } from "../logger";
 import {
 	getRepoMemory,
 	REPO_MEMORY_MAX_CHARS,
@@ -81,6 +82,8 @@ import {
 } from "./orchestratorTools";
 
 export type { AgentEvent, OrchestratorDeps };
+
+const log = logger.child({ component: "agents/pi" });
 
 import { buildCustomModel, getCustomProvider } from "./customProviders";
 import { isDilnaProvider } from "./providerConfig";
@@ -1697,8 +1700,9 @@ export async function checkSessionContext(
 		priorCompaction?.summary,
 	);
 	if (!result.ok) {
-		console.error(
-			`[pi] compaction summarization failed for session ${handle.worktreePath}: ${result.error instanceof Error ? result.error.message : String(result.error)}`,
+		log.error(
+			{ worktreePath: handle.worktreePath, err: result.error },
+			"compaction summarization failed",
 		);
 		return notDue;
 	}
@@ -1766,8 +1770,9 @@ export async function summarizeSessionForArchive(
 		priorCompaction?.summary,
 	);
 	if (!result.ok) {
-		console.error(
-			`[pi] archive summarization failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`,
+		log.error(
+			{ provider, modelId, err: result.error },
+			"archive summarization failed",
 		);
 		return null;
 	}

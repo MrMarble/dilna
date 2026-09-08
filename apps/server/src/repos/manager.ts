@@ -10,12 +10,15 @@ import {
 	repoMemory as repoMemoryTable,
 	repos as reposTable,
 } from "../db/schema";
+import { logger } from "../logger";
 // Cyclical with sessions/manager.ts (which imports `repoManager` from this
 // file) — safe here because both sides only reach for the other singleton
 // from inside async method bodies, never at module-evaluation time.
 import { sessionManager } from "../sessions/manager";
 import { deleteRepoSkills } from "../skills/store";
 import { languagesFromFiles, type TreeFile } from "./languages";
+
+const log = logger.child({ component: "repos/manager" });
 
 const execFileAsync = promisify(execFile);
 
@@ -306,10 +309,7 @@ export class RepoManager {
 			try {
 				await this.ensureGitDefaults(repo.path);
 			} catch (err) {
-				console.warn(
-					`[repos] failed to apply git defaults for ${repo.slug}:`,
-					err,
-				);
+				log.warn({ repoSlug: repo.slug, err }, "failed to apply git defaults");
 			}
 		}
 	}

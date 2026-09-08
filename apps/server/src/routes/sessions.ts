@@ -11,6 +11,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
+import { logger } from "../logger";
 import { RepoNotFoundError, repoManager } from "../repos/manager";
 import {
 	SessionManagerDrainingError,
@@ -20,6 +21,8 @@ import {
 } from "../sessions/manager";
 import { renderTranscript } from "../sessions/transcript";
 import { runSseLoop } from "./sse";
+
+const log = logger.child({ component: "routes/sessions" });
 
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
 
@@ -200,7 +203,7 @@ sessionsRoute.post(
 		const turnPromise = sessionManager.runTurn(id, body.text);
 		sessionManager.trackRunningTurn(id, turnPromise);
 		turnPromise.catch((err) => {
-			console.error(`[sessions] runTurn failed for ${id}:`, err);
+			log.error({ sessionId: id, err }, "runTurn failed");
 		});
 		return c.json({ ok: true, message }, 202);
 	},

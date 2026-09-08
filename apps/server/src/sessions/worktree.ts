@@ -3,6 +3,9 @@ import { mkdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { CommitInfo } from "@dilna/shared";
+import { logger } from "../logger";
+
+const log = logger.child({ component: "sessions/worktree" });
 
 const execFileAsync = promisify(execFile);
 
@@ -138,9 +141,9 @@ export async function initCodegraph(worktreePath: string): Promise<void> {
 			maxBuffer: 50 * 1024 * 1024,
 		});
 	} catch (err) {
-		console.error(
-			`[sessions] codegraph init failed for ${worktreePath} (continuing without it):`,
-			err,
+		log.error(
+			{ worktreePath, err },
+			"codegraph init failed (continuing without it)",
 		);
 	}
 }
