@@ -2,6 +2,7 @@ import * as React from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { Highlight, themes } from "prism-react-renderer";
 import remarkGfm from "remark-gfm";
+import { CopyButton } from "@/components/ui/copy-button";
 import { cn } from "@/lib/utils";
 import { useIsDark } from "@/lib/use-is-dark";
 
@@ -12,6 +13,25 @@ const DARK_THEME = themes.oneDark;
 function languageFrom(source?: string): string | null | undefined {
 	if (!source) return null;
 	return source.match(/\blanguage-([\w-]+)/)?.[1];
+}
+
+/** Pulls the fenced block's source text out of the `<code>` element
+ *  react-markdown hands to `pre` as its only child. Reading the child's props
+ *  rather than the DOM keeps the copy exact: by the time it's rendered the
+ *  body has been split into per-token <span>s, which only reassemble to the
+ *  original if you also reconstruct the whitespace between them. */
+function codeTextFrom(children: React.ReactNode): string {
+	const child = React.Children.toArray(children).find((node) =>
+		React.isValidElement(node),
+	) as React.ReactElement<{ children?: React.ReactNode }> | undefined;
+	const body = child?.props.children;
+	if (typeof body === "string") return body.replace(/\n$/, "");
+	// Defensive: a non-string body means an inline-formatted fence, which
+	// react-markdown doesn't produce today. Fall back to a flat join.
+	return React.Children.toArray(body)
+		.filter((node) => typeof node === "string")
+		.join("")
+		.replace(/\n$/, "");
 }
 
 /** Bodies of a fenced block rendered as prism-colored tokens, wrapped in a
@@ -116,16 +136,25 @@ const components: Components = {
 	),
 	// A fenced block is the <pre>-wrapped <code> you see here; keep <pre> as
 	// the chrome/scroller and let the `code` below provide its own element.
+	// The wrapper exists purely to anchor the copy button outside the
+	// scrolling <pre>, so it stays put when the block scrolls sideways.
 	pre: ({ className, children, ...props }) => (
-		<pre
-			className={cn(
-				"mb-2 overflow-x-auto rounded-md border border-zinc-200 bg-muted/60 p-3 font-mono text-xs leading-relaxed text-foreground dark:border-zinc-800",
-				className,
-			)}
-			{...props}
-		>
-			{children}
-		</pre>
+		<div className="group/code relative mb-2 last:mb-0">
+			<pre
+				className={cn(
+					"overflow-x-auto rounded-md border border-zinc-200 bg-muted/60 p-3 font-mono text-xs leading-relaxed text-foreground dark:border-zinc-800",
+					className,
+				)}
+				{...props}
+			>
+				{children}
+			</pre>
+			<CopyButton
+				getText={() => codeTextFrom(children)}
+				label="Copy code"
+				className="absolute top-1.5 right-1.5 bg-muted/80 opacity-0 backdrop-blur-sm transition-opacity focus-visible:opacity-100 group-hover/code:opacity-100"
+			/>
+		</div>
 	),
 	// Fenced (lang tagged) blocks get Prism token coloring; bare inline code
 	// keeps the familiar pill. Distinguish by the language-* class.
