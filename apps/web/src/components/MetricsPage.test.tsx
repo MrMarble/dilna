@@ -18,6 +18,7 @@ let nextSummary: UsageSummary = {
 	dailyByModel: [],
 	byRepo: [],
 	byModel: [],
+	topSessions: [],
 };
 
 vi.mock("@/api/client", () => ({
@@ -39,6 +40,7 @@ describe("MetricsPage", () => {
 			dailyByModel: [],
 			byRepo: [],
 			byModel: [],
+			topSessions: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		expect(
@@ -109,6 +111,17 @@ describe("MetricsPage", () => {
 				},
 			],
 			byModel: [],
+			topSessions: [
+				{
+					sessionId: "session-1",
+					repoId: "repo-1",
+					title: "Fix the flaky test",
+					...ZERO_TOTALS,
+					inputTokens: 1000,
+					outputTokens: 500,
+					costUsd: 1.2345,
+				},
+			],
 		};
 		render(
 			<MetricsPage
@@ -126,10 +139,12 @@ describe("MetricsPage", () => {
 			/>,
 		);
 
-		// Total cost card and the single repo's breakdown row both show
-		// $1.23 (same underlying total, since there's only one repo).
-		expect(await screen.findAllByText("$1.23")).toHaveLength(2);
-		expect(screen.getByText("my-repo")).toBeInTheDocument();
+		// Total cost card, the single repo's breakdown row, and the single
+		// session's row all show $1.23 (same underlying total).
+		expect(await screen.findAllByText("$1.23")).toHaveLength(3);
+		// Appears in both the repo breakdown row and the top-sessions row.
+		expect(screen.getAllByText("my-repo").length).toBeGreaterThan(0);
+		expect(screen.getByText("Fix the flaky test")).toBeInTheDocument();
 
 		// Legend lists every model present in the stacked daily chart.
 		expect(screen.getAllByText("claude-opus-5").length).toBeGreaterThan(0);
