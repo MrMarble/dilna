@@ -67,9 +67,22 @@ skillsRoute.post("/", zValidator("json", installBodySchema), async (c) => {
 	return c.json({ skill: result.skill }, result.replaced ? 200 : 201);
 });
 
-/** Turn a skill on/off for one Repo. */
+/**
+ * Turn a skill on/off for one Repo.
+ *
+ * `id` is `{source}/{slug}` (e.g. `owner/repo/skill`), so the client must
+ * `encodeURIComponent` it into one path segment rather than sending it as a
+ * literal multi-segment path. A prior version matched the raw slashes via
+ * `/:id{.+}/enabled`, which worked in isolation but silently broke once
+ * `sessionsRoute`'s `POST /orchestrator` + `POST /:id/messages` were also
+ * registered — Hono's RegExpRouter merges every mounted sub-app into one
+ * combined matcher, and that specific combination made it stop matching this
+ * route at all (a plain 404, not a validation error). Keeping `id` a normal
+ * single-segment param sidesteps the whole class of collision rather than
+ * chasing which future route addition would retrigger it.
+ */
 skillsRoute.post(
-	"/:id{.+}/enabled",
+	"/:id/enabled",
 	zValidator("json", enabledBodySchema),
 	async (c) => {
 		const id = c.req.param("id");
@@ -83,8 +96,9 @@ skillsRoute.post(
 	},
 );
 
-/** Uninstall globally — files, catalog row, and every Repo's enablement. */
-skillsRoute.delete("/:id{.+}", async (c) => {
+/** Uninstall globally — files, catalog row, and every Repo's enablement.
+ * Same encoded-single-segment `id` as the `/enabled` route above. */
+skillsRoute.delete("/:id", async (c) => {
 	await uninstallSkill(c.req.param("id"));
 	return c.json({ ok: true });
 });
