@@ -102,13 +102,18 @@ sibling `denyRead`), executed against a scratch directory standing in for
 3. `cat <sibling-worktree>/secret.txt` — fails "No such file or directory"
    (isolation preserved despite the shared ancestor bind).
 
-Not independently re-verified inside the real container (`DILNA_CONTAINERIZED=true`,
-`enableWeakerNestedSandbox`) — matches ADR-0010's own Verification section,
-which flagged the same gap for the original sandbox adoption. The mechanism
-tested here (bwrap bind/tmpfs mount-table behavior) is unrelated to what
-`enableWeakerNestedSandbox` changes (`/proc` handling only), so this is not
-expected to behave differently there, but it's called out rather than
-assumed.
+Not independently re-verified inside the real container
+(`DILNA_CONTAINERIZED=true`, `enableWeakerNestedSandbox`) at the time this
+section was first written — matching ADR-0010's own Verification section,
+which flagged the same gap for the original sandbox adoption. That gap
+turned out to matter: re-verified since, by building dilna's actual Docker
+image and running it with production's `seccomp-bubblewrap.json` profile —
+see Follow-up 2 below, which found and fixed a real bug (pnpm's own hardlink
+auto-detection) that only surfaced there, not in this bare-host mechanism
+test. This bare-`bwrap` result was correct as far as it went (the mount
+topology genuinely behaves as tested), it just wasn't the whole picture; the
+prediction made here at the time ("not expected to behave differently
+there") was wrong.
 
 ## Consequences
 
@@ -137,3 +142,115 @@ assumed.
   `grep`/`find`/`ls` tools are unaffected: their confinement
   (`confinement.ts`'s `beforeToolCall` hook) is independent of bwrap and
   unchanged by this decision.
+
+## Follow-up: the mount-topology fix alone didn't work — `npm_config_store_dir` is inert for pnpm
+
+Reported still reproducing after this fix shipped, by a real Session working
+against the deployed pod: `pnpm store path` reported pnpm's own
+`$XDG_DATA_HOME/pnpm/store` default (`toolchain-home/xdg-data/pnpm/store/v11`),
+not `PNPM_STORE_DIR`'s new location, despite `toolchainEnv()` already setting
+`npm_config_store_dir` to point there. The Session's own investigation
+(hardlinking *within* that XDG-derived store succeeded — link count 2 — but
+hardlinking from it *into* the worktree failed `EXDEV`) independently
+rediscovered this ADR's core mechanism from scratch, correctly, before
+landing on the wrong root cause ("the two paths aren't really on the same
+mount despite matching `stat -c %d`" — true, but the fixable part was which
+store path pnpm was even using).
+
+Root cause, confirmed directly against a real `pnpm` outside dilna's code
+(`env -i ... npm_config_store_dir=<path> pnpm config get store-dir` → prints
+`undefined`, vs. `npm_config_registry=<url> pnpm config get registry` →
+correctly overridden): unlike every other config key `toolchainEnv()` sets
+this way, pnpm's `store-dir` does not honor the shared `npm_config_*`
+environment-variable convention at all — `PNPM_STORE_DIR`'s relocation
+(Decision, above) was therefore having zero effect in production; the
+sandboxed bash tool's `pnpm` was always resolving its store from
+`XDG_DATA_HOME`, itself bound as its own separate bwrap mount, so `EXDEV`
+never went away.
+
+The actually-honored variable, confirmed the same way: `PNPM_CONFIG_STORE_DIR`.
+`pnpm store path` picks it up immediately, and — checked with a real
+`pnpm install` of a real package, run through the identical
+`SandboxManager.initialize`/`wrapWithSandbox` code path `pi.ts` uses, with
+`PNPM_CONFIG_STORE_DIR` set to a store nested under the bound ancestor — every
+installed file in `node_modules/.pnpm` came back with link count 2 (store and
+worktree entry), not 1. This is the same class of gap ADR-0010's own
+Follow-ups document repeatedly (a grant or a redirect that's *inert* rather
+than wrong, so it fails silently and looks like something else): the
+mount-topology diagnosis and fix in this ADR's main text were both correct,
+they just never reached pnpm because the env var carrying `PNPM_STORE_DIR`'s
+value to it was never the one pnpm reads.
+
+Fixed by changing `toolchainEnv()` (`pi.ts`) to set `PNPM_CONFIG_STORE_DIR`
+instead of `npm_config_store_dir`. No other part of the Decision changes —
+`PNPM_STORE_DIR`'s value and the `WORKTREES_DIR` ancestor-bind/sibling-mask
+mechanism were already correct; only the variable name carrying the value
+into the sandboxed process was wrong.
+
+The `PNPM_CONFIG_STORE_DIR` fix above was itself only verified on a bare
+dev host, not inside dilna's actual container — the exact gap this ADR's
+Verification section already flagged as open. Closing it turned up a third,
+independent bug (next Follow-up), so treat this section's own "fixed" as
+provisional; it was correct but insufficient on its own.
+
+## Follow-up 2: still copying inside the real container — pnpm's own hardlink auto-detection is a false negative here
+
+Verified by building dilna's actual Docker image and running it with the
+same `seccomp-bubblewrap.json` profile `docker-compose.yml` uses (the exact
+gap the original Verification section left open — bare-host `bwrap` isn't
+the same as bwrap inside an unprivileged container with
+`enableWeakerNestedSandbox: true` and dilna's egress-proxy seccomp filter
+layered on top). A real `pnpm install` against a Docker anonymous volume at
+`/data` (same shape as the production Longhorn PVC: one separate mount,
+`WORKTREES_DIR` and the store both nested under it), through the identical
+`SandboxManager.wrapWithSandbox` code path with `PNPM_CONFIG_STORE_DIR`
+correctly set (confirmed: store populated at the intended path, not the old
+XDG default) — still came back with every installed file at link count 1.
+Copying, still, despite both Follow-ups above being individually correct and
+individually verified.
+
+Isolated by testing progressively closer to what pnpm itself does, all
+through the identical wrapped sandbox command:
+
+1. A plain coreutils `ln` between the store and the worktree — succeeded,
+   link count 2.
+2. A bare bwrap invocation reproducing the exact `--bind`/`--tmpfs` argument
+   shape `wrapWithSandbox` generates (dumped and inspected directly) — also
+   succeeded. The generated bwrap arguments for the filesystem portion are
+   byte-for-byte identical whether `enableWeakerNestedSandbox` is on or off;
+   only the trailing `--proc`/`--cap-drop` handling differs, so neither is
+   itself the cause.
+3. Node's own `fs.linkSync` between the same two paths, run inside the same
+   wrapped sandbox (ruling out the layered seccomp filter — `vendor/seccomp/
+   .../apply-seccomp` — blocking the syscall specifically for Node) —
+   succeeded, `nlink: 2`.
+4. `pnpm install --package-import-method=hardlink` (forcing the method
+   instead of pnpm's default `auto`) — succeeded, link count 2, same
+   environment, same store, same everything else.
+
+So the mechanism this ADR built (mount topology, then the right env var to
+reach pnpm) is sound end-to-end — every direct probe succeeds — but pnpm's
+own `auto` capability detection decides "copy" anyway. Not confirmed against
+pnpm's own source, but the shape strongly suggests the probe runs against
+`TMPDIR` rather than against the real worktree: `sandbox-runtime` forces
+`TMPDIR` to its own default write path (`SANDBOX_DEFAULT_WRITE_PATHS`'s doc
+comment in `pi.ts`), which is its own separate `allowWrite` entry and
+therefore its own separate bwrap mount — genuinely cross-mount from the
+store, unlike the real worktree. If pnpm's auto-probe tests
+store-to-`TMPDIR` rather than store-to-target, it would correctly observe
+`EXDEV` for that pair and wrongly generalize "hardlinking doesn't work here"
+for every pair, including the one that actually matters.
+
+Fixed by adding `PNPM_CONFIG_PACKAGE_IMPORT_METHOD: "hardlink"` to
+`toolchainEnv()` (`pi.ts`), forcing the method instead of trusting the
+auto-detection — verified (same containerized setup, same
+`PNPM_CONFIG_STORE_DIR`, no CLI flag, purely via the two env vars
+`toolchainEnv()` now sets) to produce link count 2 with a clean install and
+no errors. This is a deliberate a-priori override, not a workaround pending
+a better fix: `PNPM_STORE_DIR`'s doc comment already establishes "store and
+worktree always share one mount" as an invariant this code maintains by
+construction, so skipping a probe that can't see that invariant and forcing
+the method it should have chosen anyway costs nothing. `PNPM_CONFIG_STORE_DIR`
+was checked for the same `PNPM_CONFIG_*` vs. `npm_config_*` split from
+Follow-up 1 (`npm_config_package_import_method` is equally inert) before
+settling on this one.
