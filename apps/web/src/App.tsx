@@ -57,6 +57,8 @@ export function App() {
 		{},
 	);
 	const [loadingRepos, setLoadingRepos] = useState(true);
+	// Distinct from `loadingRepos` (the initial fetch) — see pullRepos.
+	const [pullingRepos, setPullingRepos] = useState(false);
 	const [repoError, setRepoError] = useState<string | null>(null);
 	const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
 	const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
@@ -132,27 +134,35 @@ export function App() {
 	// origin remote (a bare clone otherwise has no way to pick up upstream
 	// commits — see RepoManager.pull) before reloading the list. A repo whose
 	// remote is unreachable shouldn't block the others from updating.
+	//
+	// Tracked by its own `pullingRepos` flag rather than `loadingRepos`: this
+	// takes seconds (a network fetch per repo) and the sidebar already holds a
+	// rendered repo list, so it drives a spinning refresh icon instead of the
+	// initial-load skeleton, and guards against a second concurrent pull.
 	const pullRepos = useCallback(async () => {
-		setLoadingRepos(true);
+		if (pullingRepos) return;
+		setPullingRepos(true);
 		setRepoError(null);
-		const results = await Promise.allSettled(
-			repos.map((r) => api.repos.pull(r.id)),
-		);
-		const failed = results.filter((r) => r.status === "rejected").length;
-		if (failed > 0) {
-			setRepoError(
-				`failed to pull ${failed} of ${results.length} repositor${results.length === 1 ? "y" : "ies"}`,
-			);
-		}
 		try {
-			const { repos: updated } = await api.repos.list();
-			setRepos(updated);
-		} catch (e) {
-			setRepoError(e instanceof Error ? e.message : "failed to load repos");
+			const results = await Promise.allSettled(
+				repos.map((r) => api.repos.pull(r.id)),
+			);
+			const failed = results.filter((r) => r.status === "rejected").length;
+			if (failed > 0) {
+				setRepoError(
+					`failed to pull ${failed} of ${results.length} repositor${results.length === 1 ? "y" : "ies"}`,
+				);
+			}
+			try {
+				const { repos: updated } = await api.repos.list();
+				setRepos(updated);
+			} catch (e) {
+				setRepoError(e instanceof Error ? e.message : "failed to load repos");
+			}
 		} finally {
-			setLoadingRepos(false);
+			setPullingRepos(false);
 		}
-	}, [repos]);
+	}, [repos, pullingRepos]);
 
 	useEffect(() => {
 		reloadRepos();
@@ -409,6 +419,9 @@ export function App() {
 		}
 	}, [selectedRepoId, creatingSession, handleSessionCreated]);
 
+	// Sessions with a DELETE in flight — see handleDeleteSession.
+	const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
+
 	const [creatingOrchestrator, setCreatingOrchestrator] = useState(false);
 	const handleNewOrchestratorSession = useCallback(async () => {
 		if (creatingOrchestrator) return;
@@ -440,8 +453,19 @@ export function App() {
 		return () => document.removeEventListener("keydown", onKeyDown);
 	}, [handleNewSession]);
 
+	// Deleting a Session is slow (up to ~10s: the agent is killed, the
+	// Session is archived per ADR-0024 — an LLM summarization call — and the
+	// worktree is removed), and until it resolves the row just sits there
+	// looking untouched. Rather than optimistically dropping the row (which
+	// would silently "succeed" on failure, and lose the Session from the UI
+	// while its agent is still being torn down), keep it rendered and mark it
+	// pending: the Sidebar highlights it in red, and a second click is a
+	// no-op. The id is cleared on failure so the row returns to normal, and
+	// on success too — harmlessly, since the row is gone by then.
 	const handleDeleteSession = useCallback(
 		async (id: string) => {
+			if (deletingSessionIds.includes(id)) return;
+			setDeletingSessionIds((prev) => [...prev, id]);
 			try {
 				await api.sessions.delete(id);
 				setSessionsById((prev) => {
@@ -457,9 +481,11 @@ export function App() {
 				}
 			} catch (e) {
 				console.error(e);
+			} finally {
+				setDeletingSessionIds((prev) => prev.filter((x) => x !== id));
 			}
 		},
-		[selectedSessionId, selectedRepoId, repos],
+		[selectedSessionId, selectedRepoId, repos, deletingSessionIds],
 	);
 
 	const handleOpenMetrics = useCallback(() => {
@@ -502,6 +528,7 @@ export function App() {
 		selectedRepoId,
 		onSelectRepo: handleSelectRepo,
 		onRefreshRepos: pullRepos,
+		refreshingRepos: pullingRepos,
 		onNewSession: handleNewSession,
 		creatingSession,
 		selectedSessionId,
@@ -517,6 +544,7 @@ export function App() {
 		creatingOrchestrator,
 		onSelectOrchestratorSession: handleSelectOrchestratorSession,
 		unreadBySessionId,
+		deletingSessionIds,
 		notificationsEnabled,
 		toggleNotifications,
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
@@ -546,6 +574,10 @@ export function App() {
 							repo={selectedRepo}
 							selectedSession={selectedSession}
 							onDeleteSession={handleDeleteSession}
+							deletingSession={
+								selectedSession !== null &&
+								deletingSessionIds.includes(selectedSession.id)
+							}
 							menuTrigger={mobileSheet.menuTrigger}
 							filesTrigger={mobileSheet.filesTrigger}
 							sidebarCollapsed={isDesktop && sidebarCollapsed}

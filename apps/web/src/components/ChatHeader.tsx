@@ -4,6 +4,7 @@ import {
 	FileDiff,
 	FolderGit2,
 	Link as LinkIcon,
+	LoaderCircle,
 	Menu,
 	PanelLeft,
 	PanelRight,
@@ -15,11 +16,16 @@ import { StatusDot } from "@/components/StatusDot";
 import { UsageBadge } from "@/components/UsageBadge";
 import type { MobileSheetTrigger } from "@/hooks/useMobileSheet";
 import { assistantDisplayName } from "@/lib/agent-labels";
+import { cn } from "@/lib/utils";
 
 type Props = {
 	repo: Repo;
 	selectedSession: SessionView | null;
 	onDeleteSession: (id: string) => void;
+	/** True while this Session's DELETE is in flight (it takes up to ~10s —
+	 * see App.handleDeleteSession). Swaps the trash icon for a spinner and
+	 * blocks a duplicate click. */
+	deletingSession?: boolean;
 	/** Below the 768px breakpoint (issue #12) these drive the shared mobile
 	 * bottom sheet in place of the desktop Sidebar/ContextPanel; hidden via
 	 * `md:hidden` above the breakpoint, where the desktop panels are always
@@ -45,6 +51,7 @@ export function ChatHeader({
 	repo,
 	selectedSession,
 	onDeleteSession,
+	deletingSession = false,
 	menuTrigger,
 	filesTrigger,
 	sidebarCollapsed,
@@ -102,10 +109,21 @@ export function ChatHeader({
 					<button
 						type="button"
 						onClick={() => onDeleteSession(selectedSession.id)}
-						title="Delete session"
-						className="hidden rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-destructive md:inline-flex"
+						disabled={deletingSession}
+						aria-busy={deletingSession}
+						title={deletingSession ? "Deleting session…" : "Delete session"}
+						className={cn(
+							"hidden rounded-md p-1.5 transition-colors md:inline-flex",
+							deletingSession
+								? "cursor-not-allowed text-destructive"
+								: "text-muted-foreground hover:bg-accent hover:text-destructive",
+						)}
 					>
-						<Trash2 className="size-3.5" />
+						{deletingSession ? (
+							<LoaderCircle className="size-3.5 animate-spin" />
+						) : (
+							<Trash2 className="size-3.5" />
+						)}
 					</button>
 					{contextCollapsed && onExpandContext && (
 						<button
