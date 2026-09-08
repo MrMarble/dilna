@@ -1,6 +1,14 @@
 [tools]
-node = "24.18.0"
+# pnpm listed before node: mise resolves same-named binaries (`mise which`,
+# `mise exec`, shims) in [tools] declaration order, and node's own bin dir
+# can carry a `pnpm` symlink to corepack (planted by any past `corepack
+# enable`/`prepare` invocation, even from a since-fixed session, since
+# TOOLCHAIN_HOME is a shared, durable volume). Listing pnpm first makes
+# mise's real pnpm install always win that resolution, regardless of
+# whether such a stray shim exists. See apps/server/src/agents/pi.ts's
+# toolchainEnv() comment for the corepack-shim history.
 pnpm = "11.10.0"
+node = "24.18.0"
 
 [env]
 _.file = ".env"
