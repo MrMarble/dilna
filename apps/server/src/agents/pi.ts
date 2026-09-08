@@ -68,6 +68,11 @@ import {
 	REPO_MEMORY_MAX_CHARS,
 	setRepoMemory,
 } from "../repos/memory";
+import {
+	formatSkillsPrompt,
+	type LoadedSkill,
+	loadSkillsForRepo,
+} from "../skills/loader";
 import { createConfinementHook } from "./confinement";
 import {
 	createOrchestratorTools,
@@ -488,6 +493,63 @@ function createUpdateRepoMemoryTool(
 	};
 }
 
+const READ_SKILL_TOOL_DESCRIPTION = `Load the full instructions for one of the skills listed under SKILLS in your system prompt. Those listings are name + description only — the actual procedure is not in your context until you call this. Pass the skill's exact name. Call it as soon as a listed skill looks relevant to the task, and follow what it says; skills are installed deliberately for this Repo, so a matching one is the intended way to do the work.`;
+
+const readSkillSchema = Type.Object({ name: Type.String() });
+
+/**
+ * The read half of issue #60's progressive disclosure: skill bodies stay out
+ * of the system prompt (which only lists name + description) until the model
+ * asks for one by name. `skills` is the already-loaded set for this Session's
+ * Repo, so this never re-reads disk mid-turn.
+ */
+function createReadSkillTool(
+	skills: LoadedSkill[],
+): AgentTool<typeof readSkillSchema> {
+	return {
+		name: "read_skill",
+		label: "Read skill",
+		description: READ_SKILL_TOOL_DESCRIPTION,
+		parameters: readSkillSchema,
+		execute: async (_toolCallId, params) => {
+			if (skills.length === 0) {
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: "No skills are enabled for this Repo.",
+						},
+					],
+					details: {},
+				};
+			}
+			const wanted = params.name.trim().toLowerCase();
+			const skill =
+				skills.find((s) => s.name.toLowerCase() === wanted) ??
+				skills.find((s) => s.name.toLowerCase().includes(wanted));
+			if (!skill) {
+				throw new Error(
+					`No skill named "${params.name}". Enabled skills: ${skills
+						.map((s) => s.name)
+						.join(", ")}.`,
+				);
+			}
+			// `filePath` is included because a skill's SKILL.md routinely links to
+			// sibling files (`tests.md`, `agents/*.yaml`) by relative path —
+			// without the absolute location the agent can't resolve those.
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `${skill.content}\n\n(Skill file: ${skill.filePath} — referenced files sit alongside it.)`,
+					},
+				],
+				details: {},
+			};
+		},
+	};
+}
+
 /**
  * Every other session's worktree directory under `WORKTREES_DIR`
  * (`<slug>/<session-id>`, per `repos/manager.ts`'s layout), excluding
@@ -722,8 +784,13 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 
 	const hasCodegraph = existsSync(path.join(opts.worktreePath, ".codegraph"));
 
+	// Skills enabled for this Repo (issue #60). Installed globally, enabled
+	// per-Repo, so a Session only ever sees the subset its own Repo turned on.
+	const repoSkills = await loadSkillsForRepo(opts.repoId);
+
 	const systemPrompt =
 		DILNA_AGENT_CONTEXT +
+		formatSkillsPrompt(repoSkills) +
 		(nestedInCheckout
 			? `\n\nNote: this worktree happens to live nested inside dilna's own checkout on the host filesystem — the read/grep/find/ls tools are confined to this worktree regardless, so dilna's own project files are not reachable from here.`
 			: "") +
@@ -768,6 +835,11 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		}),
 		createReadRepoMemoryTool(opts.repoId),
 		createUpdateRepoMemoryTool(opts.repoId),
+		// Progressive disclosure (issue #60): only the enabled skills'
+		// name/description are in the system prompt above; this loads one's
+		// full text on demand. Registered unconditionally so the tool exists
+		// even when the list is empty — it just reports nothing is installed.
+		createReadSkillTool(repoSkills),
 		// Runs in the server process, not sandboxed bash — no new capability
 		// vs. curl-through-bash (the sandbox network policy already allows all
 		// domains); see webFetchTool.ts's module doc comment and ADR-0026.

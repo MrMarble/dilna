@@ -19,6 +19,7 @@
  *   /                              → { kind: "home" }
  *   /metrics                       → { kind: "metrics" }
  *   /settings                      → { kind: "settings" }
+ *   /skills                        → { kind: "skills" }
  *   /orchestrator                  → { kind: "orchestrator", sessionId: null }
  *   /orchestrator/<session-id>     → { kind: "orchestrator", sessionId }
  *   /<repo-slug>                   → { kind: "repo", repoSlug, sessionId: null }
@@ -32,18 +33,25 @@ export type Route =
 	| { kind: "home" }
 	| { kind: "metrics" }
 	| { kind: "settings" }
+	| { kind: "skills" }
 	| { kind: "orchestrator"; sessionId: string | null }
 	| { kind: "repo"; repoSlug: string; sessionId: string | null };
 
 /** Top-level segments claimed by standalone views, and therefore never
  * interpretable as a repo slug. */
-const RESERVED_SEGMENTS = new Set(["metrics", "settings", "orchestrator"]);
+const RESERVED_SEGMENTS = new Set([
+	"metrics",
+	"settings",
+	"skills",
+	"orchestrator",
+]);
 
 export function parseRoute(pathname: string): Route {
 	const [first, second] = pathname.split("/").filter(Boolean);
 	if (!first) return { kind: "home" };
 	if (first === "metrics") return { kind: "metrics" };
 	if (first === "settings") return { kind: "settings" };
+	if (first === "skills") return { kind: "skills" };
 	if (first === "orchestrator")
 		return { kind: "orchestrator", sessionId: second ?? null };
 	return { kind: "repo", repoSlug: first, sessionId: second ?? null };
@@ -57,6 +65,8 @@ export function routePath(route: Route): string {
 			return "/metrics";
 		case "settings":
 			return "/settings";
+		case "skills":
+			return "/skills";
 		case "orchestrator":
 			return route.sessionId
 				? `/orchestrator/${route.sessionId}`

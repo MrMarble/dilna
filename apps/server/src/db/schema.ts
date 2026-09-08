@@ -1,5 +1,11 @@
 import { relations } from "drizzle-orm";
-import { integer, real, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+	integer,
+	primaryKey,
+	real,
+	sqliteTable,
+	text,
+} from "drizzle-orm/sqlite-core";
 
 const now = () => Math.floor(Date.now() / 1000);
 
@@ -159,6 +165,65 @@ export const repoMemory = sqliteTable("repo_memory", {
 	content: text("content").notNull().default(""),
 	updatedAt: integer("updated_at").notNull().$defaultFn(now),
 });
+
+/**
+ * A globally-installed agent skill (issue #60): one row per skill, keyed by
+ * the registry-stable `{source}/{slug}` id (e.g. `mattpocock/skills/tdd`).
+ *
+ * Install is **global, enablement is per-Repo** — there is exactly one copy
+ * of a skill's files on disk (`<data>/skills/<id>/`, see repos/skills.ts),
+ * and `repo_skills` below records which Repos it's turned on for. That's why
+ * this table has no `repoId`: installing the same skill for a second Repo
+ * must not duplicate the download.
+ *
+ * `name`/`description` are denormalized out of the skill's SKILL.md
+ * frontmatter at install time so the management list can render without
+ * re-reading (and re-parsing) every skill folder off disk on each request.
+ * The files on disk stay the source of truth for skill *content*; these two
+ * columns are a cache of its metadata, refreshed on reinstall.
+ */
+export const skills = sqliteTable("skills", {
+	/** `{source}/{slug}`, matching skills.sh's stable id — also the on-disk
+	 * directory name under `<data>/skills/`. */
+	id: text("id").primaryKey(),
+	/** Owner/repo the skill came from (`mattpocock/skills`), or the pasted
+	 * URL's equivalent. Blank for a skill installed from a raw upload. */
+	source: text("source").notNull(),
+	/** Skill folder name / registry slug (`tdd`). */
+	slug: text("slug").notNull(),
+	/** `name` from SKILL.md frontmatter (required by the spec). */
+	name: text("name").notNull(),
+	/** `description` from SKILL.md frontmatter — what the model matches on to
+	 * decide a skill is relevant, so it's shown verbatim in the UI. */
+	description: text("description").notNull().default(""),
+	/** Where the files came from, for re-install/update and UI attribution:
+	 * the GitHub repo URL, or the user-pasted URL. */
+	sourceUrl: text("source_url").notNull().default(""),
+	installedAt: integer("installed_at").notNull().$defaultFn(now),
+	updatedAt: integer("updated_at").notNull().$defaultFn(now),
+});
+
+/**
+ * Which Repos a globally-installed skill is enabled for (issue #60). Presence
+ * of a row means enabled; disabling deletes the row rather than flipping a
+ * flag, so "enabled" needs no default-value reasoning for Repos that existed
+ * before a skill was installed — a skill is off everywhere until explicitly
+ * turned on, which is also the safer default for third-party content landing
+ * in an Agent's context.
+ *
+ * Composite primary key (`skillId`, `repoId`) makes the enable path an
+ * idempotent upsert. No FKs, matching the rest of this schema; both sides are
+ * cleaned up explicitly (skill uninstall, and `RepoManager.delete`).
+ */
+export const repoSkills = sqliteTable(
+	"repo_skills",
+	{
+		skillId: text("skill_id").notNull(),
+		repoId: text("repo_id").notNull(),
+		enabledAt: integer("enabled_at").notNull().$defaultFn(now),
+	},
+	(t) => [primaryKey({ columns: [t.skillId, t.repoId] })],
+);
 
 /**
  * Last-known account-wide plan rate-limit reading per window (one row per
