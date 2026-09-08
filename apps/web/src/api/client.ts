@@ -465,14 +465,20 @@ export const api = {
 				method: "POST",
 				body: JSON.stringify({ url }),
 			}),
-		/** Turn a skill on/off for one Repo. */
+		/** Turn a skill on/off for one Repo. `id` (`{source}/{slug}`) is
+		 * encoded into one path segment — see skills.ts's route comment. */
 		setEnabled: (id: string, repoId: string, enabled: boolean) =>
-			request<{ ok: boolean }>(`/api/skills/${id}/enabled`, {
-				method: "POST",
-				body: JSON.stringify({ repoId, enabled }),
-			}),
+			request<{ ok: boolean }>(
+				`/api/skills/${encodeURIComponent(id)}/enabled`,
+				{
+					method: "POST",
+					body: JSON.stringify({ repoId, enabled }),
+				},
+			),
 		/** Uninstall globally — files, catalog row, all enablement rows. */
 		uninstall: (id: string) =>
-			request<{ ok: boolean }>(`/api/skills/${id}`, { method: "DELETE" }),
+			request<{ ok: boolean }>(`/api/skills/${encodeURIComponent(id)}`, {
+				method: "DELETE",
+			}),
 	},
 };
