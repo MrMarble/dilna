@@ -193,3 +193,27 @@ second-or-later compaction now also passes the prior summary to
 supported for exactly this), asking for an *updated* summary covering only
 what's newly being folded in, rather than re-summarizing everything before
 the new cutoff from scratch each time.
+
+## Addendum: where the implementation lives (issue #175)
+
+The decisions above are unchanged; only their location moved. The policy —
+`pickCutPoint`, `buildInitialMessages`, `estimateSessionContext`,
+`checkSessionContext` and their `SessionCompaction` type — now lives in
+`apps/server/src/sessions/context.ts`, not `agents/pi.ts`. A cut point, a
+reserve-token budget and "what a summary replaces" are Session-lifetime
+policy over a Session's persisted history; nothing about them is specific to
+`pi-agent-core`.
+
+What stayed in `pi.ts` is the part that genuinely needs the backend, behind
+two narrow exports the policy calls: `resolveSummarizationModel` (catalog
+lookup, still the `lookupModel` machinery described above) and
+`summarizeMessages` (the `summarizationModels` shim plus `generateSummary`,
+flattening pi's `Result` to `string | null`). Transcript conversion
+(`dilnaMessagesToInitialState`) also stays adapter-side.
+
+The dependency direction is now one-way: `sessions/` imports `agents/`, never
+the reverse. `checkSessionContext` no longer takes a `PiHandle` and no longer
+mutates a live `Agent`'s transcript in place — it returns the rebuilt context
+as `SessionContextCheck.newContext`, and `SessionManager` (which owns the
+handle, and has to reset its `persistedCount` high-water mark against that
+array anyway) applies it.

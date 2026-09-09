@@ -4,8 +4,8 @@ import type {
 	SessionKind,
 	SessionView,
 } from "@dilna/shared";
-import type { SessionCompaction } from "../agents/pi";
 import type { sessions as sessionsTable } from "../db/schema";
+import type { SessionCompaction } from "./context";
 
 /**
  * Row/domain/view mapping for `sessions`, extracted from `SessionManager`
@@ -63,8 +63,8 @@ export function defaultSessionTitle(id: string): string {
 	return `Session ${id.slice(0, 4)}`;
 }
 
-/** `Session`'s two compaction columns (ADR-0023), reshaped into pi.ts's
- * `SessionCompaction` — the one place that pairing happens, so every caller
+/** `Session`'s two compaction columns (ADR-0023), reshaped into
+ * `context.ts`'s `SessionCompaction` — the one place that pairing happens, so every caller
  * (the turn-end check, the idle-session REST estimate) treats "only one of
  * the two columns is set" the same way (falls back to `null`, i.e. no
  * compaction — shouldn't happen since both are always written together, but

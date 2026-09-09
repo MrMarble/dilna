@@ -127,3 +127,13 @@ scattered direct table access.
   is updated to mention the two new ones and when to reach for them (a
   Session that no longer shows up in `dilna_list_sessions` may have been
   deleted-and-archived, not merely never having existed).
+
+## Addendum: where the implementation lives (issue #175)
+
+`summarizeSessionForArchive` moved from `agents/pi.ts` to
+`apps/server/src/sessions/context.ts` alongside ADR-0023's compaction policy
+it shares its shape with — see that ADR's own addendum for the reasoning and
+for the two narrow `pi.ts` exports (`resolveSummarizationModel`,
+`summarizeMessages`) both paths now call. The decision itself —
+summarize-then-delete, best-effort, prior summary reused as an update — is
+unchanged.
