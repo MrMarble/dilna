@@ -4,7 +4,6 @@ import path from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import type {
 	AgentStreamEvent,
-	ContextUsageEstimate,
 	Message,
 	MessagePart,
 	UsageTotals,
@@ -14,11 +13,7 @@ import {
 	type AgentEvent,
 	type AgentMessage,
 	type AgentTool,
-	DEFAULT_COMPACTION_SETTINGS,
-	estimateContextTokens,
-	estimateTokens,
 	generateSummary,
-	shouldCompact,
 } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
@@ -379,8 +374,8 @@ function ensureSandboxInitialized(): Promise<void> {
  * or a stored custom provider's own model list (customProviders.ts) —
  * dilna's answer to pi's CLI-only `~/.pi/agent/models.json`. Shared by
  * {@link resolveConfiguredModel} (throws on a miss) and
- * {@link resolveModelById} (returns `undefined`), the only two lookup
- * shapes callers need.
+ * {@link resolveSummarizationModel} (returns `undefined`), the only two
+ * lookup shapes callers need.
  */
 function lookupModel(
 	provider: string,
@@ -1109,31 +1104,27 @@ export function dilnaMessagesToInitialState(
 	return out;
 }
 
-// ---- Compaction (ADR-0023) --------------------------------------------------
+// ---- Summarization support (ADR-0023 / ADR-0024) ---------------------------
 
 /**
- * Prefix wrapped around a compaction summary before it's seeded as the
- * leading message of a Session's context — framed as prior context rather
- * than a fresh instruction, since it stands in for everything up to
- * `compactedThroughMessageId` rather than something the user just said.
- */
-const COMPACTION_SUMMARY_PREFACE =
-	"The following is a summary of earlier conversation history that was " +
-	"compacted to stay within the model's context window. Treat it as prior " +
-	"context, not a new instruction:\n\n";
-
-/**
+ * The compaction/archive *policy* lives in `sessions/context.ts` (issue
+ * #175) — a cut point, a token budget and what a summary replaces are
+ * Session-lifetime concerns, not adapter mechanics. What stays here is only
+ * the part that genuinely needs `pi-agent-core`/`pi-ai`: resolving a catalog
+ * `Model` ({@link resolveSummarizationModel}) and running the summarization
+ * round-trip ({@link summarizeMessages}). Both are called *by* that module;
+ * nothing here calls back into `sessions/`.
+ *
  * `generateSummary`'s `models: Models` parameter only ever calls
  * `completeSimple` on it (confirmed by reading pi-agent-core's
  * `completeSimpleWithRetries`, the only place `generateSummary` touches
  * `models`) — so rather than build a full `Models` registry (provider list,
  * auth resolution, model catalogs, the way `pi-coding-agent`'s harness does)
  * this satisfies just that one method, delegating to pi-ai's bare
- * `completeSimple` function with the same env-var API key lookup `startPi`'s
- * `Agent` construction already uses for its `streamFn`. Only `completeSimple`
- * is ever called on the result (see doc comment above) — the rest of the
- * `Models` interface (provider registry, auth, streaming) is intentionally
- * unused, hence the cast below.
+ * `completeSimple` function with the same API key lookup `startPi`'s `Agent`
+ * construction already uses for its `streamFn`. The rest of the `Models`
+ * interface (provider registry, auth, streaming) is intentionally unused,
+ * hence the cast below.
  */
 const summarizationModels = {
 	completeSimple: async (
@@ -1153,272 +1144,55 @@ const summarizationModels = {
  * configured — mirrors `resolveConfiguredModel` but for a possibly-different,
  * already-running Session (the effective provider/model is web-configurable
  * and can change under a long-lived Session; see `PiHandle`'s doc comment).
+ * `undefined` (rather than a throw) when the pair has fallen out of dilna's
+ * catalog: `sessions/context.ts`'s callers all degrade to "can't estimate,
+ * can't compact" rather than failing the Session operation in progress.
  */
-function resolveModelById(provider: string, modelId: string) {
+export function resolveSummarizationModel(
+	provider: string,
+	modelId: string,
+): Model<Api> | undefined {
 	return lookupModel(provider, modelId);
 }
 
 /**
- * Walk dilna's own message rows backward from the end, accumulating each
- * one's estimated token size (its own `dilnaMessagesToInitialState`
- * expansion, summed via pi-agent-core's `estimateTokens`) until
- * `keepRecentTokens` is reached. dilna's rows are already turn-granular —
- * one row per user/assistant turn, with any tool calls merged in (the
- * inverse of pi's per-tool-call transcript entries, see
- * `dilnaMessagesToInitialState`'s doc comment) — so this doubles as
- * pi-agent-core's own `findCutPoint` "snap to a turn boundary" requirement,
- * without needing pi's `Entry[]` session-log wrapper this function's inputs
- * never had in the first place.
+ * One summarization round-trip, as `sessions/context.ts`'s compaction and
+ * archive paths both need it: pi-agent-core's `generateSummary` over an
+ * already-converted transcript, on `model`, optionally *updating*
+ * `previousSummary` rather than re-deriving from scratch.
  *
- * Returns the index of the first message to keep verbatim; everything
- * before it is the summarization candidate.
+ * Flattens pi's `Result` into `string | null` so the policy module never has
+ * to know pi's result shape — a failure is data, not a throw, since neither
+ * caller treats it as fatal (the compaction check retries at the next turn;
+ * archival deletes the Session anyway). The concrete error is logged here,
+ * where it's still in its native shape.
  */
-export function pickCutPoint(
-	history: Message[],
-	keepRecentTokens: number,
-): number {
-	let kept = 0;
-	let index = history.length;
-	for (let i = history.length - 1; i >= 0; i--) {
-		const size = dilnaMessagesToInitialState([history[i] as Message]).reduce(
-			(sum, m) => sum + estimateTokens(m),
-			0,
-		);
-		if (kept > 0 && kept + size > keepRecentTokens) break;
-		kept += size;
-		index = i;
-	}
-	return index;
-}
-
-/** A Session's persisted compaction state ({@link sessions.compactedSummary}/
- * `.compactedThroughMessageId}), or `null` for a Session never compacted. */
-export type SessionCompaction = {
-	summary: string;
-	throughMessageId: string;
-} | null;
-
-/**
- * Build a fresh `Agent`'s `initialState.messages` from dilna's own message
- * history, folding in a stored compaction when one exists — shared by every
- * cold start (`SessionManager.startAgent`) and by
- * {@link checkSessionContext}'s own live-state rewrite, so both paths
- * produce identical context for the same `(history, compaction)` pair.
- */
-export function buildInitialMessages(
-	history: Message[],
-	compaction: SessionCompaction,
-): AgentMessage[] {
-	if (!compaction) return dilnaMessagesToInitialState(history);
-
-	const cutIndex = history.findIndex(
-		(m) => m.id === compaction.throughMessageId,
-	);
-	// A stale/missing pointer (shouldn't happen — messages are never deleted
-	// outside of session delete) degrades to the full raw history rather than
-	// silently dropping context.
-	const tail = cutIndex === -1 ? history : history.slice(cutIndex + 1);
-
-	const summaryMessage: AgentMessage = {
-		role: "user",
-		content: COMPACTION_SUMMARY_PREFACE + compaction.summary,
-		timestamp: Date.now(),
-	};
-	return [summaryMessage, ...dilnaMessagesToInitialState(tail)];
-}
-
-/**
- * Estimate against `model`'s window, folding in `compaction` the same way
- * {@link buildInitialMessages} would seed a fresh `Agent` — so the number
- * reported always matches what the model actually sees, not dilna's raw
- * (never-shrinking) `messages` history.
- */
-function estimateFor(
-	model: NonNullable<ReturnType<typeof resolveModelById>>,
-	history: Message[],
-	compaction: SessionCompaction,
-): ContextUsageEstimate {
-	return {
-		tokens: estimateContextTokens(buildInitialMessages(history, compaction))
-			.tokens,
-		contextWindow: model.contextWindow,
-		reserveTokens: DEFAULT_COMPACTION_SETTINGS.reserveTokens,
-	};
-}
-
-/**
- * Same estimate as {@link checkSessionContext} computes, for a Session with
- * no live `Agent` (idle, never started, or respawned since) — used by
- * `GET /api/sessions/:id` so a page load/session switch shows the last-known
- * occupancy immediately, instead of the sidebar meter staying blank until
- * the Session's next turn (see `context_usage`'s doc comment in
- * packages/shared/src/events.ts). `provider`/`modelId` should be the
- * Session's live `PiHandle`'s captured values when one exists, or the
- * currently-effective config otherwise (the same resolution `startAgent`
- * would use if the Session resumed right now — see `PiHandle`'s doc comment
- * on why this can drift from what a still-running Session actually used).
- */
-export function estimateSessionContext(
-	provider: string,
-	modelId: string,
-	history: Message[],
-	compaction: SessionCompaction,
-): ContextUsageEstimate | null {
-	const model = resolveModelById(provider, modelId);
-	return model ? estimateFor(model, history, compaction) : null;
-}
-
-export type SessionContextCheck = {
-	/** `null` only when the Session's provider/model is no longer in dilna's
-	 * catalog (see `resolveModelById`) — nothing to report or compact
-	 * against. */
-	estimate: ContextUsageEstimate | null;
-	compaction: SessionCompaction;
-};
-
-/**
- * Run after a turn's messages are already durably persisted
- * (`SessionManager.persistMessagesFromAgent`) — estimates how much of the
- * live `Agent`'s context window is occupied (against `priorCompaction`, the
- * Session's already-stored compaction if any — estimating against raw
- * history instead would ignore that the live `Agent`'s actual context is
- * already the smaller, summarized one, and re-trigger compaction on
- * essentially every subsequent turn) and, once that crosses the budget
- * threshold, summarizes everything since `priorCompaction`'s cutoff but the
- * most recent `keepRecentTokens` worth of turns, mutating
- * `handle.agent.state.messages` in place so the *current* Session's context
- * shrinks immediately rather than only on its next cold start.
- *
- * A second (or later) compaction passes `priorCompaction.summary` to
- * `generateSummary` as its `previousSummary` — an *update* to the existing
- * summary covering only what's newly being folded in, not a from-scratch
- * re-summarization of everything before the new cutoff.
- *
- * Always returns an `estimate` (for the caller to broadcast as
- * `context_usage`, ADR-0023's addendum on UI visibility) alongside a
- * `compaction` to persist onto the `sessions` row — `compaction` is `null`
- * when compaction wasn't due, or when the summarization call failed (not
- * fatal to the turn that just completed; simply retried at the next turn's
- * check).
- */
-export async function checkSessionContext(
-	handle: PiHandle,
-	history: Message[],
-	priorCompaction: SessionCompaction,
-): Promise<SessionContextCheck> {
-	const model = resolveModelById(handle.provider, handle.model);
-	if (!model) return { estimate: null, compaction: null };
-
-	const estimate = estimateFor(model, history, priorCompaction);
-	const notDue: SessionContextCheck = { estimate, compaction: null };
-	if (
-		!shouldCompact(
-			estimate.tokens,
-			estimate.contextWindow,
-			DEFAULT_COMPACTION_SETTINGS,
-		)
-	) {
-		return notDue;
-	}
-
-	const cutFrom = priorCompaction
-		? Math.max(
-				0,
-				history.findIndex((m) => m.id === priorCompaction.throughMessageId) + 1,
-			)
-		: 0;
-	const tailHistory = history.slice(cutFrom);
-
-	const cutIndexInTail = pickCutPoint(
-		tailHistory,
-		DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
-	);
-	if (cutIndexInTail <= 0) return notDue;
-
-	const newlySummarized = tailHistory.slice(0, cutIndexInTail);
+export async function summarizeMessages(opts: {
+	model: Model<Api>;
+	messages: AgentMessage[];
+	reserveTokens: number;
+	previousSummary?: string;
+}): Promise<string | null> {
 	const result = await generateSummary(
-		dilnaMessagesToInitialState(newlySummarized),
+		opts.messages,
 		summarizationModels,
-		model,
-		estimate.reserveTokens,
+		opts.model,
+		opts.reserveTokens,
 		undefined,
 		undefined,
-		priorCompaction?.summary,
+		opts.previousSummary,
 	);
 	if (!result.ok) {
+		// Logged here, where the error is still in pi's native shape; both
+		// callers in `sessions/context.ts` treat `null` as non-fatal and don't
+		// re-log it.
 		log.error(
-			{ worktreePath: handle.worktreePath, err: result.error },
-			"compaction summarization failed",
-		);
-		return notDue;
-	}
-
-	const compaction: SessionCompaction = {
-		summary: result.value,
-		// Safe: `cutIndexInTail > 0` was checked above, so `newlySummarized` is
-		// non-empty.
-		throughMessageId: (newlySummarized.at(-1) as Message).id,
-	};
-	const newMessages = buildInitialMessages(history, compaction);
-	handle.agent.state.messages = newMessages;
-
-	// Report the *post*-compaction occupancy, not the stale pre-compaction
-	// number that triggered this — the whole point of compacting was to
-	// bring it back down.
-	return {
-		estimate: {
-			tokens: estimateContextTokens(newMessages).tokens,
-			contextWindow: estimate.contextWindow,
-			reserveTokens: estimate.reserveTokens,
-		},
-		compaction,
-	};
-}
-
-/**
- * Final summary for a Session about to be deleted (ADR-0024) — reuses the
- * same `generateSummary` call `checkSessionContext` makes, but produces one
- * summary covering the *entire* Session (no retained tail: there's no live
- * `Agent` left to keep serving one to). If the Session already has a stored
- * compaction, only the tail after its cutoff needs summarizing, passed as
- * `previousSummary` (an update, not a from-scratch re-summarization) — or,
- * if nothing happened since that cutoff, the existing summary is returned
- * verbatim with no LLM call at all. Returns `null` when there's nothing to
- * archive (`history` empty) or the provider/model can no longer be resolved;
- * the caller treats both as "skip archiving, delete anyway."
- */
-export async function summarizeSessionForArchive(
-	provider: string,
-	modelId: string,
-	history: Message[],
-	priorCompaction: SessionCompaction,
-): Promise<string | null> {
-	if (history.length === 0) return null;
-	const model = resolveModelById(provider, modelId);
-	if (!model) return null;
-
-	const cutFrom = priorCompaction
-		? Math.max(
-				0,
-				history.findIndex((m) => m.id === priorCompaction.throughMessageId) + 1,
-			)
-		: 0;
-	const tailHistory = history.slice(cutFrom);
-	if (tailHistory.length === 0) return priorCompaction?.summary ?? null;
-
-	const result = await generateSummary(
-		dilnaMessagesToInitialState(tailHistory),
-		summarizationModels,
-		model,
-		DEFAULT_COMPACTION_SETTINGS.reserveTokens,
-		undefined,
-		undefined,
-		priorCompaction?.summary,
-	);
-	if (!result.ok) {
-		log.error(
-			{ provider, modelId, err: result.error },
-			"archive summarization failed",
+			{
+				provider: opts.model.provider,
+				model: opts.model.id,
+				err: result.error,
+			},
+			"summarization failed",
 		);
 		return null;
 	}

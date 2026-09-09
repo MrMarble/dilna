@@ -17,10 +17,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
 	type AgentEvent,
-	buildInitialMessages,
 	chatPi,
-	checkSessionContext,
-	estimateSessionContext,
 	generateSessionTitle,
 	type OrchestratorDeps,
 	type PiHandle,
@@ -29,7 +26,6 @@ import {
 	piRoundToDilnaMessage,
 	startOrchestrator,
 	startPi,
-	summarizeSessionForArchive,
 } from "../agents/pi";
 import {
 	effectiveModel,
@@ -53,6 +49,12 @@ import {
 	listArchivedSessions,
 } from "./archive";
 import { type Listener, SessionBroadcaster } from "./broadcaster";
+import {
+	buildInitialMessages,
+	checkSessionContext,
+	estimateSessionContext,
+	summarizeSessionForArchive,
+} from "./context";
 import { computeChangedFiles } from "./diff";
 import {
 	applyEventToLiveTurn,
@@ -1214,6 +1216,11 @@ class SessionManager {
 	 * not routed through failTurn — the turn itself already completed
 	 * successfully; a missed check just gets retried at the next turn's
 	 * `agent_end`.
+	 *
+	 * The policy itself lives in `sessions/context.ts` (issue #175) and works
+	 * purely over persisted history; this method is the lifecycle-side wiring
+	 * around it — feed it the live handle's provider/model, then apply what it
+	 * returns to the live `Agent`, the `sessions` row, and the SSE stream.
 	 */
 	private async checkContextAndCompact(
 		id: string,
@@ -1222,19 +1229,26 @@ class SessionManager {
 	): Promise<void> {
 		if (session.kind !== "session") return;
 		try {
-			const { estimate, compaction } = await checkSessionContext(
-				active.handle,
+			const { estimate, compaction, newContext } = await checkSessionContext(
+				active.handle.provider,
+				active.handle.model,
 				await this.getMessages(id),
 				sessionCompactionOf(session),
 			);
-			if (compaction) {
-				// `checkSessionContext` replaced `handle.agent.state.messages`
-				// wholesale with a reconstruction of already-persisted dilna
+			if (compaction && newContext) {
+				// Swap the live `Agent` over to the compacted context so *this*
+				// Session shrinks immediately rather than only at its next cold
+				// start. Done here rather than inside `checkSessionContext`
+				// (which used to reach into the handle itself) because this is
+				// the only layer that owns the live handle — and it has to touch
+				// it either way for the high-water mark below.
+				active.handle.agent.state.messages = newContext;
+				// `newContext` is a reconstruction of already-persisted dilna
 				// rows (plus a synthetic summary message) — none of it is new
 				// data to persist, so the high-water mark must track the
 				// replacement array's own length, not grow from its prior
 				// value (see `ActiveAgent.persistedCount`'s doc comment).
-				active.persistedCount = active.handle.agent.state.messages.length;
+				active.persistedCount = newContext.length;
 				getDb()
 					.update(sessionsTable)
 					.set({
