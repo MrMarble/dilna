@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.3](https://github.com/MrMarble/dilna/compare/v0.23.2...v0.23.3) (2026-09-09)
+
+
+### Dependencies
+
+* **deps-dev:** bump vitest from 4.1.10 to 4.1.11 ([#180](https://github.com/MrMarble/dilna/issues/180)) ([12185de](https://github.com/MrMarble/dilna/commit/12185defb8c5eaa6a51c9b77d8d921f7f7c396f0))
+* **deps:** bump hono from 4.12.34 to 4.13.5 ([#181](https://github.com/MrMarble/dilna/issues/181)) ([171ca3b](https://github.com/MrMarble/dilna/commit/171ca3b4a7366acb7dfdf4fc99a610aed9a14758))
+
 ## [0.23.2](https://github.com/MrMarble/dilna/compare/v0.23.1...v0.23.2) (2026-09-08)
 
 
