@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/MrMarble/dilna/compare/v0.23.3...v0.24.0) (2026-09-10)
+
+
+### Features
+
+* deliver turn-completion notifications via Web Push ([#185](https://github.com/MrMarble/dilna/issues/185)) ([448b2a8](https://github.com/MrMarble/dilna/commit/448b2a8c67969b846cee4f0ba3813f41f0cb482b))
+
 ## [0.23.3](https://github.com/MrMarble/dilna/compare/v0.23.2...v0.23.3) (2026-09-09)
 
 
