@@ -40,10 +40,9 @@ import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
 import {
 	applyEventToLive,
-	foldTurnRows,
 	type LiveMessage,
+	mergeRenderedMessages,
 	nowSeconds,
-	type RenderedMessage,
 } from "@/lib/live-messages";
 import { partsToMarkdown } from "@/lib/message-markdown";
 import { getToolMeta } from "@/lib/tool-meta";
@@ -453,36 +452,10 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		}
 	}, [sessionId]);
 
-	const rendered = useMemo(() => {
-		const liveIds = new Set(Object.keys(live));
-		const rows: (RenderedMessage & { turnId?: string | null })[] = [];
-		// Persisted messages — skip any that have a live counterpart. Their
-		// `turnId` is what `foldTurnRows` regroups a multi-round turn by.
-		for (const m of messages) {
-			if (liveIds.has(m.id)) continue;
-			rows.push({
-				id: m.id,
-				role: m.role,
-				parts: m.parts,
-				createdAt: m.createdAt,
-				turnId: m.turnId,
-			});
-		}
-		// Live messages — parts already carry streamed content in stream order.
-		// A live message is one per turn by construction (the server normalizer
-		// pins one messageId per turn), so it carries no turnId and must not be
-		// folded into anything: it's already the folded shape.
-		for (const m of Object.values(live)) {
-			if (m.parts.length === 0) continue;
-			rows.push({
-				id: m.id,
-				role: m.role,
-				parts: m.parts,
-				createdAt: m.startedAt,
-			});
-		}
-		return foldTurnRows(rows);
-	}, [messages, live]);
+	const rendered = useMemo(
+		() => mergeRenderedMessages(messages, live, sessionId),
+		[messages, live, sessionId],
+	);
 
 	return (
 		<div className="flex h-full flex-col">

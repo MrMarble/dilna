@@ -782,6 +782,8 @@ class SessionManager {
 						text: "This turn was interrupted before it could finish — the server restarted mid-response. Your message was saved; you can try again.",
 					},
 				],
+				// A boot-time notice is nobody's turn — never grouped (ADR-0026 §2).
+				turnId: null,
 				createdAt: Math.floor(Date.now() / 1000),
 			});
 		}
@@ -984,6 +986,10 @@ class SessionManager {
 			sessionId: id,
 			role: "user",
 			parts: [{ type: "text", text }],
+			// The user's row is never grouped with the reply that answers it —
+			// a turn has exactly one user row, and the assistant rows it
+			// produces are the ones `turnId` exists to regroup.
+			turnId: null,
 			createdAt: Math.floor(Date.now() / 1000),
 		};
 		messageStore.persistMessage(id, message);

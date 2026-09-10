@@ -36,8 +36,14 @@ export type Message = {
 	 * has exactly one, and the user is never grouped with the reply),
 	 * `"system"` boot-time notices (ADR-0026 §2), and rows persisted before
 	 * this field existed. Consumers must treat null as "own message, never
-	 * grouped" — never as a value to coalesce. */
-	turnId?: string | null;
+	 * grouped" — never as a value to coalesce.
+	 *
+	 * Required (not optional) despite being nullable: "no turn" is a real,
+	 * meaningful state that every producer must state, and making it optional
+	 * would give `undefined` a second, silently-equivalent encoding for the
+	 * same thing. One representation, so a consumer never has to normalize
+	 * both. */
+	turnId: string | null;
 };
 
 export type SendMessageInput = {

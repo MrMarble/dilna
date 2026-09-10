@@ -1,6 +1,7 @@
 import {
 	type AgentStreamEvent,
 	applyEventToParts,
+	type Message,
 	type MessagePart,
 } from "@dilna/shared";
 
@@ -68,26 +69,6 @@ export function nowSeconds(): number {
 	return Math.floor(Date.now() / 1000);
 }
 
-/** One entry of `ChatShell`'s rendered list — either one persisted/live row,
- * or several of them folded back into the single message their turn was. */
-export type RenderedMessage = {
-	id: string;
-	role: "user" | "assistant" | "system";
-	parts: MessagePart[];
-	createdAt: number;
-};
-
-/** The `Message`-shaped subset {@link foldTurnRows} reads. Structural so the
- * client can pass its own locally-built rows (which carry `turnId` from the
- * DB row but not the rest of `Message`) without a cast. */
-export type TurnRow = {
-	id: string;
-	role: "user" | "assistant" | "system";
-	parts: MessagePart[];
-	createdAt: number;
-	turnId?: string | null;
-};
-
 /**
  * Collapse consecutive rows sharing a non-null `turnId` back into one message,
  * restoring the shape the live view already renders.
@@ -114,27 +95,78 @@ export type TurnRow = {
  * opening timestamp and a stable React key), and concatenates parts in row
  * order, which is stream order — so tool calls that spanned rounds sit
  * adjacently in one `parts` array and `ToolCallGroup` groups them again.
+ *
+ * Takes and returns `Message[]` (extended with the folded `turnId`), not a
+ * local shape: `Message` is the contract `packages/shared` owns for both
+ * sides (see CLAUDE.md), and `turnId` living on it is precisely what makes
+ * the fold expressible without redefining the shape here.
  */
-export function foldTurnRows(rows: TurnRow[]): RenderedMessage[] {
-	const out: RenderedMessage[] = [];
-	let open: RenderedMessage | null = null;
+export function foldTurnRows(rows: Message[]): Message[] {
+	const out: Message[] = [];
+	let open: Message | null = null;
 	let openTurnId: string | null = null;
 
 	for (const row of rows) {
-		const turnId = row.turnId ?? null;
+		const turnId = row.turnId;
 		if (turnId !== null && turnId === openTurnId && open) {
 			open.parts = [...open.parts, ...row.parts];
 			continue;
 		}
-		open = {
-			id: row.id,
-			role: row.role,
-			parts: row.parts,
-			createdAt: row.createdAt,
-		};
+		// Shallow copy: the accumulator is mutated below, and the caller's rows
+		// must not be (a `messages` entry is React state).
+		open = { ...row };
 		openTurnId = turnId;
 		out.push(open);
 	}
 
 	return out;
+}
+
+/**
+ * Build the list the chat actually renders from the two sources it has: the
+ * authoritative persisted rows and the in-flight live entries.
+ *
+ * This is the join the grouping fix lives at. The live stream already
+ * accumulates a whole turn into one `LiveMessage` (the server normalizer pins
+ * one `messageId` per turn), but the DB holds one row per round — so merging
+ * them naively is what used to split a grouped turn the moment it reloaded.
+ * {@link foldTurnRows} is what puts it back.
+ *
+ * Order and precedence: persisted rows come first (minus any a live entry
+ * shadows by id — a live entry is the fresher copy of a row the DB may not
+ * have written yet), then live entries that carry content. A live entry whose
+ * parts are still empty is dropped rather than rendered as a blank bubble.
+ * Live entries are marked `turnId: null` **on purpose**: each is already one
+ * turn's worth of parts, so folding one into a neighbouring row would merge
+ * two turns together. Its `startedAt` stands in for the not-yet-persisted
+ * `createdAt`.
+ *
+ * Pure and total, so the persisted→live→folded pipeline is testable without
+ * mounting `ChatShell`.
+ */
+export function mergeRenderedMessages(
+	persisted: Message[],
+	live: Record<string, LiveMessage>,
+	sessionId: string,
+): Message[] {
+	const liveIds = new Set(Object.keys(live));
+	// `Message[]` throughout — the shape `packages/shared` owns for both sides
+	// (CLAUDE.md), so nothing here redefines it locally.
+	const rows: Message[] = [];
+	for (const m of persisted) {
+		if (liveIds.has(m.id)) continue;
+		rows.push(m);
+	}
+	for (const m of Object.values(live)) {
+		if (m.parts.length === 0) continue;
+		rows.push({
+			id: m.id,
+			sessionId,
+			role: m.role,
+			parts: m.parts,
+			turnId: null,
+			createdAt: m.startedAt,
+		});
+	}
+	return foldTurnRows(rows);
 }

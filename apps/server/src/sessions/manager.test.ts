@@ -658,6 +658,9 @@ describe("incremental persistence (ADR-0026)", () => {
 		const active = { persistedCount: 0 };
 		const turnId = "the-turn";
 
+		// Claim the turn first, so the user's own row really exists — the
+		// assertion below is about *its* turnId, not about a missing row.
+		sessionManager.beginTurn(session.id, "do a big refactor");
 		manager.persistRoundEvent(
 			session.id,
 			active,
@@ -689,11 +692,11 @@ describe("incremental persistence (ADR-0026)", () => {
 			turnId,
 		]);
 		expect(new Set(assistantRows.map((m) => m.id)).size).toBe(3);
-		// The user's own row is deliberately not part of the group. (`null` and
-		// `undefined` are equivalent here — both mean "never grouped", per
-		// `foldTurnRows` — so assert the contract rather than the encoding:
-		// the placeholder writes `null`, a safety-net row omits the key.)
-		expect(persisted.find((m) => m.role === "user")?.turnId ?? null).toBeNull();
+		// The user's own row is deliberately not part of the group, and says so
+		// explicitly — `turnId` is required, so "no turn" is never left implicit.
+		const userRow = persisted.find((m) => m.role === "user");
+		expect(userRow).toBeDefined();
+		expect(userRow?.turnId).toBeNull();
 
 		await sessionManager.delete(session.id);
 		await repoManager.delete(repo.id);

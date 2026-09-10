@@ -35,6 +35,7 @@ function msg(overrides: Partial<Message> & { id: string }): Message {
 		sessionId: "s1",
 		role: "assistant",
 		parts: [{ type: "text", text: "hi" }],
+		turnId: null,
 		createdAt: 1_000,
 		...overrides,
 	};
@@ -53,6 +54,7 @@ describe("messageStore", () => {
 			id: "m1",
 			sessionId,
 			role: "assistant",
+			turnId: null,
 			parts: [
 				{ type: "text", text: "running" },
 				{
@@ -111,6 +113,7 @@ describe("messageStore", () => {
 				sessionId,
 				role: "user",
 				parts: [{ type: "text", text: "do the thing" }],
+				turnId: null,
 				createdAt: 500,
 			});
 
@@ -199,6 +202,7 @@ describe("messageStore", () => {
 				sessionId,
 				role: "user",
 				parts: [{ type: "text", text: "hello" }],
+				turnId: null,
 				createdAt: 777,
 			});
 

@@ -15,12 +15,14 @@ function dilnaMessage(
 	role: "user" | "assistant",
 	text: string,
 	createdAt: number,
+	turnId: string | null = null,
 ): Message {
 	return {
 		id,
 		sessionId: "s1",
 		role,
 		parts: [{ type: "text", text }],
+		turnId,
 		createdAt,
 	};
 }

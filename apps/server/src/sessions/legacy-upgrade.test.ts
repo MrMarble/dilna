@@ -11,14 +11,13 @@ import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { closeDb } from "../db";
+import { closeDb, migrationsFolder } from "../db";
 
 // Proves an EXISTING instance's DB (one already migrated to 0020, with real
 // rows) upgrades in place when the new code opens it: the added column is
 // nullable, so pre-migration rows survive and simply read back ungrouped.
 let dataDir: string;
 let old: string | undefined;
-const repoRoot = path.resolve(__dirname, "../../../..");
 
 beforeAll(() => {
 	dataDir = mkdtempSync(path.join(tmpdir(), "dilna-legacy-"));
@@ -37,10 +36,11 @@ describe("existing DB upgrading past 0021_message_turn_id", () => {
 	it("keeps pre-migration rows and reads them back with no turnId", () => {
 		// 1. Build a "before" migrations folder: exactly what an old instance
 		//    shipped — 0020's journal entry, no 0021 file.
+		// Start from the real, current migrations folder, then remove the one
+		// under test — the same folder the server itself migrates from, resolved
+		// the same way (no depth-based path guessing).
 		const legacyMigrations = path.join(dataDir, "legacy-drizzle");
-		cpSync(path.join(repoRoot, "apps/server/drizzle"), legacyMigrations, {
-			recursive: true,
-		});
+		cpSync(migrationsFolder(), legacyMigrations, { recursive: true });
 		rmSync(path.join(legacyMigrations, "0021_message_turn_id.sql"));
 		const journalPath = path.join(legacyMigrations, "meta/_journal.json");
 		const journal = JSON.parse(readFileSync(journalPath, "utf8"));
@@ -77,9 +77,7 @@ describe("existing DB upgrading past 0021_message_turn_id", () => {
 		//    the new server would.
 		const upgraded = new Database(dbPath);
 		upgraded.pragma("journal_mode = WAL");
-		migrate(drizzle(upgraded), {
-			migrationsFolder: path.join(repoRoot, "apps/server/drizzle"),
-		});
+		migrate(drizzle(upgraded), { migrationsFolder: migrationsFolder() });
 		upgraded.close();
 
 		// 4. The old row is still there, and its turn_id is NULL — which

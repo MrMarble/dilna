@@ -44,8 +44,12 @@ as rendering one message.
 
 Give a turn an explicit identity in the persisted model, and regroup on it.
 
-- **`Message.turnId`** (`packages/shared/src/messages.ts`), nullable, backed by
-  a new `messages.turn_id` column (migration `0021_message_turn_id.sql`).
+- **`Message.turnId`** (`packages/shared/src/messages.ts`), required and
+  nullable (`string | null`), backed by a new `messages.turn_id` column
+  (migration `0021_message_turn_id.sql`). Required despite being nullable:
+  "this row belongs to no turn" is a real state every producer must state, and
+  an optional field would give `undefined` a second, silently-equivalent
+  encoding of it — forcing every consumer to normalize both.
 - **Minted once per turn** in `SessionManager.runTurn`, as a plain
   `randomUUID()`, and threaded into *both* paths that can write a turn's rows:
   the incremental `persistRoundEvent` (per-round, on `turn_end`) and the
@@ -61,14 +65,19 @@ Give a turn an explicit identity in the persisted model, and regroup on it.
   User rows, `"system"` boot-time interruption notices (ADR-0026 §2), and
   every pre-migration row carry null, so a legacy Session renders exactly as
   it did before this change.
-- **The web client regroups** in `apps/web/src/lib/live-messages.ts`'s
-  `foldTurnRows`, applied to the merged persisted+live list in
-  `ChatShell`'s `rendered` memo. Consecutive rows sharing a non-null `turnId`
-  collapse into one message: parts concatenated in row order (which is stream
-  order), keeping the first row's `id` and `createdAt`. The restored shape is
-  the same one `ToolCallGroup` was already built against, so no renderer
-  changes were needed beyond the fold — the grouped turn comes back, with its
-  tool calls adjacent in a single `parts` array.
+- **The web client regroups** in `apps/web/src/lib/live-messages.ts`, via two
+  pure functions the `ChatShell.rendered` memo now just calls:
+  `mergeRenderedMessages` (persisted rows + live entries → the rendered list)
+  and `foldTurnRows` (consecutive rows sharing a non-null `turnId` → one
+  message). Parts are concatenated in row order (which is stream order),
+  keeping the first row's `id` and `createdAt`. The restored shape is the same
+  one `ToolCallGroup` was already built against, so no renderer changes were
+  needed beyond the fold — the grouped turn comes back, with its tool calls
+  adjacent in a single `parts` array.
+- **Both operate on `Message[]`**, not a locally-declared message-ish shape.
+  `turnId` living on the shared `Message` is what makes the fold expressible
+  without the web side redefining the contract `packages/shared` owns
+  (`CLAUDE.md`).
 
 ## Why not revert to one row per turn (the alternative ADR-0026 rejected)
 
@@ -129,19 +138,25 @@ lives.
   else writes to a Session mid-turn), so this holds in practice, and
   requiring it means a future writer that interleaves rows can't silently
   merge a turn across an intervening user message.
-- The two converters in `agents/pi.ts` now both take an optional `turnId`
-  (default `null`), which keeps their call sites in tests and any future
-  one-off use honest about whether their output belongs to a turn.
+- The two converters in `agents/pi.ts` now both take a *required* `turnId`.
+  Every caller is persisting a specific, known turn (`runTurn` mints one per
+  turn and threads it through), so a default would only ever encode an
+  unreachable "this round belongs to no turn" state.
 - `apps/server/src/db/schema.ts`, `apps/server/drizzle/0021_message_turn_id.sql`,
   `apps/server/drizzle/meta/_journal.json`, `apps/server/src/agents/pi.ts`,
   `apps/server/src/sessions/manager.ts`,
   `apps/server/src/sessions/messageStore.ts`, `packages/shared/src/messages.ts`,
   `apps/web/src/lib/live-messages.ts` and `apps/web/src/components/ChatShell.tsx`
-  all changed. Coverage added in `pi.test.ts` (both converters stamp/omit
-  `turnId`), `manager.test.ts` (every round of one turn shares one `turnId`
-  while keeping distinct row ids; the user's row stays ungrouped) and
-  `live-messages.test.ts` (`foldTurnRows`: merging, ordering, unequal turns,
-  null-never-merges, adjacency, non-mutation).
+  all changed. Coverage added in `pi.test.ts` (both converters stamp the
+  caller's `turnId`), `manager.test.ts` (every round of one turn shares one
+  `turnId` while keeping distinct row ids; the user's row stays ungrouped) and
+  `live-messages.test.ts` — `foldTurnRows` (merging, ordering, unequal turns,
+  null-never-merges, adjacency, non-mutation, `sessionId` survival) and
+  `mergeRenderedMessages` (the persisted+live join: a real post-reconcile turn
+  regroups to one message, two turns stay apart, the streaming and settled
+  shapes match, id-shadowing precedence, and a live entry never folding into
+  an adjacent persisted turn). `legacy-upgrade.test.ts` drives the migration
+  against a DB already at 0020.
 
 ## Addendum: the granularity mismatch left in ADR-0026
 
@@ -157,5 +172,6 @@ persisted round can produce duplicate assistant rows.
 This ADR is neutral on the fix (either the safety net should slice per round,
 or the overlap should be made impossible), and stamping both paths with the
 same `turnId` at least makes any such duplicate visible as two rows in one
-group rather than two unrelated-looking messages. It should be settled
-separately.
+group rather than two unrelated-looking messages.
+
+Tracked as issue #190.
