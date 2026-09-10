@@ -326,8 +326,13 @@ export const pushVapidKeys = sqliteTable("push_vapid_keys", {
  * by the subscribing browser and are useless without the instance's VAPID
  * private key.
  *
- * `lastSuccessAt` is diagnostic only. Dead subscriptions are pruned eagerly
- * when the push service reports 404/410 (see pushSender.ts), not by age.
+ * `lastSuccessAt` is diagnostic: set whenever a push service accepts a
+ * delivery, and served by `/api/push/key` as the only externally visible
+ * evidence that push works end to end (a row here proves a browser
+ * *registered*, not that anything was delivered). It records acceptance by
+ * the service, not display on the handset — Web Push has no delivery
+ * receipt. Nothing prunes by age; dead subscriptions are removed eagerly
+ * when the push service reports 404/410 (see pushSender.ts).
  */
 export const pushSubscriptions = sqliteTable("push_subscriptions", {
 	endpoint: text("endpoint").primaryKey(),

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import {
 	deleteSubscription,
+	deliveryStatus,
 	saveSubscription,
 	subscriptionCount,
 	vapidPublicKey,
@@ -64,10 +65,21 @@ function isSubscribeBody(body: unknown): body is SubscribeBody {
  * `pushManager.subscribe`. `configured: false` means the key hasn't been
  * primed yet — the client treats that as "push unavailable" rather than an
  * error, so a browser can still fall back to unread badges.
+ *
+ * Also serves delivery health, which makes this the one endpoint to hit when
+ * notifications aren't arriving: `configured` says the server can send,
+ * `subscriptions` says a browser registered, and `lastSuccessAt` says a push
+ * service actually accepted one. A null `lastSuccessAt` with subscriptions > 0
+ * means dilna has never had a delivery accepted — a different fault from
+ * "accepted but the phone showed nothing".
  */
 pushRoute.get("/key", (c) => {
 	const key = vapidPublicKey();
-	return c.json({ publicKey: key, configured: key !== null });
+	return c.json({
+		publicKey: key,
+		configured: key !== null,
+		...deliveryStatus(),
+	});
 });
 
 pushRoute.post("/subscribe", async (c) => {

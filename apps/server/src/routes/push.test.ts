@@ -43,6 +43,29 @@ describe("GET /key", () => {
 		expect(body.configured).toBe(true);
 		expect(body.publicKey).toBe(sender.vapidPublicKey());
 	});
+
+	// The one endpoint to hit when notifications aren't arriving: it has to
+	// distinguish "nothing registered" from "registered but never delivered".
+	it("reports delivery health alongside the key", async () => {
+		const body = (await (await pushRoute.request("/key")).json()) as {
+			subscriptions: number;
+			lastSuccessAt: number | null;
+		};
+		expect(body).toMatchObject({ subscriptions: 0, lastSuccessAt: null });
+
+		sender.saveSubscription({
+			endpoint: "https://push.example.com/route-health",
+			p256dh: "x",
+			auth: "y",
+		});
+		sender.markDelivered("https://push.example.com/route-health", 4242);
+
+		const after = (await (await pushRoute.request("/key")).json()) as {
+			subscriptions: number;
+			lastSuccessAt: number | null;
+		};
+		expect(after).toMatchObject({ subscriptions: 1, lastSuccessAt: 4242 });
+	});
 });
 
 describe("POST /subscribe", () => {
