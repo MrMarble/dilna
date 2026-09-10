@@ -41,6 +41,7 @@ import { assistantDisplayName } from "@/lib/agent-labels";
 import {
 	applyEventToLive,
 	type LiveMessage,
+	mergeRenderedMessages,
 	nowSeconds,
 } from "@/lib/live-messages";
 import { partsToMarkdown } from "@/lib/message-markdown";
@@ -238,6 +239,12 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 										sessionId,
 										role: m.role,
 										parts: m.parts,
+										// Explicitly ungroupable: a live entry is already one
+										// whole turn's worth of parts (see `rendered`), and
+										// this is a stopgap for the `loadHistory()` right
+										// below, which replaces it with the DB row carrying
+										// the real `turnId`.
+										turnId: null,
 										createdAt: m.startedAt,
 									}));
 									return [...kept, ...newMsgs];
@@ -445,36 +452,10 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		}
 	}, [sessionId]);
 
-	const rendered = useMemo(() => {
-		const liveIds = new Set(Object.keys(live));
-		const out: {
-			id: string;
-			role: "user" | "assistant" | "system";
-			parts: MessagePart[];
-			createdAt: number;
-		}[] = [];
-		// Persisted messages — skip any that have a live counterpart.
-		for (const m of messages) {
-			if (liveIds.has(m.id)) continue;
-			out.push({
-				id: m.id,
-				role: m.role,
-				parts: m.parts,
-				createdAt: m.createdAt,
-			});
-		}
-		// Live messages — parts already carry streamed content in stream order.
-		for (const m of Object.values(live)) {
-			if (m.parts.length === 0) continue;
-			out.push({
-				id: m.id,
-				role: m.role,
-				parts: m.parts,
-				createdAt: m.startedAt,
-			});
-		}
-		return out;
-	}, [messages, live]);
+	const rendered = useMemo(
+		() => mergeRenderedMessages(messages, live, sessionId),
+		[messages, live, sessionId],
+	);
 
 	return (
 		<div className="flex h-full flex-col">

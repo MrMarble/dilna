@@ -35,6 +35,7 @@ export function persistMessage(sessionId: string, message: Message): void {
 			sessionId,
 			role: message.role,
 			partsJson: JSON.stringify(message.parts),
+			turnId: message.turnId ?? null,
 			createdAt: message.createdAt,
 		})
 		.run();
@@ -55,6 +56,7 @@ export function getMessages(sessionId: string): Message[] {
 		sessionId: row.sessionId,
 		role: row.role as Message["role"],
 		parts: JSON.parse(row.partsJson) as MessagePart[],
+		turnId: row.turnId,
 		createdAt: row.createdAt,
 	}));
 }

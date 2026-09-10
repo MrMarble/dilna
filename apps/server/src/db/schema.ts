@@ -149,6 +149,12 @@ export const messages = sqliteTable("messages", {
 	sessionId: text("session_id").notNull(),
 	role: text("role").notNull(),
 	partsJson: text("parts_json").notNull(),
+	/** Groups the rows one user turn produced (ADR-0026 §3 persists one row
+	 * per pi-agent-core round, so a tool-heavy turn is several rows). Null for
+	 * user rows, boot-time `"system"` notices, and pre-migration rows —
+	 * consumers treat null as "never grouped". See
+	 * `packages/shared`'s `Message.turnId`. */
+	turnId: text("turn_id"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 

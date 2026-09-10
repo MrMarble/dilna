@@ -579,6 +579,7 @@ describe("incremental persistence (ADR-0026)", () => {
 				id: string,
 				active: { persistedCount: number },
 				event: unknown,
+				turnId: string,
 			) => void;
 		};
 	}
@@ -592,7 +593,12 @@ describe("incremental persistence (ADR-0026)", () => {
 		const manager = withPersistRoundEvent();
 		const active = { persistedCount: 0 };
 
-		manager.persistRoundEvent(session.id, active, userMessageEnd("hi", 1_000));
+		manager.persistRoundEvent(
+			session.id,
+			active,
+			userMessageEnd("hi", 1_000),
+			"turn-1",
+		);
 		expect(active.persistedCount).toBe(1);
 
 		manager.persistRoundEvent(
@@ -611,6 +617,7 @@ describe("incremental persistence (ADR-0026)", () => {
 				[{ toolCallId: "c1", text: "3 passed", timestamp: 1_200 }],
 				1_100,
 			),
+			"turn-1",
 		);
 		// 1 assistant message + 1 tool result = advance by 2, on top of the
 		// user message's +1 above.
@@ -629,6 +636,67 @@ describe("incremental persistence (ADR-0026)", () => {
 				error: undefined,
 			},
 		]);
+		// The row carries the turn's id (ADR-0026 §3 follow-up), which is what
+		// lets the web client regroup a multi-round turn into one message.
+		expect(round?.turnId).toBe("turn-1");
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
+	// The regression this follow-up exists for: a turn that calls tools across
+	// several rounds persists as several rows, and those rows must share one
+	// turnId so the chat can regroup them into the single message the live view
+	// shows (instead of N messages per round after a reload).
+	it("stamps every round of one turn with the same turnId", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`round-turnid-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const manager = withPersistRoundEvent();
+		const active = { persistedCount: 0 };
+		const turnId = "the-turn";
+
+		// Claim the turn first, so the user's own row really exists — the
+		// assertion below is about *its* turnId, not about a missing row.
+		sessionManager.beginTurn(session.id, "do a big refactor");
+		manager.persistRoundEvent(
+			session.id,
+			active,
+			userMessageEnd("do a big refactor", 1_000),
+			turnId,
+		);
+		for (const [i, text] of ["first", "second", "third"].entries()) {
+			manager.persistRoundEvent(
+				session.id,
+				active,
+				turnEnd(
+					[{ type: "text", text }],
+					[{ toolCallId: `c${i}`, text: "ok", timestamp: 1_100 + i }],
+					1_100 + i,
+				),
+				turnId,
+			);
+		}
+
+		const persisted = await sessionManager.getMessages(session.id);
+		const assistantRows = persisted.filter((m) => m.role === "assistant");
+
+		// Three rounds, three rows — the per-round durability ADR-0026 bought.
+		expect(assistantRows).toHaveLength(3);
+		// All three claim the same turn, and each keeps its own primary key.
+		expect(assistantRows.map((m) => m.turnId)).toEqual([
+			turnId,
+			turnId,
+			turnId,
+		]);
+		expect(new Set(assistantRows.map((m) => m.id)).size).toBe(3);
+		// The user's own row is deliberately not part of the group, and says so
+		// explicitly — `turnId` is required, so "no turn" is never left implicit.
+		const userRow = persisted.find((m) => m.role === "user");
+		expect(userRow).toBeDefined();
+		expect(userRow?.turnId).toBeNull();
 
 		await sessionManager.delete(session.id);
 		await repoManager.delete(repo.id);
@@ -656,6 +724,7 @@ describe("incremental persistence (ADR-0026)", () => {
 			session.id,
 			active,
 			userMessageEnd("do a big refactor", 1_000),
+			"turn-kill",
 		);
 		manager.persistRoundEvent(
 			session.id,
@@ -665,6 +734,7 @@ describe("incremental persistence (ADR-0026)", () => {
 				[],
 				1_100,
 			),
+			"turn-kill",
 		);
 		// The process dies here — runTurn's own end-of-turn persist never runs.
 

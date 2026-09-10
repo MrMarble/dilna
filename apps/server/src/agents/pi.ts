@@ -884,6 +884,12 @@ export function normalizePiEvent(
 export function piMessagesToDilna(
 	sessionId: string,
 	entries: AgentMessage[],
+	/** The turn these entries belong to (see `Message.turnId`). Stamped on
+	 * every assistant row this call produces, so the row this whole-turn
+	 * collapse writes groups with the per-round rows the incremental path
+	 * wrote for the same turn. Required — every caller knows which turn it is
+	 * persisting (see the same parameter on {@link piRoundToDilnaMessage}). */
+	turnId: string,
 ): Message[] {
 	const toolResults = new Map<string, { output: string; error?: string }>();
 	for (const entry of entries) {
@@ -905,6 +911,7 @@ export function piMessagesToDilna(
 				sessionId,
 				role: "assistant",
 				parts: turn.parts,
+				turnId,
 				createdAt: turn.createdAt,
 			});
 		}
@@ -921,6 +928,9 @@ export function piMessagesToDilna(
 					sessionId,
 					role: "user",
 					parts: [{ type: "text", text }],
+					// The turn's own user row is never grouped with the assistant
+					// rows `turnId` regroups.
+					turnId: null,
 					createdAt: Math.floor(entry.timestamp / 1000),
 				});
 			}
@@ -979,10 +989,24 @@ export function piMessagesToDilna(
  * later call. Returns `null` for an empty round (no text, no tool calls —
  * mirrors `piMessagesToDilna`'s own `flushTurn` skipping empty turns), so
  * the caller knows not to insert a row.
+ *
+ * `turnId` is the *turn* this round belongs to, not a per-round value: the
+ * caller mints it once per `runTurn` and passes the same one to every round,
+ * which is what lets the web client regroup the turn's rows back into the
+ * single message the live view shows (`Message.turnId`). The row id stays
+ * per-round — grouping is a concern of `turnId`, and reusing one id for
+ * several rows would collide on the primary key.
+ *
+ * Required rather than defaulted: every caller is persisting a specific,
+ * known turn (`SessionManager.runTurn` mints one per turn and threads it
+ * through), so a default would only ever encode an unreachable "this round
+ * belongs to no turn" state.
  */
 export function piRoundToDilnaMessage(
 	sessionId: string,
 	round: { message: AgentMessage; toolResults: ToolResultMessage[] },
+	/** See `piMessagesToDilna`'s identical parameter. */
+	turnId: string,
 ): Message | null {
 	if (round.message.role !== "assistant") return null;
 
@@ -1019,6 +1043,7 @@ export function piRoundToDilnaMessage(
 		sessionId,
 		role: "assistant",
 		parts,
+		turnId,
 		createdAt: Math.floor(round.message.timestamp / 1000),
 	};
 }

@@ -60,6 +60,20 @@ const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
 });
 
 describe("piMessagesToDilna", () => {
+	it("stamps every assistant row it writes with the caller's turnId", () => {
+		const entries: AgentMessage[] = [
+			userMessage("run the tests", 1_000),
+			assistantMessage([{ type: "text", text: "All green." }], 1_300),
+		];
+
+		const messages = piMessagesToDilna("s1", entries, "turn-9");
+
+		expect(messages.find((m) => m.role === "assistant")?.turnId).toBe("turn-9");
+		// The user's own row is never grouped with the reply that answers it —
+		// stated explicitly, not left `undefined`.
+		expect(messages.find((m) => m.role === "user")?.turnId).toBeNull();
+	});
+
 	it("merges a multi-round tool-call turn into one assistant row", () => {
 		const entries: AgentMessage[] = [
 			userMessage("run the tests", 1_000),
@@ -74,7 +88,7 @@ describe("piMessagesToDilna", () => {
 			assistantMessage([{ type: "text", text: "All green." }], 1_300),
 		];
 
-		const messages = piMessagesToDilna("s1", entries);
+		const messages = piMessagesToDilna("s1", entries, "turn-1");
 
 		expect(messages).toHaveLength(2);
 		expect(messages[0]).toMatchObject({
@@ -105,7 +119,7 @@ describe("piMessagesToDilna", () => {
 			toolResultMessage("c1", "permission denied", true, 1_200),
 		];
 
-		const messages = piMessagesToDilna("s1", entries);
+		const messages = piMessagesToDilna("s1", entries, "turn-1");
 		const assistant = messages.find((m) => m.role === "assistant");
 		expect(assistant?.parts[0]).toMatchObject({
 			type: "tool_call",
@@ -126,7 +140,7 @@ describe("piMessagesToDilna", () => {
 			),
 		];
 
-		const messages = piMessagesToDilna("s1", entries);
+		const messages = piMessagesToDilna("s1", entries, "turn-1");
 		const assistant = messages.find((m) => m.role === "assistant");
 		expect(assistant?.parts).toEqual([{ type: "text", text: "hello" }]);
 	});
@@ -139,13 +153,13 @@ describe("piMessagesToDilna", () => {
 			assistantMessage([{ type: "text", text: "second reply" }], 101_000),
 		];
 
-		const messages = piMessagesToDilna("s1", entries);
+		const messages = piMessagesToDilna("s1", entries, "turn-1");
 		expect(messages.map((m) => m.createdAt)).toEqual([5, 6, 100, 101]);
 	});
 
 	it("synthesizes a fresh id per message (pi gives nothing to key on)", () => {
 		const entries: AgentMessage[] = [userMessage("hi", 1_000)];
-		const messages = piMessagesToDilna("s1", entries);
+		const messages = piMessagesToDilna("s1", entries, "turn-1");
 		expect(messages[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
 	});
 });
@@ -154,6 +168,21 @@ describe("piMessagesToDilna", () => {
 // pi-agent-core round (raw `turn_end`'s own payload shape), as opposed to
 // `piMessagesToDilna`'s whole-`prompt()`-call slice above.
 describe("piRoundToDilnaMessage", () => {
+	it("stamps the caller's turnId so the turn's rounds can be regrouped", () => {
+		const message = assistantMessage(
+			[{ type: "text", text: "Running tests…" }],
+			1_100,
+		);
+
+		const result = piRoundToDilnaMessage(
+			"s1",
+			{ message, toolResults: [] },
+			"turn-7",
+		);
+
+		expect(result?.turnId).toBe("turn-7");
+	});
+
 	it("converts a round's assistant message + resolved tool results into one row", () => {
 		const message = assistantMessage(
 			[
@@ -164,8 +193,12 @@ describe("piRoundToDilnaMessage", () => {
 		);
 		const toolResults = [toolResultMessage("c1", "3 passed", false, 1_200)];
 
-		// biome-ignore lint/suspicious/noExplicitAny: test helpers return AgentMessage; piRoundToDilnaMessage's toolResults param wants the narrower ToolResultMessage shape they already satisfy structurally.
-		const result = piRoundToDilnaMessage("s1", { message, toolResults } as any);
+		const result = piRoundToDilnaMessage(
+			"s1",
+			// biome-ignore lint/suspicious/noExplicitAny: test helpers return AgentMessage; piRoundToDilnaMessage's toolResults param wants the narrower ToolResultMessage shape they already satisfy structurally.
+			{ message, toolResults } as any,
+			"turn-1",
+		);
 
 		expect(result).toMatchObject({
 			sessionId: "s1",
@@ -192,7 +225,11 @@ describe("piRoundToDilnaMessage", () => {
 			2_000,
 		);
 
-		const result = piRoundToDilnaMessage("s1", { message, toolResults: [] });
+		const result = piRoundToDilnaMessage(
+			"s1",
+			{ message, toolResults: [] },
+			"turn-1",
+		);
 
 		expect(result).toMatchObject({
 			role: "assistant",
@@ -203,7 +240,7 @@ describe("piRoundToDilnaMessage", () => {
 	it("returns null for an empty round", () => {
 		const message = assistantMessage([], 2_000);
 		expect(
-			piRoundToDilnaMessage("s1", { message, toolResults: [] }),
+			piRoundToDilnaMessage("s1", { message, toolResults: [] }, "turn-1"),
 		).toBeNull();
 	});
 
@@ -215,7 +252,11 @@ describe("piRoundToDilnaMessage", () => {
 			],
 			1_100,
 		);
-		const result = piRoundToDilnaMessage("s1", { message, toolResults: [] });
+		const result = piRoundToDilnaMessage(
+			"s1",
+			{ message, toolResults: [] },
+			"turn-1",
+		);
 		expect(result?.parts).toEqual([{ type: "text", text: "hello" }]);
 	});
 });
@@ -228,6 +269,7 @@ describe("dilnaMessagesToInitialState", () => {
 				sessionId: "s1",
 				role: "user",
 				parts: [{ type: "text", text: "hello" }],
+				turnId: null,
 				createdAt: 42,
 			},
 		];
@@ -254,6 +296,7 @@ describe("dilnaMessagesToInitialState", () => {
 						error: undefined,
 					},
 				],
+				turnId: null,
 				createdAt: 10,
 			},
 		];
@@ -296,6 +339,7 @@ describe("dilnaMessagesToInitialState", () => {
 						error: "boom",
 					},
 				],
+				turnId: null,
 				createdAt: 10,
 			},
 		];

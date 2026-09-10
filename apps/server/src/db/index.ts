@@ -41,6 +41,20 @@ export function getDbPath(): string {
 	return path.join(getDataDir(), "db", "dilna.sqlite");
 }
 
+/**
+ * Where drizzle's migration folder lives, resolved relative to this file so it
+ * works regardless of `process.cwd()` (dev via tsx from `apps/server`, prod
+ * from `dist/`, tests via vitest root). Exported because the boot-time
+ * migrator isn't the only thing that needs to find it — see
+ * `sessions/legacy-upgrade.test.ts`, which drives a migration against a
+ * pre-existing DB and would otherwise have to re-derive the path by depth.
+ */
+export function migrationsFolder(): string {
+	return existsSync(path.join(__dirname, "..", "drizzle"))
+		? path.join(__dirname, "..", "drizzle")
+		: path.join(__dirname, "..", "..", "drizzle");
+}
+
 export function getDb() {
 	if (_db) return _db;
 	const dbPath = getDbPath();
@@ -48,13 +62,7 @@ export function getDb() {
 	_sqlite = new Database(dbPath);
 	_sqlite.pragma("journal_mode = WAL");
 	_db = drizzle(_sqlite, { schema });
-	// Drizzle migrations live next to the compiled source: <server>/drizzle.
-	// Resolve relative to this file so it works regardless of process.cwd()
-	// (dev via tsx from apps/server, prod from dist/, tests via vitest root).
-	const migrationsFolder = existsSync(path.join(__dirname, "..", "drizzle"))
-		? path.join(__dirname, "..", "drizzle")
-		: path.join(__dirname, "..", "..", "drizzle");
-	migrate(_db, { migrationsFolder });
+	migrate(_db, { migrationsFolder: migrationsFolder() });
 	return _db;
 }
 

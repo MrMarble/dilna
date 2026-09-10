@@ -1,6 +1,7 @@
 import {
 	type AgentStreamEvent,
 	applyEventToParts,
+	type Message,
 	type MessagePart,
 } from "@dilna/shared";
 
@@ -66,4 +67,106 @@ export function applyEventToLive(
 
 export function nowSeconds(): number {
 	return Math.floor(Date.now() / 1000);
+}
+
+/**
+ * Collapse consecutive rows sharing a non-null `turnId` back into one message,
+ * restoring the shape the live view already renders.
+ *
+ * ADR-0026 §3 persists an assistant response as one row per pi-agent-core
+ * *round*, so a turn that calls tools across several rounds lands as several
+ * consecutive rows. Live, the client renders one message per turn (the
+ * server normalizer pins one `messageId` per turn), so the persisted history
+ * used to flip a grouped turn into N separate messages the moment it
+ * reloaded. `turnId` is the signal that says which rows were one turn;
+ * this is the fold that consumes it.
+ *
+ * Rows are folded in list order, and only when *adjacent*: a turn's rows are
+ * always written contiguously (they're appended as the turn progresses, and
+ * nothing else writes to the session mid-turn), so adjacency is guaranteed
+ * in practice — and requiring it keeps the fold from ever pulling a row
+ * across an intervening user message if that invariant is one day broken.
+ *
+ * `turnId` null/absent (user rows, `system` notices, pre-migration rows) is
+ * never grouped and never matched against another null — each stays its own
+ * message, so a legacy session renders exactly as it did before.
+ *
+ * The folded message keeps the first row's `id` and `createdAt` (the turn's
+ * opening timestamp and a stable React key), and concatenates parts in row
+ * order, which is stream order — so tool calls that spanned rounds sit
+ * adjacently in one `parts` array and `ToolCallGroup` groups them again.
+ *
+ * Takes and returns `Message[]` (extended with the folded `turnId`), not a
+ * local shape: `Message` is the contract `packages/shared` owns for both
+ * sides (see CLAUDE.md), and `turnId` living on it is precisely what makes
+ * the fold expressible without redefining the shape here.
+ */
+export function foldTurnRows(rows: Message[]): Message[] {
+	const out: Message[] = [];
+	let open: Message | null = null;
+	let openTurnId: string | null = null;
+
+	for (const row of rows) {
+		const turnId = row.turnId;
+		if (turnId !== null && turnId === openTurnId && open) {
+			open.parts = [...open.parts, ...row.parts];
+			continue;
+		}
+		// Shallow copy: the accumulator is mutated below, and the caller's rows
+		// must not be (a `messages` entry is React state).
+		open = { ...row };
+		openTurnId = turnId;
+		out.push(open);
+	}
+
+	return out;
+}
+
+/**
+ * Build the list the chat actually renders from the two sources it has: the
+ * authoritative persisted rows and the in-flight live entries.
+ *
+ * This is the join the grouping fix lives at. The live stream already
+ * accumulates a whole turn into one `LiveMessage` (the server normalizer pins
+ * one `messageId` per turn), but the DB holds one row per round — so merging
+ * them naively is what used to split a grouped turn the moment it reloaded.
+ * {@link foldTurnRows} is what puts it back.
+ *
+ * Order and precedence: persisted rows come first (minus any a live entry
+ * shadows by id — a live entry is the fresher copy of a row the DB may not
+ * have written yet), then live entries that carry content. A live entry whose
+ * parts are still empty is dropped rather than rendered as a blank bubble.
+ * Live entries are marked `turnId: null` **on purpose**: each is already one
+ * turn's worth of parts, so folding one into a neighbouring row would merge
+ * two turns together. Its `startedAt` stands in for the not-yet-persisted
+ * `createdAt`.
+ *
+ * Pure and total, so the persisted→live→folded pipeline is testable without
+ * mounting `ChatShell`.
+ */
+export function mergeRenderedMessages(
+	persisted: Message[],
+	live: Record<string, LiveMessage>,
+	sessionId: string,
+): Message[] {
+	const liveIds = new Set(Object.keys(live));
+	// `Message[]` throughout — the shape `packages/shared` owns for both sides
+	// (CLAUDE.md), so nothing here redefines it locally.
+	const rows: Message[] = [];
+	for (const m of persisted) {
+		if (liveIds.has(m.id)) continue;
+		rows.push(m);
+	}
+	for (const m of Object.values(live)) {
+		if (m.parts.length === 0) continue;
+		rows.push({
+			id: m.id,
+			sessionId,
+			role: m.role,
+			parts: m.parts,
+			turnId: null,
+			createdAt: m.startedAt,
+		});
+	}
+	return foldTurnRows(rows);
 }
