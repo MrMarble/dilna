@@ -884,6 +884,12 @@ export function normalizePiEvent(
 export function piMessagesToDilna(
 	sessionId: string,
 	entries: AgentMessage[],
+	/** The turn these entries belong to (see `Message.turnId`). Stamped on
+	 * every assistant row this call produces, so the row this whole-turn
+	 * collapse writes groups with the per-round rows the incremental path
+	 * wrote for the same turn. `null` for content that isn't part of an agent
+	 * turn. */
+	turnId: string | null = null,
 ): Message[] {
 	const toolResults = new Map<string, { output: string; error?: string }>();
 	for (const entry of entries) {
@@ -905,6 +911,7 @@ export function piMessagesToDilna(
 				sessionId,
 				role: "assistant",
 				parts: turn.parts,
+				turnId,
 				createdAt: turn.createdAt,
 			});
 		}
@@ -979,10 +986,19 @@ export function piMessagesToDilna(
  * later call. Returns `null` for an empty round (no text, no tool calls —
  * mirrors `piMessagesToDilna`'s own `flushTurn` skipping empty turns), so
  * the caller knows not to insert a row.
+ *
+ * `turnId` is the *turn* this round belongs to, not a per-round value: the
+ * caller mints it once per `runTurn` and passes the same one to every round,
+ * which is what lets the web client regroup the turn's rows back into the
+ * single message the live view shows (`Message.turnId`). The row id stays
+ * per-round — grouping is a concern of `turnId`, and reusing one id for
+ * several rows would collide on the primary key.
  */
 export function piRoundToDilnaMessage(
 	sessionId: string,
 	round: { message: AgentMessage; toolResults: ToolResultMessage[] },
+	/** See `piMessagesToDilna`'s identical parameter. */
+	turnId: string | null = null,
 ): Message | null {
 	if (round.message.role !== "assistant") return null;
 
@@ -1019,6 +1035,7 @@ export function piRoundToDilnaMessage(
 		sessionId,
 		role: "assistant",
 		parts,
+		turnId,
 		createdAt: Math.floor(round.message.timestamp / 1000),
 	};
 }

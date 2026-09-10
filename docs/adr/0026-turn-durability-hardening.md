@@ -129,6 +129,16 @@ renders consecutive same-role rows without repeating the avatar/header, so
 this needed no additional UI change beyond the system-role branch from
 change #2.
 
+> **Corrected by ADR-0030.** That last claim was wrong, and shipped a UI
+> regression: consecutive-same-role rendering suppresses the repeated
+> header, it does not *regroup* the rows. While a turn streams, the live view
+> shows one message with one grouped tool-call section (the normalizer pins
+> one `messageId` per turn); after the turn ends and the client reconciles
+> against these per-round rows, the same turn renders as N separate
+> messages, each with its own tool-call group. ADR-0030 adds a `turnId` to
+> group them back on read. The per-round *granularity* decided here is
+> unchanged — only the regroup-on-read mechanism was missing.
+
 ## Why not a JSONL transcript file (like Claude Code / opencode)
 
 Considered and rejected. The old `claude.ts` backend's crash recovery

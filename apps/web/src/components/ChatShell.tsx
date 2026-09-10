@@ -40,8 +40,10 @@ import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
 import {
 	applyEventToLive,
+	foldTurnRows,
 	type LiveMessage,
 	nowSeconds,
+	type RenderedMessage,
 } from "@/lib/live-messages";
 import { partsToMarkdown } from "@/lib/message-markdown";
 import { getToolMeta } from "@/lib/tool-meta";
@@ -238,6 +240,12 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 										sessionId,
 										role: m.role,
 										parts: m.parts,
+										// Explicitly ungroupable: a live entry is already one
+										// whole turn's worth of parts (see `rendered`), and
+										// this is a stopgap for the `loadHistory()` right
+										// below, which replaces it with the DB row carrying
+										// the real `turnId`.
+										turnId: null,
 										createdAt: m.startedAt,
 									}));
 									return [...kept, ...newMsgs];
@@ -447,33 +455,33 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 
 	const rendered = useMemo(() => {
 		const liveIds = new Set(Object.keys(live));
-		const out: {
-			id: string;
-			role: "user" | "assistant" | "system";
-			parts: MessagePart[];
-			createdAt: number;
-		}[] = [];
-		// Persisted messages — skip any that have a live counterpart.
+		const rows: (RenderedMessage & { turnId?: string | null })[] = [];
+		// Persisted messages — skip any that have a live counterpart. Their
+		// `turnId` is what `foldTurnRows` regroups a multi-round turn by.
 		for (const m of messages) {
 			if (liveIds.has(m.id)) continue;
-			out.push({
+			rows.push({
 				id: m.id,
 				role: m.role,
 				parts: m.parts,
 				createdAt: m.createdAt,
+				turnId: m.turnId,
 			});
 		}
 		// Live messages — parts already carry streamed content in stream order.
+		// A live message is one per turn by construction (the server normalizer
+		// pins one messageId per turn), so it carries no turnId and must not be
+		// folded into anything: it's already the folded shape.
 		for (const m of Object.values(live)) {
 			if (m.parts.length === 0) continue;
-			out.push({
+			rows.push({
 				id: m.id,
 				role: m.role,
 				parts: m.parts,
 				createdAt: m.startedAt,
 			});
 		}
-		return out;
+		return foldTurnRows(rows);
 	}, [messages, live]);
 
 	return (

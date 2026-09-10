@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type {
 	AgentStreamEvent,
@@ -1120,8 +1121,20 @@ class SessionManager {
 			// already relies on).
 			let turnSettled = false;
 			const unsubscribeRounds = handle.agent.subscribe((event) => {
-				if (!turnSettled) this.persistRoundEvent(id, active, event);
+				if (!turnSettled) this.persistRoundEvent(id, active, event, turnId);
 			});
+
+			// The id that groups every row this turn produces (`Message.turnId`).
+			// Minted once here, at the turn's own scope, and stamped on every
+			// path that writes this turn's rows — the incremental per-round
+			// `persistRoundEvent` below and the turn-end safety net — so the web
+			// client regroups them into the one message the live view already
+			// shows, instead of N messages per round after a reload (ADR-0026 §3).
+			// Deliberately *not* `handle.agent`/`NormalizeState.currentMessageId`:
+			// that id is minted lazily by the normalizer on the first assistant
+			// frame and can legitimately be absent (a turn that failed before any
+			// content), whereas this must exist for every round the turn writes.
+			const turnId = randomUUID();
 
 			let timedOut = false;
 			let crashed = false;
@@ -1177,6 +1190,7 @@ class SessionManager {
 						id,
 						handle,
 						active.persistedCount,
+						turnId,
 					);
 					persistedUserMessage = result.persistedUserMessage;
 					// Only advance past this turn's entries once they're actually
@@ -1415,7 +1429,9 @@ class SessionManager {
 	 * user-role entry (pi's `agent-loop.js` always pushes this, once, before
 	 * any round starts — no DB write, dilna's own placeholder already covers
 	 * it, this just keeps the index in sync) and `turn_end` (one per
-	 * completed round — converts and persists via `piRoundToDilnaMessage`).
+	 * completed round — converts and persists via `piRoundToDilnaMessage`,
+	 * stamped with the caller's per-turn `turnId` so every row this turn
+	 * writes regroups as one message on reload).
 	 * Every other event type is a no-op here. A persistence failure is caught
 	 * and logged, not re-thrown into the agent's own event dispatch: leaving
 	 * `persistedCount` unadvanced is enough for the turn-end safety net
@@ -1426,6 +1442,7 @@ class SessionManager {
 		sessionId: string,
 		active: ActiveAgent,
 		event: AgentEvent,
+		turnId: string,
 	): void {
 		if (event.type === "message_end" && event.message.role === "user") {
 			active.persistedCount += 1;
@@ -1434,7 +1451,7 @@ class SessionManager {
 		if (event.type === "turn_end") {
 			const advance = 1 + event.toolResults.length;
 			try {
-				const message = piRoundToDilnaMessage(sessionId, event);
+				const message = piRoundToDilnaMessage(sessionId, event, turnId);
 				if (message) messageStore.persistMessage(sessionId, message);
 				active.persistedCount += advance;
 			} catch (err) {
@@ -1466,11 +1483,12 @@ class SessionManager {
 		sessionId: string,
 		handle: PiHandle,
 		persistedCount: number,
+		turnId: string,
 	): Promise<{ persistedUserMessage: boolean; newPersistedCount: number }> {
 		const newEntries = handle.agent.state.messages.slice(persistedCount);
 		const { persistedUserMessage } = messageStore.persistConverted(
 			sessionId,
-			piMessagesToDilna(sessionId, newEntries),
+			piMessagesToDilna(sessionId, newEntries, turnId),
 		);
 		return {
 			persistedUserMessage,

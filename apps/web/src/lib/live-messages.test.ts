@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	applyEventToLive,
+	foldTurnRows,
 	type LiveMessage,
 	type MessageContentEvent,
+	type RenderedMessage,
+	type TurnRow,
 } from "./live-messages";
 
 const at = () => 1_700_000_000;
@@ -146,5 +149,117 @@ describe("applyEventToLive", () => {
 		const snapshot = JSON.parse(JSON.stringify(live));
 		applyEventToLive(live, token("m1", " there"), at);
 		expect(live).toEqual(snapshot);
+	});
+});
+
+/**
+ * ADR-0026 §3 persists one row per pi-agent-core round, so a tool-heavy turn
+ * reloads as several consecutive rows. `foldTurnRows` regroups them into the
+ * single message the live view already renders — the regression this exists
+ * to fix (the chat used to collapse tool calls correctly while streaming, then
+ * split into one message per round the moment history was fetched).
+ */
+describe("foldTurnRows", () => {
+	const row = (
+		id: string,
+		parts: RenderedMessage["parts"],
+		turnId: string | null | undefined,
+		role: RenderedMessage["role"] = "assistant",
+	): TurnRow => ({ id, role, parts, createdAt: 1_700_000_000, turnId });
+
+	it("merges consecutive rows sharing a turnId into one message", () => {
+		const folded = foldTurnRows([
+			row("u1", [{ type: "text", text: "run the tests" }], null, "user"),
+			row("a1", [{ type: "text", text: "Running…" }], "t1"),
+			row(
+				"a2",
+				[
+					{
+						type: "tool_call",
+						callId: "c1",
+						tool: "Bash",
+						input: {},
+						output: "ok",
+					},
+				],
+				"t1",
+			),
+			row("a3", [{ type: "text", text: "All green." }], "t1"),
+		]);
+
+		expect(folded.map((m) => m.id)).toEqual(["u1", "a1"]);
+		// The turn's text and tool calls end up adjacent in one parts array,
+		// which is what lets ToolCallGroup group them again.
+		expect(folded[1]?.parts).toEqual([
+			{ type: "text", text: "Running…" },
+			{
+				type: "tool_call",
+				callId: "c1",
+				tool: "Bash",
+				input: {},
+				output: "ok",
+			},
+			{ type: "text", text: "All green." },
+		]);
+	});
+
+	it("keeps the first row's id and createdAt as the folded message's", () => {
+		const folded = foldTurnRows([
+			{ ...row("a1", [{ type: "text", text: "one" }], "t1"), createdAt: 111 },
+			{ ...row("a2", [{ type: "text", text: "two" }], "t1"), createdAt: 222 },
+		]);
+
+		expect(folded).toHaveLength(1);
+		expect(folded[0]?.id).toBe("a1");
+		expect(folded[0]?.createdAt).toBe(111);
+	});
+
+	it("does not merge two different turns", () => {
+		const folded = foldTurnRows([
+			row("a1", [{ type: "text", text: "first turn" }], "t1"),
+			row("a2", [{ type: "text", text: "second turn" }], "t2"),
+		]);
+
+		expect(folded.map((m) => m.id)).toEqual(["a1", "a2"]);
+	});
+
+	it("never merges null-turnId rows together", () => {
+		// Pre-migration rows and user rows all carry null — coalescing them
+		// would merge unrelated messages into one.
+		const folded = foldTurnRows([
+			row("a1", [{ type: "text", text: "legacy one" }], null),
+			row("a2", [{ type: "text", text: "legacy two" }], null),
+			row("a3", [{ type: "text", text: "legacy three" }], undefined),
+		]);
+
+		expect(folded.map((m) => m.id)).toEqual(["a1", "a2", "a3"]);
+	});
+
+	it("does not merge a turn's rows across an intervening message", () => {
+		const folded = foldTurnRows([
+			row("a1", [{ type: "text", text: "turn one" }], "t1"),
+			row("u2", [{ type: "text", text: "user interjects" }], null, "user"),
+			row("a3", [{ type: "text", text: "turn one, resumed" }], "t1"),
+		]);
+
+		expect(folded.map((m) => m.id)).toEqual(["a1", "u2", "a3"]);
+	});
+
+	it("leaves a single-row turn and an empty list alone", () => {
+		const single = [row("a1", [{ type: "text", text: "solo" }], "t1")];
+		expect(foldTurnRows(single).map((m) => m.id)).toEqual(["a1"]);
+		expect(foldTurnRows([])).toEqual([]);
+	});
+
+	it("does not mutate the rows it was given", () => {
+		const rows = [
+			row("a1", [{ type: "text", text: "one" }], "t1"),
+			row("a2", [{ type: "text", text: "two" }], "t1"),
+		];
+		const snapshot = JSON.parse(JSON.stringify(rows));
+
+		foldTurnRows(rows);
+
+		expect(rows).toEqual(snapshot);
 	});
 });

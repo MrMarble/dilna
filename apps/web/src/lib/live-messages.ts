@@ -67,3 +67,74 @@ export function applyEventToLive(
 export function nowSeconds(): number {
 	return Math.floor(Date.now() / 1000);
 }
+
+/** One entry of `ChatShell`'s rendered list — either one persisted/live row,
+ * or several of them folded back into the single message their turn was. */
+export type RenderedMessage = {
+	id: string;
+	role: "user" | "assistant" | "system";
+	parts: MessagePart[];
+	createdAt: number;
+};
+
+/** The `Message`-shaped subset {@link foldTurnRows} reads. Structural so the
+ * client can pass its own locally-built rows (which carry `turnId` from the
+ * DB row but not the rest of `Message`) without a cast. */
+export type TurnRow = {
+	id: string;
+	role: "user" | "assistant" | "system";
+	parts: MessagePart[];
+	createdAt: number;
+	turnId?: string | null;
+};
+
+/**
+ * Collapse consecutive rows sharing a non-null `turnId` back into one message,
+ * restoring the shape the live view already renders.
+ *
+ * ADR-0026 §3 persists an assistant response as one row per pi-agent-core
+ * *round*, so a turn that calls tools across several rounds lands as several
+ * consecutive rows. Live, the client renders one message per turn (the
+ * server normalizer pins one `messageId` per turn), so the persisted history
+ * used to flip a grouped turn into N separate messages the moment it
+ * reloaded. `turnId` is the signal that says which rows were one turn;
+ * this is the fold that consumes it.
+ *
+ * Rows are folded in list order, and only when *adjacent*: a turn's rows are
+ * always written contiguously (they're appended as the turn progresses, and
+ * nothing else writes to the session mid-turn), so adjacency is guaranteed
+ * in practice — and requiring it keeps the fold from ever pulling a row
+ * across an intervening user message if that invariant is one day broken.
+ *
+ * `turnId` null/absent (user rows, `system` notices, pre-migration rows) is
+ * never grouped and never matched against another null — each stays its own
+ * message, so a legacy session renders exactly as it did before.
+ *
+ * The folded message keeps the first row's `id` and `createdAt` (the turn's
+ * opening timestamp and a stable React key), and concatenates parts in row
+ * order, which is stream order — so tool calls that spanned rounds sit
+ * adjacently in one `parts` array and `ToolCallGroup` groups them again.
+ */
+export function foldTurnRows(rows: TurnRow[]): RenderedMessage[] {
+	const out: RenderedMessage[] = [];
+	let open: RenderedMessage | null = null;
+	let openTurnId: string | null = null;
+
+	for (const row of rows) {
+		const turnId = row.turnId ?? null;
+		if (turnId !== null && turnId === openTurnId && open) {
+			open.parts = [...open.parts, ...row.parts];
+			continue;
+		}
+		open = {
+			id: row.id,
+			role: row.role,
+			parts: row.parts,
+			createdAt: row.createdAt,
+		};
+		openTurnId = turnId;
+		out.push(open);
+	}
+
+	return out;
+}

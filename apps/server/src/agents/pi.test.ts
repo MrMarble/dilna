@@ -60,6 +60,19 @@ const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
 });
 
 describe("piMessagesToDilna", () => {
+	it("stamps every assistant row it writes with the caller's turnId", () => {
+		const entries: AgentMessage[] = [
+			userMessage("run the tests", 1_000),
+			assistantMessage([{ type: "text", text: "All green." }], 1_300),
+		];
+
+		const messages = piMessagesToDilna("s1", entries, "turn-9");
+
+		expect(messages.find((m) => m.role === "assistant")?.turnId).toBe("turn-9");
+		// The user's own row is never grouped with the reply that answers it.
+		expect(messages.find((m) => m.role === "user")?.turnId).toBeUndefined();
+	});
+
 	it("merges a multi-round tool-call turn into one assistant row", () => {
 		const entries: AgentMessage[] = [
 			userMessage("run the tests", 1_000),
@@ -154,6 +167,32 @@ describe("piMessagesToDilna", () => {
 // pi-agent-core round (raw `turn_end`'s own payload shape), as opposed to
 // `piMessagesToDilna`'s whole-`prompt()`-call slice above.
 describe("piRoundToDilnaMessage", () => {
+	it("stamps the caller's turnId so the turn's rounds can be regrouped", () => {
+		const message = assistantMessage(
+			[{ type: "text", text: "Running tests…" }],
+			1_100,
+		);
+
+		const result = piRoundToDilnaMessage(
+			"s1",
+			{ message, toolResults: [] },
+			"turn-7",
+		);
+
+		expect(result?.turnId).toBe("turn-7");
+	});
+
+	it("defaults turnId to null for content that isn't part of an agent turn", () => {
+		const message = assistantMessage(
+			[{ type: "text", text: "Orphaned." }],
+			1_100,
+		);
+
+		const result = piRoundToDilnaMessage("s1", { message, toolResults: [] });
+
+		expect(result?.turnId).toBeNull();
+	});
+
 	it("converts a round's assistant message + resolved tool results into one row", () => {
 		const message = assistantMessage(
 			[
