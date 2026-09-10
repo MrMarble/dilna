@@ -28,6 +28,9 @@ import {
 
 const VAPID_ROW_ID = "instance";
 
+/** Epoch *seconds*, matching every other timestamp column in the schema. */
+const now = () => Math.floor(Date.now() / 1000);
+
 /**
  * VAPID's `sub` claim: a contact for whoever operates this push endpoint, so
  * a push service can reach a human about abuse. dilna is self-hosted with no
@@ -115,6 +118,27 @@ export function deleteSubscription(endpoint: string): void {
 		.run();
 }
 
+/**
+ * Record that the push service accepted a delivery for this endpoint.
+ *
+ * This is the only externally visible evidence that push works end to end:
+ * a subscription row proves a browser *registered*, not that anything was
+ * ever delivered. Without it, distinguishing "never attempted" from "attempted
+ * and rejected" means reading server logs.
+ *
+ * Note this records the push *service* accepting the message (a 201 from
+ * FCM), not the handset displaying it — there is no delivery receipt in the
+ * Web Push protocol. A recent timestamp here with no notification on the
+ * phone narrows the fault to the device or service worker rather than dilna.
+ */
+export function markDelivered(endpoint: string, at: number = now()): void {
+	const db = getDb();
+	db.update(pushSubscriptions)
+		.set({ lastSuccessAt: at })
+		.where(eq(pushSubscriptions.endpoint, endpoint))
+		.run();
+}
+
 export function listSubscriptions(): StoredSubscription[] {
 	const db = getDb();
 	return db
@@ -130,6 +154,27 @@ export function listSubscriptions(): StoredSubscription[] {
 
 export function subscriptionCount(): number {
 	return listSubscriptions().length;
+}
+
+/**
+ * Delivery health for the whole instance, for `/api/push/key`. Answers "has a
+ * push ever actually been accepted?" without needing DB access — the question
+ * that matters when a phone isn't buzzing and it's unclear whether the server
+ * is even trying.
+ */
+export function deliveryStatus(): {
+	subscriptions: number;
+	lastSuccessAt: number | null;
+} {
+	const db = getDb();
+	const rows = db.select().from(pushSubscriptions).all();
+	const timestamps = rows
+		.map((r) => r.lastSuccessAt)
+		.filter((t): t is number => t !== null);
+	return {
+		subscriptions: rows.length,
+		lastSuccessAt: timestamps.length ? Math.max(...timestamps) : null,
+	};
 }
 
 /**
@@ -286,7 +331,12 @@ export async function notifyTurnComplete(
 
 	results.forEach((result, index) => {
 		const subscription = subscriptions[index];
-		if (result === "gone" && subscription) {
+		if (!subscription) return;
+		if (result === "sent") {
+			markDelivered(subscription.endpoint);
+			return;
+		}
+		if (result === "gone") {
 			// The push service says this endpoint no longer exists — the browser
 			// was uninstalled, cleared, or revoked permission. Prune eagerly so
 			// the table doesn't accumulate dead rows.

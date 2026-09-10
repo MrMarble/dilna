@@ -166,3 +166,68 @@ describe("notifyTurnComplete delivery policy", () => {
 		expect(calls).toEqual([]);
 	});
 });
+
+/**
+ * Delivery health. `lastSuccessAt` is the only externally visible evidence
+ * that push works end to end — a subscription row alone proves a browser
+ * registered, not that anything was ever delivered.
+ */
+describe("delivery health", () => {
+	const subscriberEcdh = createECDH("prime256v1");
+	subscriberEcdh.generateKeys();
+	const SUB = {
+		endpoint: "https://push.example.com/health",
+		p256dh: subscriberEcdh.getPublicKey().toString("base64url"),
+		auth: Buffer.alloc(16, 7).toString("base64url"),
+	};
+
+	beforeEach(() => {
+		for (const s of sender.listSubscriptions()) {
+			sender.deleteSubscription(s.endpoint);
+		}
+		sender.saveSubscription(SUB);
+	});
+
+	it("reports no successful delivery for a fresh subscription", () => {
+		expect(sender.deliveryStatus()).toEqual({
+			subscriptions: 1,
+			lastSuccessAt: null,
+		});
+	});
+
+	it("records a timestamp once a push is accepted", async () => {
+		const send: PushTransport = async () => ({ ok: true, status: 201 });
+		await sender.notifyTurnComplete("s1", "My session", send);
+		const { lastSuccessAt } = sender.deliveryStatus();
+		expect(lastSuccessAt).not.toBeNull();
+		// Epoch seconds, matching every other timestamp column.
+		expect(lastSuccessAt).toBeCloseTo(Math.floor(Date.now() / 1000), -1);
+	});
+
+	it("leaves it null when delivery fails, so a failure can't look like success", async () => {
+		const send: PushTransport = async () => ({ ok: false, status: 500 });
+		await sender.notifyTurnComplete("s1", "My session", send);
+		expect(sender.deliveryStatus().lastSuccessAt).toBeNull();
+	});
+
+	it("reports the most recent success across several subscriptions", async () => {
+		sender.saveSubscription({
+			...SUB,
+			endpoint: "https://push.example.com/health-2",
+		});
+		sender.markDelivered(SUB.endpoint, 1000);
+		sender.markDelivered("https://push.example.com/health-2", 2000);
+		expect(sender.deliveryStatus()).toEqual({
+			subscriptions: 2,
+			lastSuccessAt: 2000,
+		});
+	});
+
+	it("survives re-subscription without losing the delivery record", () => {
+		sender.markDelivered(SUB.endpoint, 1234);
+		// A browser re-subscribing upserts on the same endpoint; that must not
+		// silently reset the evidence that delivery once worked.
+		sender.saveSubscription(SUB);
+		expect(sender.deliveryStatus().lastSuccessAt).toBe(1234);
+	});
+});
