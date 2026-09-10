@@ -62,6 +62,7 @@ import {
 	liveTurnReplayEvents,
 } from "./liveTurn";
 import * as messageStore from "./messageStore";
+import { isTurnCompletion, notifyTurnComplete } from "./pushSender";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
 import {
 	defaultSessionTitle,
@@ -662,7 +663,16 @@ class SessionManager {
 		await this.setTitle(session.id, title);
 	}
 
-	async setStatus(id: string, status: Session["status"]): Promise<void> {
+	/**
+	 * Returns the post-write {@link SessionView} it already had to build for the
+	 * global broadcast, so callers needing the session don't re-read it —
+	 * `transitionStatus` runs on every status change and is squarely on the
+	 * session hot path.
+	 */
+	async setStatus(
+		id: string,
+		status: Session["status"],
+	): Promise<SessionView | null> {
 		const db = getDb();
 		const now = Math.floor(Date.now() / 1000);
 		db.update(sessionsTable)
@@ -673,6 +683,7 @@ class SessionManager {
 		if (view) {
 			this.events.broadcastGlobal({ type: "session_status", session: view });
 		}
+		return view;
 	}
 
 	/**
@@ -687,8 +698,44 @@ class SessionManager {
 		id: string,
 		status: Session["status"],
 	): Promise<void> {
-		await this.setStatus(id, status);
+		// The pre-write status has to come from the DB: the in-memory `active`
+		// registry isn't a substitute, because `stopSession`/`markCrashed` remove
+		// their entry *before* transitioning, which would read as "no turn was
+		// running". `setStatus` returns the post-write view it already built, so
+		// this funnel costs one extra read rather than the three an earlier cut
+		// of this code paid.
+		const previous = (await this.get(id))?.status;
+		const view = await this.setStatus(id, status);
 		this.events.broadcast(id, { type: "session_status", status });
+		if (view) this.maybeNotifyTurnComplete(view, previous, status);
+	}
+
+	/**
+	 * Fire a Web Push notification when a turn actually completes (ADR-0029).
+	 *
+	 * "Completes" is the same rule the in-page client uses
+	 * (`useSessionNotifications`): a transition *out of* an active phase into
+	 * `idle`. `transitionStatus` runs for every status change, so without the
+	 * `previous` check this would also fire on `idle → idle` re-writes (e.g.
+	 * `stopSession` on an already-stopped session) and notify about turns that
+	 * never ran.
+	 *
+	 * `crashed` deliberately does not notify, matching the client: a crashed
+	 * session is already conspicuous via the sidebar's red dot, and a push
+	 * saying "finished the turn" would be actively misleading.
+	 *
+	 * Fire-and-forget: push delivery is best-effort and must never delay or
+	 * fail a status transition on the session hot path.
+	 */
+	private maybeNotifyTurnComplete(
+		session: SessionView,
+		previous: Session["status"] | undefined,
+		next: Session["status"],
+	): void {
+		if (!isTurnCompletion(previous, next)) return;
+		void notifyTurnComplete(session.id, session.title).catch((error) => {
+			logger.warn({ sessionId: session.id, err: error }, "push notify failed");
+		});
 	}
 
 	/**

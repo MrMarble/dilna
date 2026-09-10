@@ -134,6 +134,20 @@
 			"when": 1788734402311,
 			"tag": "0018_repo_skills",
 			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "6",
+			"when": 1789000000000,
+			"tag": "0019_push_vapid_keys",
+			"breakpoints": true
+		},
+		{
+			"idx": 20,
+			"version": "6",
+			"when": 1789000000001,
+			"tag": "0020_push_subscriptions",
+			"breakpoints": true
 		}
 	]
 }

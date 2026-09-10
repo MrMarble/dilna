@@ -18,12 +18,14 @@ import {
 } from "./middleware/security";
 import { repoManager } from "./repos/manager";
 import { configRoute } from "./routes/config";
+import { pushRoute } from "./routes/push";
 import { reposRoute } from "./routes/repos";
 import { sessionsRoute } from "./routes/sessions";
 import { skillsRoute } from "./routes/skills";
 import { streamRoute } from "./routes/stream";
 import { usageRoute } from "./routes/usage";
 import { sessionManager } from "./sessions/manager";
+import { primeVapidKeys } from "./sessions/pushSender";
 
 // The instance's provider/model is resolved as: web-settable override (from
 // the `llm_config` row) ?? DILNA_PROVIDER/DILNA_MODEL env fallback (see
@@ -43,6 +45,9 @@ import { sessionManager } from "./sessions/manager";
 primeCustomProviders();
 primeOverrideFromDb();
 primeProviderCredentials();
+// Web push (ADR-0029): load or generate the instance VAPID keypair before any
+// turn can complete, so /api/push/key can serve it immediately.
+primeVapidKeys();
 const envProviderConfig = validateProviderConfig(process.env);
 if (!envProviderConfig.ok && !getOverride()) {
 	logger.warn(
@@ -88,6 +93,7 @@ app.use(
 app.use("/api/*", bodyLimit({ maxSize: 5 * 1024 * 1024 }));
 
 app.route("/api/config", configRoute);
+app.route("/api/push", pushRoute);
 app.route("/api/repos", reposRoute);
 app.route("/api/sessions", sessionsRoute);
 app.route("/api/skills", skillsRoute);
