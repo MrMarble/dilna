@@ -54,7 +54,7 @@ self.addEventListener("push", (event) => {
  */
 self.addEventListener("notificationclick", (event) => {
 	event.notification.close();
-	const sessionId = event.notification.data && event.notification.data.sessionId;
+	const sessionId = event.notification.data?.sessionId;
 	const target = sessionId ? `/?session=${encodeURIComponent(sessionId)}` : "/";
 
 	event.waitUntil(
