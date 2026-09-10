@@ -11,9 +11,14 @@ import {
  * Web Push subscription management (ADR-0029).
  *
  * Three endpoints, all instance-global: dilna has no per-user model, so a
- * subscription registered by any authenticated browser receives every
- * turn-completion notification. All of these sit behind the same bearer-auth
- * middleware as the rest of `/api/*`.
+ * subscription registered by any browser receives every turn-completion
+ * notification.
+ *
+ * These sit behind the same bearer auth as the rest of `/api/*` — which is
+ * *opt-in* (`DILNA_AUTH_TOKEN`; see index.ts), so on a default deployment
+ * they are unauthenticated. That matters more here than for a typical read
+ * route, because `/subscribe` persists a URL the server later POSTs to: see
+ * the scheme check in `isSubscribeBody`.
  */
 export const pushRoute = new Hono();
 
@@ -26,16 +31,23 @@ function isSubscribeBody(body: unknown): body is SubscribeBody {
 	if (typeof body !== "object" || body === null) return false;
 	const b = body as Record<string, unknown>;
 	if (typeof b.endpoint !== "string" || b.endpoint.length === 0) return false;
-	// Reject anything that isn't an absolute http(s) endpoint: this value is
-	// used as a `fetch` target on the server, so a bad one is an SSRF vector,
-	// not just a malformed row.
+	// This value becomes a server-side `fetch` target, so a hostile one is an
+	// SSRF vector rather than just a malformed row. Requiring HTTPS is the
+	// cheap 90%: it rejects `file://`, and it rules out the plaintext
+	// `http://localhost:6379`-style probes at internal services. Real push
+	// endpoints (FCM, Mozilla, WNS) are always HTTPS, so this costs nothing.
+	//
+	// It does not stop an `https://` URL pointing at a private address; a full
+	// fix would be an allowlist of known push origins, which would also break
+	// self-hosted push services. Given a single-user app whose other routes
+	// already run arbitrary agent code, this is the proportionate line.
 	let parsed: URL;
 	try {
 		parsed = new URL(b.endpoint);
 	} catch {
 		return false;
 	}
-	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return false;
+	if (parsed.protocol !== "https:") return false;
 	const keys = b.keys as Record<string, unknown> | undefined;
 	return (
 		typeof keys === "object" &&

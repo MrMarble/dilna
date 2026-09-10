@@ -92,10 +92,17 @@ describe("POST /subscribe", () => {
 		expect(sender.subscriptionCount()).toBe(0);
 	});
 
-	it("rejects a non-http endpoint, which would be an SSRF vector", async () => {
+	// The endpoint becomes a server-side `fetch` target, so these are SSRF
+	// vectors rather than merely malformed rows.
+	it.each([
+		"file:///etc/passwd",
+		"http://localhost:6379/",
+		"http://169.254.169.254/latest/meta-data/",
+		"not-a-url",
+	])("rejects a non-HTTPS endpoint (%s)", async (endpoint) => {
 		const res = await pushRoute.request("/subscribe", {
 			method: "POST",
-			body: JSON.stringify({ ...SUBSCRIPTION, endpoint: "file:///etc/passwd" }),
+			body: JSON.stringify({ ...SUBSCRIPTION, endpoint }),
 		});
 		expect(res.status).toBe(400);
 		expect(sender.subscriptionCount()).toBe(0);

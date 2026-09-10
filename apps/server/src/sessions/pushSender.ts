@@ -133,6 +133,34 @@ export function subscriptionCount(): number {
 }
 
 /**
+ * How a payload actually reaches a push service. Defaults to the global
+ * `fetch`; tests substitute a stub.
+ *
+ * This is the module's one real seam. Delivery *policy* — which HTTP status
+ * means "prune this subscription" versus "retry later" — is the most
+ * consequential logic here (pruning a live endpoint silently unsubscribes a
+ * working phone), and baking in the global `fetch` would put it past the
+ * interface where no test can reach it.
+ */
+export type PushTransport = (
+	endpoint: string,
+	init: { headers: Record<string, string>; body: Uint8Array },
+) => Promise<{ ok: boolean; status: number }>;
+
+/** Bound the wait on a push service. Without it a hung endpoint leaks a
+ * pending request per subscription per turn — fire-and-forget means nothing
+ * ever awaits these to completion. */
+const PUSH_TIMEOUT_MS = 10_000;
+
+const defaultTransport: PushTransport = async (endpoint, init) =>
+	fetch(endpoint, {
+		method: "POST",
+		headers: init.headers,
+		body: init.body,
+		signal: AbortSignal.timeout(PUSH_TIMEOUT_MS),
+	});
+
+/**
  * Whether a status transition represents a completed turn worth notifying
  * about — the server-side twin of `useSessionNotifications`'s client rule.
  *
@@ -175,13 +203,13 @@ async function sendOne(
 	subscription: StoredSubscription,
 	payload: PushPayload,
 	vapid: VapidKeypair,
+	send: PushTransport,
 ): Promise<"sent" | "gone" | "failed"> {
 	const body = encryptPayload(JSON.stringify(payload), {
 		p256dh: subscription.p256dh,
 		auth: subscription.auth,
 	});
-	const response = await fetch(subscription.endpoint, {
-		method: "POST",
+	const response = await send(subscription.endpoint, {
 		headers: {
 			Authorization: buildVapidHeader(
 				subscription.endpoint,
@@ -190,9 +218,10 @@ async function sendOne(
 			),
 			"Content-Encoding": "aes128gcm",
 			"Content-Type": "application/octet-stream",
-			// Wake the device even when it's in a doze state — a completed turn
-			// is the whole point of the notification.
-			Urgency: "normal",
+			// Wake the device even when it's dozing — reaching a locked phone is
+			// the whole point, and `normal` lets the OS defer delivery until the
+			// next time it happens to wake.
+			Urgency: "high",
 			TTL: "86400",
 		},
 		body: new Uint8Array(body),
@@ -224,6 +253,7 @@ async function sendOne(
 export async function notifyTurnComplete(
 	sessionId: string,
 	sessionTitle: string,
+	send: PushTransport = defaultTransport,
 ): Promise<void> {
 	const vapid = vapidCache;
 	if (!vapid) return;
@@ -240,7 +270,7 @@ export async function notifyTurnComplete(
 	const results = await Promise.all(
 		subscriptions.map(async (subscription) => {
 			try {
-				return await sendOne(subscription, payload, vapid);
+				return await sendOne(subscription, payload, vapid, send);
 			} catch (error) {
 				logger.warn(
 					{

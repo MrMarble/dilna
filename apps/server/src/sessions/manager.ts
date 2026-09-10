@@ -663,7 +663,16 @@ class SessionManager {
 		await this.setTitle(session.id, title);
 	}
 
-	async setStatus(id: string, status: Session["status"]): Promise<void> {
+	/**
+	 * Returns the post-write {@link SessionView} it already had to build for the
+	 * global broadcast, so callers needing the session don't re-read it —
+	 * `transitionStatus` runs on every status change and is squarely on the
+	 * session hot path.
+	 */
+	async setStatus(
+		id: string,
+		status: Session["status"],
+	): Promise<SessionView | null> {
 		const db = getDb();
 		const now = Math.floor(Date.now() / 1000);
 		db.update(sessionsTable)
@@ -674,6 +683,7 @@ class SessionManager {
 		if (view) {
 			this.events.broadcastGlobal({ type: "session_status", session: view });
 		}
+		return view;
 	}
 
 	/**
@@ -688,10 +698,16 @@ class SessionManager {
 		id: string,
 		status: Session["status"],
 	): Promise<void> {
+		// The pre-write status has to come from the DB: the in-memory `active`
+		// registry isn't a substitute, because `stopSession`/`markCrashed` remove
+		// their entry *before* transitioning, which would read as "no turn was
+		// running". `setStatus` returns the post-write view it already built, so
+		// this funnel costs one extra read rather than the three an earlier cut
+		// of this code paid.
 		const previous = (await this.get(id))?.status;
-		await this.setStatus(id, status);
+		const view = await this.setStatus(id, status);
 		this.events.broadcast(id, { type: "session_status", status });
-		this.maybeNotifyTurnComplete(id, previous, status);
+		if (view) this.maybeNotifyTurnComplete(view, previous, status);
 	}
 
 	/**
@@ -712,20 +728,14 @@ class SessionManager {
 	 * fail a status transition on the session hot path.
 	 */
 	private maybeNotifyTurnComplete(
-		id: string,
+		session: SessionView,
 		previous: Session["status"] | undefined,
 		next: Session["status"],
 	): void {
 		if (!isTurnCompletion(previous, next)) return;
-		void (async () => {
-			try {
-				const session = await this.get(id);
-				if (!session) return;
-				await notifyTurnComplete(id, session.title);
-			} catch (error) {
-				logger.warn({ sessionId: id, err: error }, "push notify failed");
-			}
-		})();
+		void notifyTurnComplete(session.id, session.title).catch((error) => {
+			logger.warn({ sessionId: session.id, err: error }, "push notify failed");
+		});
 	}
 
 	/**

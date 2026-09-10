@@ -76,6 +76,15 @@ built-in `node:crypto`. Implemented directly, this is a contained amount of
 code against two stable RFCs, and avoids taking on an unmaintained dependency
 for a security-sensitive path.
 
+### 2b. Delivery accepts its transport
+
+`notifyTurnComplete` takes an optional `PushTransport` rather than reaching
+for the global `fetch`. Delivery *policy* — 404/410 prunes the subscription,
+anything else retains it — is the most consequential logic in the module:
+pruning a live endpoint silently unsubscribes a working phone, and retaining
+a dead one leaks rows forever. With `fetch` baked in, that policy sits past
+the interface where no test can reach it.
+
 ### 3. Send from `transitionStatus()`
 
 ADR-0016 §1 established `transitionStatus()` as the single funnel every
@@ -135,5 +144,16 @@ for a problem that does not currently manifest.
   third-party service.
 - Subscriptions expire or are revoked by the browser. The sender must prune
   on `404`/`410` responses, or the table accumulates dead endpoints.
+- `/api/push/subscribe` persists a URL the server later POSTs to, and dilna's
+  bearer auth is opt-in (`DILNA_AUTH_TOKEN`), so on a default deployment the
+  route is unauthenticated. Endpoints are required to be HTTPS, which rejects
+  `file://` and plaintext probes at internal services, but an `https://` URL
+  pointing at a private address is still accepted. A tighter fix would be an
+  allowlist of known push origins, at the cost of breaking self-hosted push
+  services.
+- `transitionStatus` pays one extra `SELECT` per status change to read the
+  pre-write status. The in-memory `active` registry can't substitute for it:
+  `stopSession`/`markCrashed` delete their entry *before* transitioning, so
+  reading it would report "no turn was running" exactly when one just did.
 - The unread-badge path is unchanged and remains the always-on fallback for
   browsers where push is unavailable or permission is denied.
