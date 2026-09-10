@@ -62,6 +62,7 @@ import {
 	liveTurnReplayEvents,
 } from "./liveTurn";
 import * as messageStore from "./messageStore";
+import { isTurnCompletion, notifyTurnComplete } from "./pushSender";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
 import {
 	defaultSessionTitle,
@@ -687,8 +688,44 @@ class SessionManager {
 		id: string,
 		status: Session["status"],
 	): Promise<void> {
+		const previous = (await this.get(id))?.status;
 		await this.setStatus(id, status);
 		this.events.broadcast(id, { type: "session_status", status });
+		this.maybeNotifyTurnComplete(id, previous, status);
+	}
+
+	/**
+	 * Fire a Web Push notification when a turn actually completes (ADR-0029).
+	 *
+	 * "Completes" is the same rule the in-page client uses
+	 * (`useSessionNotifications`): a transition *out of* an active phase into
+	 * `idle`. `transitionStatus` runs for every status change, so without the
+	 * `previous` check this would also fire on `idle → idle` re-writes (e.g.
+	 * `stopSession` on an already-stopped session) and notify about turns that
+	 * never ran.
+	 *
+	 * `crashed` deliberately does not notify, matching the client: a crashed
+	 * session is already conspicuous via the sidebar's red dot, and a push
+	 * saying "finished the turn" would be actively misleading.
+	 *
+	 * Fire-and-forget: push delivery is best-effort and must never delay or
+	 * fail a status transition on the session hot path.
+	 */
+	private maybeNotifyTurnComplete(
+		id: string,
+		previous: Session["status"] | undefined,
+		next: Session["status"],
+	): void {
+		if (!isTurnCompletion(previous, next)) return;
+		void (async () => {
+			try {
+				const session = await this.get(id);
+				if (!session) return;
+				await notifyTurnComplete(id, session.title);
+			} catch (error) {
+				logger.warn({ sessionId: id, err: error }, "push notify failed");
+			}
+		})();
 	}
 
 	/**

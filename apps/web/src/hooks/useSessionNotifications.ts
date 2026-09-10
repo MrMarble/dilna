@@ -1,6 +1,7 @@
 import type { SessionStatus, SessionView } from "@dilna/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
+import { useWebPush } from "@/hooks/useWebPush";
 
 /**
  * Desktop/browser notifications on turn completion — issue #52.
@@ -29,6 +30,14 @@ import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
  *    bell render, and it's the graceful fallback when the user never grants
  *    Notification permission. Selecting a session clears its unread count,
  *    so "read" means "you've actually looked at it".
+ *
+ * 3. **Web Push** (ADR-0029, `useWebPush`) — the background channel. Surfaces
+ *    1 and 2 both require a live page, which on Android is the exception
+ *    rather than the rule: Chrome evicts backgrounded tabs (dropping the SSE
+ *    stream this hook listens to) and doesn't support `new Notification()` on
+ *    mobile at all. Push moves the decision server-side so a completed turn
+ *    reaches the phone with the browser closed. This hook only owns the
+ *    *subscription*, tied to the same toggle; delivery lives in `sw.js`.
  */
 
 /** Statuses that signal a turn is complete and durable (ADR-0016 §1: any
@@ -48,6 +57,12 @@ export function useSessionNotifications({
 }: {
 	selectedSessionId: string | null;
 }) {
+	const {
+		pushSupported,
+		pushSubscribed,
+		subscribeToPush,
+		unsubscribeFromPush,
+	} = useWebPush();
 	const [unreadBySessionId, setUnreadBySessionId] = useState<
 		Record<string, number>
 	>({});
@@ -84,6 +99,10 @@ export function useSessionNotifications({
 					granted = false;
 				}
 			}
+			// Register for push in the same gesture. Permission was just asked
+			// for above, so this won't prompt a second time; it's skipped when
+			// denied because `pushManager.subscribe` would only throw.
+			if (granted) await subscribeToPush();
 			// Persist the opt-in even if OS permission is denied — the toggle
 			// reflects the *intent*; if they later grant permission in the
 			// browser, notifications start flowing. The bell shows permission
@@ -91,9 +110,10 @@ export function useSessionNotifications({
 			setEnabled(true);
 			return granted;
 		}
+		await unsubscribeFromPush();
 		setEnabled(false);
 		return true;
-	}, [enabled, setEnabled]);
+	}, [enabled, setEnabled, subscribeToPush, unsubscribeFromPush]);
 
 	const handleSessionStatus = useCallback((session: SessionView) => {
 		const prev = previousStatusRef.current[session.id];
@@ -192,5 +212,11 @@ export function useSessionNotifications({
 		forgetSession,
 		notificationsEnabled: enabled,
 		toggleNotifications: toggle,
+		/// Whether background (push) delivery is available and active — distinct
+		/// from `notificationsEnabled`, which is only the user's intent. Drives
+		/// the bell's tooltip so "on" can't imply a capability the browser
+		/// doesn't have.
+		pushSupported,
+		pushSubscribed,
 	};
 }

@@ -482,4 +482,23 @@ export const api = {
 				method: "DELETE",
 			}),
 	},
+	/** Web Push subscription management (ADR-0029). */
+	push: {
+		/** The instance VAPID public key needed by `pushManager.subscribe`.
+		 * `configured: false` means push is unavailable, not that it errored. */
+		key: () =>
+			request<{ publicKey: string | null; configured: boolean }>(
+				"/api/push/key",
+			),
+		subscribe: (subscription: PushSubscriptionJSON) =>
+			request<{ ok: boolean; subscriptions: number }>("/api/push/subscribe", {
+				method: "POST",
+				body: JSON.stringify(subscription),
+			}),
+		unsubscribe: (endpoint: string) =>
+			request<{ ok: boolean; subscriptions: number }>("/api/push/unsubscribe", {
+				method: "POST",
+				body: JSON.stringify({ endpoint }),
+			}),
+	},
 };

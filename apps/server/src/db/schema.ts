@@ -283,6 +283,60 @@ export const sessionArchive = sqliteTable("session_archive", {
 	archivedAt: integer("archived_at").notNull().$defaultFn(now),
 });
 
+/**
+ * The instance's VAPID keypair for Web Push (ADR-0029) — a single row
+ * (congruence key `id = "instance"`), generated on first boot when absent and
+ * never rotated thereafter.
+ *
+ * Rotation is what makes this a *table* rather than an env var: VAPID keys
+ * identify the application server to the push service, and every stored
+ * subscription in `push_subscriptions` is bound to the key that created it.
+ * Regenerating the pair silently invalidates all of them, so the value has to
+ * survive restarts and redeploys without the operator having to manage it.
+ *
+ * Stored plaintext, consistent with `provider_credentials` above — dilna is a
+ * self-hosted single-user app with no auth layer. Unlike a provider API key,
+ * this secret grants nothing beyond signing pushes to this instance's own
+ * subscribers.
+ *
+ * Both keys are base64url, matching the wire format the Web Push APIs use:
+ * `publicKey` is the uncompressed P-256 point handed to `pushManager.subscribe`
+ * as `applicationServerKey`, `privateKey` its PKCS#8 encoding.
+ */
+export const pushVapidKeys = sqliteTable("push_vapid_keys", {
+	id: text("id").primaryKey(),
+	publicKey: text("public_key").notNull(),
+	privateKey: text("private_key").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+});
+
+/**
+ * A browser's Web Push subscription (ADR-0029). Instance-global: dilna has no
+ * `userId` anywhere in the schema and authenticates with one shared bearer
+ * token, so there is no owner to scope these to — every registered browser
+ * receives every turn-completion notification.
+ *
+ * Keyed by `endpoint` because that *is* the push service's identifier for the
+ * subscription; re-subscribing the same browser yields the same endpoint, so
+ * an upsert naturally de-duplicates rather than accumulating rows.
+ *
+ * `p256dh` and `auth` are the subscription's own public key and shared secret
+ * (base64url), used to encrypt each payload per RFC 8291 — without them a
+ * push can only be sent empty. They are not dilna secrets: they are generated
+ * by the subscribing browser and are useless without the instance's VAPID
+ * private key.
+ *
+ * `lastSuccessAt` is diagnostic only. Dead subscriptions are pruned eagerly
+ * when the push service reports 404/410 (see pushSender.ts), not by age.
+ */
+export const pushSubscriptions = sqliteTable("push_subscriptions", {
+	endpoint: text("endpoint").primaryKey(),
+	p256dh: text("p256dh").notNull(),
+	auth: text("auth").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+	lastSuccessAt: integer("last_success_at"),
+});
+
 export const sessionsRelations = relations(sessions, ({ many }) => ({
 	messages: many(messages),
 }));

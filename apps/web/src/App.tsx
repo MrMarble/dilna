@@ -90,6 +90,8 @@ export function App() {
 		forgetSession,
 		notificationsEnabled,
 		toggleNotifications,
+		pushSupported,
+		pushSubscribed,
 	} = useSessionNotifications({ selectedSessionId });
 	// Desktop-only: the Sidebar/ContextPanel are otherwise always-open fixed
 	// columns that eat most of the width on a laptop-size (not phone-size)
@@ -510,6 +512,8 @@ export function App() {
 		deletingSessionIds,
 		notificationsEnabled,
 		toggleNotifications,
+		pushSupported,
+		pushSubscribed,
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
 		currentSession: selectedSession,
 		onDeleteCurrentSession: handleDeleteSession,

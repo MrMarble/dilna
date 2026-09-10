@@ -131,6 +131,11 @@ type Props = {
 	 * rendered but highlighted destructive-red until it disappears, instead of
 	 * looking like the click never registered. */
 	deletingSessionIds?: string[];
+	/** Whether background push delivery is available/active (ADR-0029) — only
+	 * used for the bell's tooltip, so "on" can't imply a capability the
+	 * browser doesn't have. */
+	pushSupported?: boolean;
+	pushSubscribed?: boolean;
 	/** Whether browser Notifications are enabled (issue #52). Drives the
 	 * bell's state and tooltip. */
 	notificationsEnabled: boolean;
@@ -171,6 +176,8 @@ export function Sidebar({
 	deletingSessionIds,
 	notificationsEnabled,
 	toggleNotifications,
+	pushSupported,
+	pushSubscribed,
 }: Props) {
 	const isSheet = variant === "sheet";
 	const deletingIds = deletingSessionIds ?? EMPTY_IDS;
@@ -196,6 +203,8 @@ export function Sidebar({
 						onClick={toggleNotifications}
 						enabled={notificationsEnabled}
 						unreadTotal={totalUnread}
+						pushSupported={pushSupported}
+						pushSubscribed={pushSubscribed}
 						className="ml-auto"
 					/>
 					<ThemeToggle />
@@ -276,6 +285,8 @@ export function Sidebar({
 							onClick={toggleNotifications}
 							enabled={notificationsEnabled}
 							unreadTotal={totalUnread}
+							pushSupported={pushSupported}
+							pushSubscribed={pushSubscribed}
 						/>
 						<span className="text-xs text-muted-foreground">
 							{totalUnread > 0
@@ -662,11 +673,15 @@ function NotificationsToggle({
 	onClick,
 	enabled,
 	unreadTotal,
+	pushSupported,
+	pushSubscribed,
 	className,
 }: {
 	onClick: () => void;
 	enabled: boolean;
 	unreadTotal: number;
+	pushSupported?: boolean;
+	pushSubscribed?: boolean;
 	className?: string;
 }) {
 	const Icon = enabled ? Bell : BellOff;
@@ -675,9 +690,22 @@ function NotificationsToggle({
 			? Notification.permission
 			: "unsupported";
 	let title = "Notify me when a session's turn completes";
-	if (enabled) title = "Turn off session-completion notifications";
-	else if (permission === "denied")
+	if (enabled) {
+		// "On" alone used to imply background delivery that may not exist — the
+		// in-page Notification path needs a live tab, and on Android it doesn't
+		// work at all (ADR-0029). Say which channel is actually active.
+		if (pushSubscribed) {
+			title =
+				"Notifications on (background delivery active) — click to turn off";
+		} else if (pushSupported === false) {
+			title =
+				"Notifications on, but this browser can't deliver them in the background — only while dilna is open";
+		} else {
+			title = "Turn off session-completion notifications";
+		}
+	} else if (permission === "denied") {
 		title = "Notifications blocked in the browser — allow them to enable";
+	}
 	return (
 		<button
 			type="button"
