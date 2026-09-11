@@ -118,9 +118,11 @@ export function promotePendingUserMessage(sessionId: string): void {
  * was among the freshly persisted ones — `runTurn` uses that to decide the
  * pending-user placeholder's fate (drop vs promote).
  *
- * The id-based dedup is what makes a wider, partially-overlapping retry
- * slice safe (see `ActiveAgent.persistedCount`), so callers may re-offer
- * content that already landed incrementally.
+ * The id-based dedup here only catches rows dilna itself has seen before by
+ * id; it cannot recognize re-converted content, because both pi→dilna
+ * converters mint fresh UUIDs. Keeping an overlapping retry slice from
+ * duplicating rounds is therefore the *caller's* job — see
+ * `ActiveAgent.persistedRounds` and issue #190.
  */
 export function persistConverted(
 	sessionId: string,

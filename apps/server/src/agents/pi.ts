@@ -872,55 +872,48 @@ export function normalizePiEvent(
 
 /**
  * Convert one turn's new transcript entries (`agent.state.messages.slice(
- * lengthBefore)`, captured by the caller — see `sessions/manager.ts`'s
- * pi-shaped `runTurn` body) into dilna `Message[]` rows. Mirrors
- * `claudeMessagesToDilna`'s merge shape (multiple internal assistant rounds
- * within one turn collapse into a single dilna `Message{role:"assistant"}`
- * row) but simpler: no transcript-uuid bookkeeping (ids are synthesized
- * directly), no task-notification special-casing (pi has no Task-tool
- * concept), and no backwards-stamping timestamp synthesis — pi's
- * `AgentMessage.timestamp` is a real wall-clock value, used directly.
+ * persistedCount)`, captured by the caller — see `sessions/manager.ts`'s
+ * `persistMessagesFromAgent`) into dilna `Message[]` rows, **one assistant
+ * row per pi-agent-core round**, exactly matching what the incremental path
+ * ({@link piRoundToDilnaMessage}) writes for the same content.
+ *
+ * That per-round granularity is half the fix for issue #190. This used to
+ * merge every round in the slice into one row (mirroring
+ * `claudeMessagesToDilna`), so when the safety net's slice overlapped rounds
+ * the incremental path had already written, it re-persisted them as a single
+ * fresh-id row — invisible to `persistConverted`'s id-based dedup, hence a
+ * duplicate.
+ *
+ * Matching granularity alone doesn't fix that (both converters mint fresh
+ * UUIDs, so ids still never match); it is what makes the *other* half
+ * expressible. The manager skips rounds it already persisted, tracked by
+ * entry identity in `ActiveAgent.persistedRounds` — and "round N already
+ * landed" has no meaning against a row that merged rounds N-1..N+2. See
+ * `persistMessagesFromAgent`.
+ *
+ * A round is an assistant entry plus the `toolResult` entries that answer its
+ * tool calls — the same unit raw pi-agent-core reports as one `turn_end`, and
+ * the flat transcript lays them out in exactly that order.
+ *
+ * Simpler than `claudeMessagesToDilna` in the ways that survived the change:
+ * no transcript-uuid bookkeeping (ids are synthesized directly), no
+ * task-notification special-casing (pi has no Task-tool concept), and no
+ * backwards-stamping timestamp synthesis — pi's `AgentMessage.timestamp` is a
+ * real wall-clock value, used directly.
  */
 export function piMessagesToDilna(
 	sessionId: string,
 	entries: AgentMessage[],
 	/** The turn these entries belong to (see `Message.turnId`). Stamped on
-	 * every assistant row this call produces, so the row this whole-turn
-	 * collapse writes groups with the per-round rows the incremental path
-	 * wrote for the same turn. Required — every caller knows which turn it is
-	 * persisting (see the same parameter on {@link piRoundToDilnaMessage}). */
+	 * every assistant row this call produces, so the rows this safety net
+	 * writes group with the per-round rows the incremental path wrote for the
+	 * same turn. Required — every caller knows which turn it is persisting
+	 * (see the same parameter on {@link piRoundToDilnaMessage}). */
 	turnId: string,
 ): Message[] {
-	const toolResults = new Map<string, { output: string; error?: string }>();
-	for (const entry of entries) {
-		if (entry.role !== "toolResult") continue;
-		const output = contentBlocksToText(entry.content);
-		toolResults.set(entry.toolCallId, {
-			output,
-			error: entry.isError ? output : undefined,
-		});
-	}
-
 	const messages: Message[] = [];
-	let turn: { id: string; createdAt: number; parts: MessagePart[] } | null =
-		null;
-	const flushTurn = () => {
-		if (turn && turn.parts.length > 0) {
-			messages.push({
-				id: turn.id,
-				sessionId,
-				role: "assistant",
-				parts: turn.parts,
-				turnId,
-				createdAt: turn.createdAt,
-			});
-		}
-		turn = null;
-	};
-
 	for (const entry of entries) {
 		if (entry.role === "user") {
-			flushTurn();
 			const text = contentBlocksToText(entry.content);
 			if (text) {
 				messages.push({
@@ -934,41 +927,72 @@ export function piMessagesToDilna(
 					createdAt: Math.floor(entry.timestamp / 1000),
 				});
 			}
+		}
+		// assistant entries become rounds below; toolResult entries are folded
+		// into their owning round there, not persisted as their own row —
+		// mirrors how tool results merge back into their owning tool_call part
+		// rather than becoming a row.
+	}
+
+	// Rebuild each round from the flat slice and hand it to the *same*
+	// converter the incremental path uses, so there is exactly one place that
+	// decides what a round's row looks like.
+	for (const round of piRounds(entries)) {
+		const message = piRoundToDilnaMessage(sessionId, round, turnId);
+		if (message) messages.push(message);
+	}
+
+	// The transcript is already chronological; re-sorting keeps the user row
+	// (collected in the first pass) ahead of the rounds that answer it without
+	// depending on which pass produced it.
+	messages.sort((a, b) => a.createdAt - b.createdAt);
+	return messages;
+}
+
+/**
+ * Split a flat transcript slice into pi-agent-core rounds: each assistant
+ * entry, paired with the `toolResult` entries that answer its tool calls.
+ *
+ * Reconstructs from `agent.state.messages` what raw pi-agent-core reports
+ * directly as a `turn_end` payload, so the turn-end safety net
+ * ({@link piMessagesToDilna}) and the incremental path
+ * (`SessionManager.persistRoundEvent`) can agree on row granularity even
+ * though only one of them sees real `turn_end` events (issue #190).
+ *
+ * Results are matched to their call by `toolCallId`, not by position: pi
+ * pushes a round's tool results after its assistant entry, but a result whose
+ * call belongs to an *earlier* round (or whose assistant entry was truncated
+ * out of this slice) would otherwise be silently attached to the wrong round.
+ * Orphan results — no matching call anywhere in the slice — are dropped, which
+ * is what the old merge did too: a tool result with no call to merge into has
+ * no representable place in a dilna row.
+ *
+ * Exported for tests; `piMessagesToDilna` is the only production caller.
+ */
+export function piRounds(
+	entries: AgentMessage[],
+): { message: AgentMessage; toolResults: ToolResultMessage[] }[] {
+	const rounds: {
+		message: AgentMessage;
+		toolResults: ToolResultMessage[];
+	}[] = [];
+	/** toolCallId -> the round that issued it. */
+	const owner = new Map<string, (typeof rounds)[number]>();
+
+	for (const entry of entries) {
+		if (entry.role === "assistant") {
+			const round = { message: entry, toolResults: [] as ToolResultMessage[] };
+			rounds.push(round);
+			for (const block of entry.content) {
+				if (block.type === "toolCall") owner.set(block.id, round);
+			}
 			continue;
 		}
-		if (entry.role === "assistant") {
-			if (!turn) {
-				turn = {
-					id: randomUUID(),
-					createdAt: Math.floor(entry.timestamp / 1000),
-					parts: [],
-				};
-			}
-			for (const block of entry.content) {
-				if (block.type === "text") {
-					if (block.text) turn.parts.push({ type: "text", text: block.text });
-				} else if (block.type === "toolCall") {
-					const result = toolResults.get(block.id);
-					turn.parts.push({
-						type: "tool_call",
-						callId: block.id,
-						tool: block.name,
-						input: block.arguments,
-						output: result?.output ?? "",
-						error: result?.error,
-					});
-				}
-				// ThinkingContent dropped — dilna already discards thinking
-				// content from persisted history (see `AgentStreamEvent`'s
-				// `thinking` event doc comment).
-			}
+		if (entry.role === "toolResult") {
+			owner.get(entry.toolCallId)?.toolResults.push(entry);
 		}
-		// toolResult entries are folded into `toolResults` above, not
-		// persisted as their own row — mirrors how tool results merge back
-		// into their owning tool_call part rather than becoming a row.
 	}
-	flushTurn();
-	return messages;
+	return rounds;
 }
 
 /**

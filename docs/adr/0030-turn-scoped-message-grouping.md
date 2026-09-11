@@ -175,3 +175,24 @@ same `turnId` at least makes any such duplicate visible as two rows in one
 group rather than two unrelated-looking messages.
 
 Tracked as issue #190.
+
+**Resolved (issue #190).** Both fixes turned out to be needed, because
+investigating it surfaced a second defect the duplicate was hiding:
+
+- `piMessagesToDilna` now emits **one row per round**, via the same
+  `piRoundToDilnaMessage` the incremental path uses (a shared `piRounds`
+  helper rebuilds round boundaries from the flat transcript). The two
+  converters can no longer disagree about what a round's row looks like.
+- The overlap is separately made harmless by `ActiveAgent.persistedRounds`, a
+  `WeakSet` of the assistant entries whose rows already landed. The safety net
+  filters the slice through it, so dedup no longer depends on ids matching
+  across converters — which they never would, both minting fresh UUIDs.
+
+The second defect: `persistedCount` was doubling as a success counter *and* a
+transcript position. A round whose incremental write threw left it unadvanced
+while later rounds still advanced it, so it came to point **past** the failed
+round. The turn-end slice therefore started mid-transcript — re-offering an
+already-persisted round (the reported duplicate) while never re-offering the
+failed one at all (silent loss of that round). `persistedCount` is now purely
+a position, advanced for every entry seen regardless of outcome; durability is
+`persistedRounds`'s concern alone.

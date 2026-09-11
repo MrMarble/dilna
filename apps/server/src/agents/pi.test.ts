@@ -74,7 +74,12 @@ describe("piMessagesToDilna", () => {
 		expect(messages.find((m) => m.role === "user")?.turnId).toBeNull();
 	});
 
-	it("merges a multi-round tool-call turn into one assistant row", () => {
+	// Issue #190: this used to merge the whole turn into one row, which is
+	// what let the safety net duplicate rounds the incremental path had
+	// already written (the two converters minted different ids for identical
+	// content, defeating `persistConverted`'s id-based dedup). Both paths now
+	// emit one row per round.
+	it("splits a multi-round tool-call turn into one assistant row per round", () => {
 		const entries: AgentMessage[] = [
 			userMessage("run the tests", 1_000),
 			assistantMessage(
@@ -90,7 +95,7 @@ describe("piMessagesToDilna", () => {
 
 		const messages = piMessagesToDilna("s1", entries, "turn-1");
 
-		expect(messages).toHaveLength(2);
+		expect(messages).toHaveLength(3);
 		expect(messages[0]).toMatchObject({
 			role: "user",
 			parts: [{ type: "text", text: "run the tests" }],
@@ -107,9 +112,50 @@ describe("piMessagesToDilna", () => {
 					output: "3 passed",
 					error: undefined,
 				},
-				{ type: "text", text: "All green." },
 			],
 		});
+		expect(messages[2]).toMatchObject({
+			role: "assistant",
+			parts: [{ type: "text", text: "All green." }],
+		});
+		// Every round of the turn carries the turn's id, so the web client
+		// regroups them into the single message the live view showed.
+		expect(messages.slice(1).map((m) => m.turnId)).toEqual([
+			"turn-1",
+			"turn-1",
+		]);
+		// Distinct primary keys — grouping is `turnId`'s job, not the id's.
+		expect(new Set(messages.map((m) => m.id)).size).toBe(3);
+	});
+
+	// The granularity now matches `piRoundToDilnaMessage` exactly, which is
+	// the property the #190 fix rests on: the manager's skip-list is keyed by
+	// round, so "this round already landed" has to mean the same thing to both
+	// converters.
+	it("produces the same row shape per round as the incremental converter", () => {
+		const assistant = assistantMessage(
+			[
+				{ type: "text", text: "Running tests…" },
+				toolCall("c1", "bash", { command: "npm test" }),
+			],
+			1_100,
+		);
+		const result = toolResultMessage("c1", "3 passed", false, 1_200);
+
+		const viaSafetyNet = piMessagesToDilna("s1", [assistant, result], "turn-1");
+		const viaIncremental = piRoundToDilnaMessage(
+			"s1",
+			// biome-ignore lint/suspicious/noExplicitAny: same structural shape as the other piRoundToDilnaMessage tests here.
+			{ message: assistant, toolResults: [result] } as any,
+			"turn-1",
+		);
+
+		expect(viaSafetyNet).toHaveLength(1);
+		// Ids are freshly minted per call and deliberately differ — everything
+		// that describes the *content* must not.
+		const { id: _a, ...safetyNetRow } = viaSafetyNet[0] as Message;
+		const { id: _b, ...incrementalRow } = viaIncremental as Message;
+		expect(safetyNetRow).toEqual(incrementalRow);
 	});
 
 	it("fills a tool_call part's output/error from the matching ToolResultMessage by toolCallId", () => {
