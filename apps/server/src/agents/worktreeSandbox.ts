@@ -439,11 +439,19 @@ export function ensureWritablePathsExist(): void {
  * the policy assertable in a unit test (see `worktreeSandbox.test.ts`).
  */
 export type SandboxGrant = {
-	/** Passed as both `filesystem.allowWrite` and `filesystem.allowRead`.
+	/** Passed as `filesystem.allowWrite`, and included in `allowRead` too.
 	 * Read access is granted over the same set so the Worktree stays readable
 	 * within the broader `denyRead` when it happens to be nested inside
 	 * dilna's own checkout (see {@link denyReadPaths}). */
 	writablePaths: string[];
+	/** Readable but **not** writable — added to `filesystem.allowRead` only.
+	 * Today exactly the Session's attachment directory (issue #53, ADR-0031):
+	 * uploads are stored outside every Worktree so they never enter a Repo's
+	 * git tree, which would otherwise make them unreachable to the sandboxed
+	 * bash the Agent uses to act on them. Read-only because copying an upload
+	 * *into* the Worktree is the supported move (`cp` reads here, writes
+	 * there); editing the user's original file in place is not. */
+	readOnlyPaths: string[];
 	/** Masked from reads: dilna's own checkout when the data dir is nested
 	 * inside it, plus every *sibling* Session's Worktree (the isolation cost
 	 * of binding the whole worktrees dir as one writable ancestor). */
@@ -472,6 +480,9 @@ export type SandboxGrant = {
  */
 export function resolveSandboxGrant(
 	worktreePath: string,
+	/** Extra roots the sandboxed bash may read but not write — see
+	 * {@link SandboxGrant.readOnlyPaths}. */
+	readOnlyPaths: string[] = [],
 	moduleDir: string = import.meta.dirname,
 ): SandboxGrant {
 	const dataDir = getDataDir();
@@ -506,6 +517,7 @@ export function resolveSandboxGrant(
 
 	return {
 		writablePaths,
+		readOnlyPaths,
 		denyReadPaths,
 		env: toolchainEnv(worktreePath),
 		nestedInCheckout,

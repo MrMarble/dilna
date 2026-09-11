@@ -61,4 +61,38 @@ describe("sessionsRoute validation", () => {
 		});
 		expect(res.status).toBe(400);
 	});
+
+	it("rejects POST /:id/messages with whitespace-only text and no attachments", async () => {
+		const res = await app.request("/some-id/messages", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "   ", attachmentIds: [] }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	// An attachment-only message ("look at this") is a real send, so empty text
+	// must pass *validation*. It still fails downstream here — there's no DB
+	// fixture, so the id resolves to nothing — but with the attachment
+	// resolver's message, not the schema's, which is what distinguishes
+	// "schema let it through" from "schema rejected empty text".
+	it("accepts empty text when attachments are present", async () => {
+		const res = await app.request("/some-id/messages", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "", attachmentIds: ["att-1"] }),
+		});
+		expect(await res.text()).not.toContain(
+			"a message needs text or at least one attachment",
+		);
+	});
+
+	it("rejects POST /:id/messages with a malformed attachmentIds array", async () => {
+		const res = await app.request("/some-id/messages", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "hi", attachmentIds: [""] }),
+		});
+		expect(res.status).toBe(400);
+	});
 });

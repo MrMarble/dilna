@@ -1,6 +1,7 @@
 import type {
 	AgentStreamEvent,
 	AgentType,
+	Attachment,
 	Message as ChatMessage,
 	MessagePart,
 	SessionView,
@@ -9,16 +10,19 @@ import {
 	AlertCircle,
 	ChevronDown,
 	ChevronRight,
+	FileText,
 	Info,
 	ListTree,
 	LoaderCircle,
+	Plus,
 	Send,
 	Square,
 	User,
 	Wrench,
+	X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api } from "@/api/client";
+import { ApiError, api, attachmentUrl } from "@/api/client";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
@@ -36,6 +40,11 @@ import {
 	MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import { Spinner } from "@/components/ui/spinner";
+import {
+	MAX_ATTACHMENTS,
+	type PendingAttachment,
+	usePendingAttachments,
+} from "@/hooks/usePendingAttachments";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
 import {
@@ -139,6 +148,22 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	// subscribe-time idle snapshot doesn't refetch.
 	const sawTurnRef = useRef(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const fileInputRef = useRef<HTMLInputElement>(null);
+	const { pending, addFiles, removePending, clearPending } =
+		usePendingAttachments(sessionId);
+
+	/** Paste-to-attach: a clipboard image (the usual screenshot path) becomes
+	 * an attachment instead of nothing. Pasted *text* is left entirely alone —
+	 * `clipboardData.files` is empty for it, so the default paste runs. */
+	const handlePaste = useCallback(
+		(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+			const files = Array.from(e.clipboardData.files);
+			if (files.length === 0) return;
+			e.preventDefault();
+			void addFiles(files);
+		},
+		[addFiles],
+	);
 
 	// Auto-grow the composer between 2 and 4 lines; beyond that it scrolls
 	// internally instead of pushing the rest of the page around.
@@ -380,28 +405,47 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 
 	const handleSend = useCallback(async () => {
 		const text = input.trim();
-		if (!text || sending || working) return;
+		// Attachments alone are a valid message ("look at this"), but only once
+		// every upload has landed — an in-flight one has no id to reference yet.
+		const ready = pending.filter((p) => p.status === "done" && p.attachment);
+		if ((!text && ready.length === 0) || sending || working) return;
+		if (pending.some((p) => p.status !== "done")) return;
 		setError(null);
 		setSending(true);
 		setThinking(true);
 
+		const attached = ready.flatMap((p) => (p.attachment ? [p.attachment] : []));
 		// Optimistic user message placeholder — visible immediately so autoscroll
 		// follows it; replaced by the authoritative DB row at the idle reconcile.
+		// Mirrors the server's own part order (attachments first, then text) so
+		// the bubble doesn't reshuffle when the real row arrives.
 		const tempId = `temp-${Date.now()}`;
 		setLive((prev) => ({
 			...prev,
 			[tempId]: {
 				id: tempId,
 				role: "user",
-				parts: [{ type: "text", text }],
+				parts: [
+					...attached.map(
+						(attachment): MessagePart => ({ type: "attachment", attachment }),
+					),
+					...(text ? [{ type: "text" as const, text }] : []),
+				],
 				startedAt: nowSeconds(),
 			},
 		}));
 
 		try {
-			const { message } = await api.sessions.send(sessionId, text);
-			// Only clear the composer once the send is actually accepted.
+			const { message } = await api.sessions.send(
+				sessionId,
+				text,
+				attached.map((a) => a.id),
+			);
+			// Only clear the composer once the send is actually accepted — the
+			// tray included, so a rejected send keeps the files too, not just the
+			// text.
 			setInput("");
+			clearPending();
 			// Swap the optimistic tempId bubble for the persisted row's real id
 			// (ADR-0016 §6) — the same row every other subscriber sees via the
 			// `user_message` broadcast, so all clients converge on one id.
@@ -442,7 +486,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		} finally {
 			setSending(false);
 		}
-	}, [input, sending, working, sessionId]);
+	}, [input, sending, working, sessionId, pending, clearPending]);
 
 	const handleStop = useCallback(async () => {
 		try {
@@ -551,11 +595,28 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							` (${turnActivity.phase.attempt}/${turnActivity.phase.maxRetries})`}
 					</p>
 				)}
-				<div className="mx-auto flex max-w-[max(48rem,80%)] items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60">
+				{/* Two stacked rows (the ChatGPT composer shape): the text area on
+				    top spanning the full width, controls beneath it — attach on the
+				    left, send/stop on the right. Putting the buttons on their own
+				    row rather than beside the text is what leaves room for more
+				    controls later without squeezing the input. */}
+				<div className="mx-auto flex max-w-[max(48rem,80%)] flex-col gap-1 rounded-xl border border-border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60">
+					{pending.length > 0 && (
+						<div className="flex flex-wrap gap-2 px-1 pt-1 pb-0.5">
+							{pending.map((item) => (
+								<PendingAttachmentCard
+									key={item.localId}
+									item={item}
+									onRemove={() => removePending(item.localId)}
+								/>
+							))}
+						</div>
+					)}
 					<textarea
 						ref={textareaRef}
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
+						onPaste={handlePaste}
 						onKeyDown={(e) => {
 							// On desktop, Enter sends and Shift+Enter inserts a newline.
 							// Mobile keyboards don't reliably expose Shift, so there
@@ -572,32 +633,70 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 								: `Message ${assistantDisplayName(session.model, session.agentType)}…`
 						}
 						rows={2}
-						className="flex-1 resize-none bg-transparent px-1 py-1.5 text-base outline-none"
+						className="w-full resize-none bg-transparent px-1 py-1.5 text-base outline-none"
 					/>
-					{working ? (
+					<div className="flex items-center gap-2">
+						<input
+							ref={fileInputRef}
+							type="file"
+							multiple
+							className="hidden"
+							onChange={(e) => {
+								// Snapshot the FileList before clearing the input below:
+								// `addFiles` is async, and resetting `value` empties
+								// `e.target.files` synchronously — so passing the live list
+								// would hand it an already-emptied collection.
+								const picked = Array.from(e.target.files ?? []);
+								// Clear the input so re-picking the same file fires `change`
+								// again — without this, removing a file from the tray and
+								// re-selecting it silently does nothing.
+								e.target.value = "";
+								void addFiles(picked);
+							}}
+						/>
 						<button
 							type="button"
-							onClick={handleStop}
-							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg border border-border transition-colors hover:bg-accent active:scale-[0.97]"
-							title="Stop"
+							onClick={() => fileInputRef.current?.click()}
+							disabled={pending.length >= MAX_ATTACHMENTS}
+							className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border transition-colors hover:bg-accent active:scale-[0.97] disabled:opacity-40"
+							title="Attach files"
+							aria-label="Attach files"
 						>
-							<Square className="size-3.5" />
+							<Plus className="size-4" />
 						</button>
-					) : (
-						<button
-							type="button"
-							onClick={handleSend}
-							disabled={!input.trim() || sending}
-							className="flex size-8 shrink-0 items-center justify-center self-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
-							title="Send"
-						>
-							{sending ? (
-								<LoaderCircle className="size-3.5 animate-spin" />
-							) : (
-								<Send className="size-3.5" />
-							)}
-						</button>
-					)}
+						<div className="flex-1" />
+						{working ? (
+							<button
+								type="button"
+								onClick={handleStop}
+								className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border transition-colors hover:bg-accent active:scale-[0.97]"
+								title="Stop"
+							>
+								<Square className="size-3.5" />
+							</button>
+						) : (
+							<button
+								type="button"
+								onClick={handleSend}
+								// An attachment-only message is still a message worth
+								// sending ("look at this"), but not while an upload is
+								// still in flight — its id doesn't exist yet.
+								disabled={
+									(!input.trim() && pending.length === 0) ||
+									sending ||
+									pending.some((p) => p.status !== "done")
+								}
+								className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+								title="Send"
+							>
+								{sending ? (
+									<LoaderCircle className="size-3.5 animate-spin" />
+								) : (
+									<Send className="size-3.5" />
+								)}
+							</button>
+						)}
+					</div>
 				</div>
 				<p className="mx-auto mt-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
 					{isDesktop
@@ -615,6 +714,129 @@ function EmptyHint() {
 			<p className="text-sm">No messages yet.</p>
 			<p className="text-xs">Ask the agent something below.</p>
 		</div>
+	);
+}
+
+/**
+ * One entry in the composer's file tray: an image shows its local preview
+ * (no server round trip needed — the blob is right there), anything else a
+ * name-and-icon card. Both carry a remove button, and an upload that failed
+ * stays visible in a destructive style rather than vanishing, so the user
+ * sees which file didn't make it.
+ */
+function PendingAttachmentCard({
+	item,
+	onRemove,
+}: {
+	item: PendingAttachment;
+	onRemove: () => void;
+}) {
+	const failed = item.status === "error";
+	return (
+		<div
+			className={cn(
+				"group/pending relative flex items-center gap-2 rounded-lg border bg-background py-1.5 pr-7 pl-2",
+				failed ? "border-destructive/50" : "border-border",
+			)}
+			title={failed ? item.error : item.filename}
+		>
+			{item.previewUrl ? (
+				<img
+					src={item.previewUrl}
+					alt=""
+					className="size-8 shrink-0 rounded object-cover"
+				/>
+			) : (
+				<FileText className="size-4 shrink-0 text-muted-foreground" />
+			)}
+			<span className="min-w-0 max-w-36">
+				<span className="block truncate text-xs font-medium">
+					{item.filename}
+				</span>
+				<span
+					className={cn(
+						"block text-[0.6875rem]",
+						failed ? "text-destructive" : "text-muted-foreground",
+					)}
+				>
+					{failed
+						? (item.error ?? "upload failed")
+						: item.status === "uploading"
+							? "Uploading…"
+							: formatBytes(item.size)}
+				</span>
+			</span>
+			{item.status === "uploading" && (
+				<LoaderCircle className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+			)}
+			<button
+				type="button"
+				onClick={onRemove}
+				className="absolute top-1 right-1 flex size-5 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+				title="Remove"
+				aria-label={`Remove ${item.filename}`}
+			>
+				<X className="size-3" />
+			</button>
+		</div>
+	);
+}
+
+/** Human-readable size for an attachment card. Shared by the composer's
+ * pending tray and the sent-message card so the same file reads identically
+ * before and after sending. */
+function formatBytes(size: number): string {
+	if (size < 1024) return `${size} B`;
+	if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * One attachment inside a sent message. Images render as the picture itself
+ * (that's the whole point of having sent one); every other kind gets a card
+ * with its name, icon and size — a rich preview for documents is a separate
+ * task, and a card is the honest placeholder until then.
+ *
+ * Both are links to the raw bytes, so clicking an image opens it full size
+ * and clicking a document downloads it.
+ */
+function SentAttachment({ attachment }: { attachment: Attachment }) {
+	const href = attachmentUrl(attachment.sessionId, attachment.id);
+	if (attachment.kind === "image") {
+		return (
+			<a
+				href={href}
+				target="_blank"
+				rel="noreferrer"
+				className="block overflow-hidden rounded-lg border border-border"
+			>
+				<img
+					src={href}
+					alt={attachment.filename}
+					// Bounded rather than full-width: a screenshot shouldn't push the
+					// conversation off the screen, and the link opens the original.
+					className="max-h-80 max-w-full object-contain"
+				/>
+			</a>
+		);
+	}
+	return (
+		<a
+			href={href}
+			target="_blank"
+			rel="noreferrer"
+			className="flex max-w-72 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 transition-colors hover:bg-accent"
+		>
+			<FileText className="size-4 shrink-0 text-muted-foreground" />
+			<span className="min-w-0">
+				<span className="block truncate text-sm font-medium">
+					{attachment.filename}
+				</span>
+				<span className="block text-xs text-muted-foreground">
+					{formatBytes(attachment.size)}
+				</span>
+			</span>
+		</a>
 	);
 }
 
@@ -672,7 +894,14 @@ function ChatMessageRow({
 			toolBuffer = [];
 		}
 	}
+	// Attachments render above the message's text as one row of cards/images,
+	// regardless of where they sit among the parts — matching how the composer
+	// stacks its file tray over the input, so a sent message looks like what
+	// was composed.
+	const attached = parts.filter((p) => p.type === "attachment");
+
 	parts.forEach((p, i) => {
+		if (p.type === "attachment") return;
 		if (p.type === "text") {
 			flushTools();
 			rows.push(
@@ -740,9 +969,16 @@ function ChatMessageRow({
 						tokens={turnActivity?.thinkingTokens}
 					/>
 				)}
+				{attached.length > 0 && (
+					<div className="flex flex-wrap gap-2">
+						{attached.map((p) => (
+							<SentAttachment key={p.attachment.id} attachment={p.attachment} />
+						))}
+					</div>
+				)}
 				{rows.length > 0 ? (
 					rows
-				) : (
+				) : attached.length > 0 ? null : (
 					<span className="text-xs text-muted-foreground">{id}</span>
 				)}
 			</MessageContent>

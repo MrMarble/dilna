@@ -15,6 +15,12 @@ export type AgentStartOptions = {
 
 export type AgentChatOptions = {
 	message: string;
+	/** Image attachments to send alongside `message`, already read off disk
+	 * and base64-encoded (issue #53). Inline rather than by path because this
+	 * is the only channel through which a Provider can actually *see* a
+	 * picture; non-image attachments take the other channel — their path is
+	 * named in `message` and the Agent reads them with its own tools. */
+	images?: { data: string; mimeType: string }[];
 	onEvent: (event: AgentStreamEvent) => void;
 	abortSignal?: AbortSignal;
 };

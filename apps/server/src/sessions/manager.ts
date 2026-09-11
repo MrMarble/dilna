@@ -1,12 +1,15 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import type {
 	AgentStreamEvent,
 	AgentType,
+	Attachment,
 	ChangedFile,
 	CommitInfo,
 	ContextUsageEstimate,
 	Message,
+	MessagePart,
 	RateLimitWindow,
 	RateLimitWindowKind,
 	Session,
@@ -49,6 +52,10 @@ import {
 	getArchivedSession,
 	listArchivedSessions,
 } from "./archive";
+import {
+	deleteAttachmentsForSession,
+	describeAttachmentsForPrompt,
+} from "./attachments";
 import { type Listener, SessionBroadcaster } from "./broadcaster";
 import {
 	buildInitialMessages,
@@ -592,6 +599,11 @@ class SessionManager {
 			messageStore.deleteMessagesForSession(id);
 			db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
 		});
+		// Outside the transaction above because it also removes the Session's
+		// attachment directory from disk (issue #53) — a filesystem effect a
+		// rollback couldn't undo anyway. Deleting the Session is the only thing
+		// that prunes attachments at all; see the schema's table comment.
+		deleteAttachmentsForSession(id);
 		this.events.broadcastGlobal({ type: "session_deleted", sessionId: id });
 	}
 
@@ -987,8 +999,15 @@ class SessionManager {
 	 *
 	 * Throws if a turn is already in progress, or the session doesn't exist —
 	 * routes/sessions.ts turns the former into the 409.
+	 *
+	 * `attachments` are already-uploaded files this message carries (issue
+	 * #53), resolved and ownership-checked by the route before it gets here.
+	 * They become `attachment` parts on the persisted user row, so the message
+	 * renders with its files on every future reload — the same row the 202 and
+	 * the `user_message` broadcast echo, so no client has to merge them in
+	 * separately.
 	 */
-	beginTurn(id: string, text: string): Message {
+	beginTurn(id: string, text: string, attachments: Attachment[] = []): Message {
 		if (this.turns.isDraining()) {
 			throw new SessionManagerDrainingError();
 		}
@@ -1012,7 +1031,19 @@ class SessionManager {
 			id: messageStore.pendingUserMessageId(id),
 			sessionId: id,
 			role: "user",
-			parts: [{ type: "text", text }],
+			// Attachments lead: the chat renders them above the text (matching
+			// every composer that stacks a file tray over its input), and a
+			// consumer that only reads the first text part is unaffected either
+			// way. An attachment-only message ("look at this") contributes no
+			// text part at all rather than an empty one — every consumer already
+			// handles a message whose parts are not all text, and an empty string
+			// would render as a blank line under the files.
+			parts: [
+				...attachments.map(
+					(attachment): MessagePart => ({ type: "attachment", attachment }),
+				),
+				...(text ? [{ type: "text" as const, text }] : []),
+			],
 			// The user's row is never grouped with the reply that answers it —
 			// a turn has exactly one user row, and the assistant rows it
 			// produces are the ones `turnId` exists to regroup.
@@ -1038,7 +1069,11 @@ class SessionManager {
 	 * never neither — so a turn always ends in exactly one terminal status,
 	 * preceded by exactly one `turn_failed` on failure (ADR-0016 §2).
 	 */
-	async runTurn(id: string, text: string): Promise<void> {
+	async runTurn(
+		id: string,
+		text: string,
+		attachments: Attachment[] = [],
+	): Promise<void> {
 		const turn = this.turns.get(id);
 		if (!turn) {
 			log.error(
@@ -1169,13 +1204,50 @@ class SessionManager {
 			// content), whereas this must exist for every round the turn writes.
 			const turnId = randomUUID();
 
+			// Attachments reach the Agent through two channels (issue #53): every
+			// file's on-disk path is named in a preamble ahead of the user's own
+			// text, and images *additionally* travel inline as base64 so the
+			// Provider can actually see them. The preamble covers images too —
+			// being shown a picture doesn't tell the Agent where the file is, and
+			// "crop this and save it" needs the path.
+			//
+			// Read here rather than at `beginTurn` so a cold-start spawn isn't
+			// holding every attachment's bytes in memory while it waits, and a
+			// file that vanished between upload and dispatch degrades to "the
+			// preamble mentions it, the Agent's read fails" instead of failing
+			// the turn before it starts.
+			const preamble = describeAttachmentsForPrompt(attachments);
+			const promptText = preamble ? `${preamble}\n\n${text}` : text;
+			const images = attachments
+				.filter((a) => a.kind === "image")
+				.flatMap((a) => {
+					try {
+						return [
+							{
+								data: readFileSync(a.path).toString("base64"),
+								mimeType: a.mimeType,
+							},
+						];
+					} catch (err) {
+						// The path is still in the preamble, so the Agent can report
+						// the file as unreadable rather than silently pretending it
+						// saw a picture that never arrived.
+						log.error(
+							{ sessionId: id, attachmentId: a.id, err },
+							"failed to read image attachment; sending path only",
+						);
+						return [];
+					}
+				});
+
 			let timedOut = false;
 			let crashed = false;
 			let crashMessage = "";
 			try {
 				await Promise.race([
 					chatPi(handle, {
-						message: text,
+						message: promptText,
+						images,
 						onEvent,
 						abortSignal: turn.abortController.signal,
 					}),

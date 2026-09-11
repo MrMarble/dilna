@@ -35,18 +35,30 @@ afterAll(() => {
 describe("existing DB upgrading past 0021_message_turn_id", () => {
 	it("keeps pre-migration rows and reads them back with no turnId", () => {
 		// 1. Build a "before" migrations folder: exactly what an old instance
-		//    shipped — 0020's journal entry, no 0021 file.
-		// Start from the real, current migrations folder, then remove the one
-		// under test — the same folder the server itself migrates from, resolved
-		// the same way (no depth-based path guessing).
+		//    shipped — 0020's journal entry, and nothing from 0021 on.
+		// Start from the real, current migrations folder, then truncate it at the
+		// migration under test — the same folder the server itself migrates from,
+		// resolved the same way (no depth-based path guessing).
+		//
+		// Truncating (rather than removing just 0021) is what makes this survive
+		// later migrations being added: drizzle's migrator replays by journal
+		// *index*, so a legacy folder that still contained 0022+ would record
+		// more applied migrations than the real folder has before 0021 — and the
+		// real run would then skip 0021 entirely, silently passing step 3 while
+		// never adding the column this test is about.
+		const LEGACY_UPGRADE_TAG = "0021_message_turn_id";
 		const legacyMigrations = path.join(dataDir, "legacy-drizzle");
 		cpSync(migrationsFolder(), legacyMigrations, { recursive: true });
-		rmSync(path.join(legacyMigrations, "0021_message_turn_id.sql"));
 		const journalPath = path.join(legacyMigrations, "meta/_journal.json");
 		const journal = JSON.parse(readFileSync(journalPath, "utf8"));
-		journal.entries = journal.entries.filter(
-			(e: { tag: string }) => e.tag !== "0021_message_turn_id",
+		const cutoff = journal.entries.findIndex(
+			(e: { tag: string }) => e.tag === LEGACY_UPGRADE_TAG,
 		);
+		expect(cutoff).toBeGreaterThanOrEqual(0);
+		for (const entry of journal.entries.slice(cutoff)) {
+			rmSync(path.join(legacyMigrations, `${entry.tag}.sql`));
+		}
+		journal.entries = journal.entries.slice(0, cutoff);
 		writeFileSync(journalPath, JSON.stringify(journal, null, 1));
 
 		// 2. Open a DB at that version and put a row in it, the way a running

@@ -74,6 +74,17 @@ export function renderTranscript(
 				push();
 				continue;
 			}
+			if (part.type === "attachment") {
+				// Rendered with its on-disk path, not just its name: this export
+				// exists to hand a Session's history to another agent, and the path
+				// is the only part of an attachment that agent can act on (the bytes
+				// aren't in the markdown, and won't be — rich previews are a
+				// separate concern).
+				const { filename, mimeType, path: diskPath } = part.attachment;
+				push(`**Attachment: \`${filename}\`** (${mimeType}) — \`${diskPath}\``);
+				push();
+				continue;
+			}
 			push(`**Tool call: \`${part.tool}\`** (\`${part.callId}\`)`);
 			push();
 			push("Input:");

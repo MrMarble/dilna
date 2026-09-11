@@ -86,6 +86,16 @@ export function isContained(
 	);
 }
 
+/** The three of {@link PATH_TOOLS} that only ever *read*. Separated because
+ * a read-only root (the Session's attachment directory — see
+ * {@link createConfinementHook}'s `readableRoots`) has to grant `read`,
+ * `grep`, `find` and `ls` without also granting `write`/`edit`: an upload is
+ * the user's file, and the Agent copying it *into* the Worktree is the
+ * supported way to act on it, not editing it in place. `find`/`grep`/`ls`
+ * are here rather than in a separate "search" set because their containment
+ * argument is the same `path`, and they disclose rather than mutate. */
+const READ_ONLY_PATH_TOOLS = new Set(["read", "grep", "find", "ls"]);
+
 /**
  * `beforeToolCall` hook (see `pi.ts`'s `startPi`) that blocks any of the six
  * path-taking tools from touching a path outside the session's worktree.
@@ -95,9 +105,19 @@ export function isContained(
  * research doc's §2 for the traced call path). Reimplements `resolveToCwd`'s
  * absolute-or-relative-to-cwd resolution ourselves rather than trusting the
  * tool to have done it safely yet, since this hook runs strictly before that.
+ *
+ * `readableRoots` widens the containment check for the *read-only* tools
+ * only ({@link READ_ONLY_PATH_TOOLS}) — today exactly one entry, the
+ * Session's attachment directory (issue #53, ADR-0031). Uploads deliberately
+ * live outside the Worktree so they never land in the git tree, which would
+ * otherwise put them out of the Agent's reach entirely; this is what makes
+ * "read the PDF I attached" work while keeping "write to it" blocked. It is
+ * strictly additive: the Worktree remains readable *and* writable, and a
+ * path in neither root is still refused.
  */
 export function createConfinementHook(
 	worktreeRoot: string,
+	readableRoots: string[] = [],
 ): (
 	context: BeforeToolCallContext,
 ) => Promise<BeforeToolCallResult | undefined> {
@@ -123,12 +143,16 @@ export function createConfinementHook(
 		const absolute = isAbsolute(expanded)
 			? resolve(expanded)
 			: resolve(worktreeRoot, expanded);
-		if (!isContained(absolute, worktreeRoot)) {
-			return {
-				block: true,
-				reason: `"${pathArg}" resolves outside the worktree. Refusing.`,
-			};
+		if (isContained(absolute, worktreeRoot)) return undefined;
+		if (
+			READ_ONLY_PATH_TOOLS.has(context.toolCall.name) &&
+			readableRoots.some((root) => isContained(absolute, root))
+		) {
+			return undefined;
 		}
-		return undefined;
+		return {
+			block: true,
+			reason: `"${pathArg}" resolves outside the worktree. Refusing.`,
+		};
 	};
 }

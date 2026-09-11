@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { getDb } from "../db";
 import { rateLimits as rateLimitsTable } from "../db/schema";
 import { repoManager } from "../repos/manager";
+import { storeAttachment } from "./attachments";
 import {
 	applyEventToLiveTurn,
 	type LiveTurn,
@@ -279,6 +280,61 @@ describe("SessionManager", () => {
 		expect(() => sessionManager.beginTurn("no-such-session", "hi")).toThrow(
 			"session not found",
 		);
+	});
+
+	// Issue #53: the user row is what every reload, export and re-seed reads,
+	// so the files a message carried have to be *on* it — not looked up
+	// separately from a table that may since have been pruned.
+	it("beginTurn persists attachment parts on the user row, ahead of the text", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`attachments-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+
+		const attachment = storeAttachment(session.id, {
+			filename: "shot.png",
+			mimeType: "image/png",
+			bytes: new TextEncoder().encode("fake-png"),
+		});
+
+		const message = sessionManager.beginTurn(session.id, "look at this", [
+			attachment,
+		]);
+
+		expect(message.parts).toEqual([
+			{ type: "attachment", attachment },
+			{ type: "text", text: "look at this" },
+		]);
+
+		const persisted = await sessionManager.getMessages(session.id);
+		expect(persisted[0]?.parts).toEqual(message.parts);
+
+		// Deleting the Session takes the bytes with it.
+		expect(existsSync(attachment.path)).toBe(true);
+		await sessionManager.delete(session.id);
+		expect(existsSync(attachment.path)).toBe(false);
+		await repoManager.delete(repo.id);
+	});
+
+	it("beginTurn omits the text part entirely for an attachment-only message", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`attachments-only-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const attachment = storeAttachment(session.id, {
+			filename: "spec.pdf",
+			mimeType: "application/pdf",
+			bytes: new TextEncoder().encode("fake-pdf"),
+		});
+
+		const message = sessionManager.beginTurn(session.id, "", [attachment]);
+
+		expect(message.parts).toEqual([{ type: "attachment", attachment }]);
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
 	});
 
 	// ADR-0016 §1: a crashed session must reopen crashed for a new

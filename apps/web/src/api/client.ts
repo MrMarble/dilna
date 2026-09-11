@@ -1,6 +1,7 @@
 import type {
 	AgentStreamEvent,
 	AgentType,
+	Attachment,
 	ChangedFile,
 	CommitInfo,
 	ContextUsageEstimate,
@@ -194,6 +195,19 @@ function openEventStream<T>(
 	};
 }
 
+/**
+ * URL that serves an attachment's bytes — what an `<img src>` points at, and
+ * the link target for a document card.
+ *
+ * A plain relative path rather than a `fetch` wrapper: the browser has to
+ * load these itself (an `<img>` can't go through {@link request}), and the
+ * route sets a long immutable `Cache-Control` so repeated renders of a
+ * message list don't refetch the same image.
+ */
+export function attachmentUrl(sessionId: string, attachmentId: string): string {
+	return `/api/sessions/${sessionId}/attachments/${attachmentId}`;
+}
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,
@@ -205,10 +219,15 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+	// A `FormData` body must carry the browser-generated multipart boundary in
+	// its `Content-Type`, which only happens if the header is left unset —
+	// forcing `application/json` here (the default for every other call) makes
+	// the server unable to parse the upload at all.
+	const isFormData = init?.body instanceof FormData;
 	const res = await fetch(path, {
 		...init,
 		headers: {
-			"Content-Type": "application/json",
+			...(isFormData ? {} : { "Content-Type": "application/json" }),
 			...init?.headers,
 		},
 	});
@@ -282,14 +301,32 @@ export const api = {
 			request<{ files: ChangedFile[] }>(`/api/sessions/${id}/changed-files`),
 		commits: (id: string) =>
 			request<{ commits: CommitInfo[] }>(`/api/sessions/${id}/commits`),
-		send: (id: string, text: string) =>
+		send: (id: string, text: string, attachmentIds?: string[]) =>
 			request<{ ok: boolean; message: Message }>(
 				`/api/sessions/${id}/messages`,
 				{
 					method: "POST",
-					body: JSON.stringify({ text }),
+					body: JSON.stringify({
+						text,
+						// Omitted entirely when empty so a text-only send puts exactly
+						// the same body on the wire it always has.
+						...(attachmentIds?.length ? { attachmentIds } : {}),
+					}),
 				},
 			),
+		/** Upload one file to a session, before the message that references it
+		 * is sent. Multipart rather than JSON, so the bytes aren't base64-inflated
+		 * on the way up; `Content-Type` is deliberately left unset so the browser
+		 * supplies the multipart boundary. */
+		uploadAttachment: async (id: string, file: File): Promise<Attachment> => {
+			const form = new FormData();
+			form.append("file", file);
+			const { attachment } = await request<{ attachment: Attachment }>(
+				`/api/sessions/${id}/attachments`,
+				{ method: "POST", body: form },
+			);
+			return attachment;
+		},
 		stop: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}/stop`, {
 				method: "POST",
