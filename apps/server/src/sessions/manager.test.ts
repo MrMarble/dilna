@@ -577,10 +577,20 @@ describe("incremental persistence (ADR-0026)", () => {
 		return sessionManager as unknown as {
 			persistRoundEvent: (
 				id: string,
-				active: { persistedCount: number },
+				active: { persistedCount: number; persistedRounds: WeakSet<object> },
 				event: unknown,
 				turnId: string,
 			) => void;
+			persistMessagesFromAgent: (
+				id: string,
+				handle: unknown,
+				persistedCount: number,
+				turnId: string,
+				persistedRounds: WeakSet<object>,
+			) => Promise<{
+				persistedUserMessage: boolean;
+				newPersistedCount: number;
+			}>;
 		};
 	}
 
@@ -591,7 +601,10 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = { persistedCount: 0 };
+		const active = {
+			persistedCount: 0,
+			persistedRounds: new WeakSet<object>(),
+		};
 
 		manager.persistRoundEvent(
 			session.id,
@@ -655,7 +668,10 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = { persistedCount: 0 };
+		const active = {
+			persistedCount: 0,
+			persistedRounds: new WeakSet<object>(),
+		};
 		const turnId = "the-turn";
 
 		// Claim the turn first, so the user's own row really exists — the
@@ -715,7 +731,10 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = { persistedCount: 0 };
+		const active = {
+			persistedCount: 0,
+			persistedRounds: new WeakSet<object>(),
+		};
 
 		sessionManager.beginTurn(session.id, "do a big refactor");
 		await sessionManager.setStatus(session.id, "working");
@@ -753,6 +772,164 @@ describe("incremental persistence (ADR-0026)", () => {
 
 		const updated = await sessionManager.get(session.id);
 		expect(updated?.status).toBe("idle");
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	});
+
+	/**
+	 * Issue #190. `persistRoundEvent` swallows its own persist failures and
+	 * deliberately leaves `persistedCount` unadvanced, so the turn-end safety
+	 * net retries that content. But `persistedCount` is a single high-water
+	 * mark: it stays pinned behind the *failed* round while later rounds keep
+	 * persisting fine, so the retry slice spans rounds that already landed.
+	 * With the two converters at different granularities and dedup keyed on
+	 * id, those already-landed rounds used to come back as duplicate rows.
+	 *
+	 * Round 2 is forced to fail by making its conversion throw — a content
+	 * shape `piRoundToDilnaMessage` chokes on — which reproduces the failure
+	 * without needing to break the DB itself (a DB-level fault would fail
+	 * every subsequent write too, and the point here is that rounds 1 and 3
+	 * succeed while 2 does not).
+	 *
+	 * Note the second, quieter half of the same bug: because the mark used to
+	 * advance only on success, later rounds pushed it *past* the failed one,
+	 * so the safety net's slice both duplicated round 3 and lost round 2
+	 * entirely. Both halves are asserted below.
+	 */
+	it("does not duplicate rounds when the safety net retries a slice overlapping already-persisted rounds", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`round-overlap-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+		const manager = withPersistRoundEvent();
+		const active = {
+			persistedCount: 0,
+			persistedRounds: new WeakSet<object>(),
+		};
+		const turnId = "turn-overlap";
+
+		sessionManager.beginTurn(session.id, "refactor it");
+
+		const userEntry = {
+			role: "user",
+			content: "refactor it",
+			timestamp: 1_000,
+		};
+		// Round 2 fails its *incremental* write only: `arguments` throws the
+		// first time it's read (inside `persistRoundEvent`'s try/catch, exactly
+		// like a failed insert) and behaves normally afterwards, so the
+		// turn-end retry is able to convert and persist it.
+		let poisoned = false;
+		const poisonCall = {
+			type: "toolCall",
+			id: "c2",
+			name: "bash",
+			get arguments(): Record<string, unknown> {
+				if (!poisoned) {
+					poisoned = true;
+					throw new Error("simulated incremental persist failure");
+				}
+				return { command: "npm test" };
+			},
+		};
+		const rounds = [
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "first" }],
+					timestamp: 1_100,
+				},
+				toolResults: [],
+			},
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "second" }, poisonCall],
+					timestamp: 1_200,
+				},
+				toolResults: [],
+			},
+			{
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "third" }],
+					timestamp: 1_300,
+				},
+				toolResults: [],
+			},
+		];
+
+		manager.persistRoundEvent(
+			session.id,
+			active,
+			userMessageEnd("refactor it", 1_000),
+			turnId,
+		);
+		for (const round of rounds) {
+			manager.persistRoundEvent(
+				session.id,
+				active,
+				{ type: "turn_end", ...round },
+				turnId,
+			);
+		}
+
+		// The mark tracks transcript *position*, so it counts every entry the
+		// incremental path saw — user + 3 rounds — regardless of which of them
+		// actually persisted. That's what keeps it aligned with the transcript
+		// the safety net is about to slice.
+		expect(active.persistedCount).toBe(4);
+		expect(
+			(await sessionManager.getMessages(session.id))
+				.filter((m) => m.role === "assistant")
+				.map((m) => m.parts),
+		).toEqual([
+			[{ type: "text", text: "first" }],
+			[{ type: "text", text: "third" }],
+		]);
+
+		// The turn ends. The safety net re-reads this turn's entries; the
+		// skip-list, not the offset, is what keeps already-written rounds out.
+		const transcript = [
+			userEntry,
+			...rounds.map((r) => r.message),
+			// Round 2's tool call never resolved (its round failed), so nothing
+			// else follows it in the transcript.
+		];
+		await manager.persistMessagesFromAgent(
+			session.id,
+			{ agent: { state: { messages: transcript } } },
+			// The turn began at the start of this transcript.
+			0,
+			turnId,
+			active.persistedRounds,
+		);
+
+		const assistantRows = (await sessionManager.getMessages(session.id)).filter(
+			(m) => m.role === "assistant",
+		);
+
+		// Three rounds in, three rows out: rounds 1 and 3 are NOT duplicated,
+		// and round 2 — the genuine gap — is recovered, tool call and all.
+		expect(assistantRows.map((m) => m.parts)).toEqual([
+			[{ type: "text", text: "first" }],
+			[{ type: "text", text: "third" }],
+			[
+				{ type: "text", text: "second" },
+				{
+					type: "tool_call",
+					callId: "c2",
+					tool: "bash",
+					input: { command: "npm test" },
+					output: "",
+					error: undefined,
+				},
+			],
+		]);
+		// All of them group under the one turn, incremental and retried alike.
+		expect(assistantRows.every((m) => m.turnId === turnId)).toBe(true);
 
 		await sessionManager.delete(session.id);
 		await repoManager.delete(repo.id);
