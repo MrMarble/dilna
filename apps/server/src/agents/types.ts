@@ -13,6 +13,23 @@ export type AgentStartOptions = {
 	existingAgentSessionId?: string;
 };
 
+/**
+ * One image on its way to a Provider: raw bytes, base64-encoded, with the
+ * MIME type that says how to decode them (issue #53).
+ *
+ * Named here rather than reusing `pi-ai`'s structurally-identical
+ * `ImageContent` because this is the *backend-agnostic* Agent contract —
+ * importing a pi type into it would leak one backend's vocabulary into the
+ * interface every adapter implements (ADR-0011 / ADR-0002). `pi.ts` maps
+ * this to `ImageContent` at its own edge, which is exactly the translation
+ * an adapter exists to do.
+ */
+export type AgentImageInput = {
+	/** base64, no data-URL prefix. */
+	data: string;
+	mimeType: string;
+};
+
 export type AgentChatOptions = {
 	message: string;
 	/** Image attachments to send alongside `message`, already read off disk
@@ -20,7 +37,7 @@ export type AgentChatOptions = {
 	 * is the only channel through which a Provider can actually *see* a
 	 * picture; non-image attachments take the other channel — their path is
 	 * named in `message` and the Agent reads them with its own tools. */
-	images?: { data: string; mimeType: string }[];
+	images?: AgentImageInput[];
 	onEvent: (event: AgentStreamEvent) => void;
 	abortSignal?: AbortSignal;
 };

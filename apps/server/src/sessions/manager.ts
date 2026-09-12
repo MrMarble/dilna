@@ -36,6 +36,7 @@ import {
 	effectiveProvider,
 } from "../agents/providerConfigStore";
 import {
+	type AgentImageInput,
 	IDLE_TIMEOUT_MS,
 	STOP_TIMEOUT_MS,
 	TURN_TIMEOUT_MS,
@@ -55,6 +56,7 @@ import {
 import {
 	deleteAttachmentsForSession,
 	describeAttachmentsForPrompt,
+	describeAttachmentsForTitle,
 } from "./attachments";
 import { type Listener, SessionBroadcaster } from "./broadcaster";
 import {
@@ -1093,7 +1095,14 @@ class SessionManager {
 			// (`maybeDeriveTitle`'s tiny isolated model call runs in parallel to
 			// it), and any failure is logged and swallowed — the Session simply
 			// keeps its placeholder until a later turn retries it.
-			this.maybeDeriveTitle(session, text).catch((err) => {
+			//
+			// Attachment filenames are folded in (issue #53) because a first turn
+			// can legitimately have no text at all ("look at this" with just a
+			// screenshot) — deriving a title from `""` gives the model nothing to
+			// work with. See `describeAttachmentsForTitle` for why this isn't the
+			// same string the Agent gets.
+			const titlePrompt = describeAttachmentsForTitle(text, attachments);
+			this.maybeDeriveTitle(session, titlePrompt).catch((err) => {
 				log.error({ sessionId: id, err }, "title derivation failed");
 			});
 
@@ -1220,7 +1229,7 @@ class SessionManager {
 			const promptText = preamble ? `${preamble}\n\n${text}` : text;
 			const images = attachments
 				.filter((a) => a.kind === "image")
-				.flatMap((a) => {
+				.flatMap((a): AgentImageInput[] => {
 					try {
 						return [
 							{

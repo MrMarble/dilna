@@ -10,6 +10,7 @@ import {
 	attachmentKindFor,
 	deleteAttachmentsForSession,
 	describeAttachmentsForPrompt,
+	describeAttachmentsForTitle,
 	getAttachment,
 	resolveAttachments,
 	sanitizeFilename,
@@ -235,6 +236,57 @@ describe("deleteAttachmentsForSession", () => {
 
 	it("is a no-op for a session with no attachments", () => {
 		expect(() => deleteAttachmentsForSession("s-never-used")).not.toThrow();
+	});
+});
+
+describe("describeAttachmentsForTitle", () => {
+	// The regression this exists for: an attachment-only first turn used to
+	// hand `generateSessionTitle` an empty string.
+	it("names the attachments when the message has no text", () => {
+		const image = storeAttachment("s-title", {
+			filename: "login-screen.png",
+			mimeType: "image/png",
+			bytes: bytes("png"),
+		});
+
+		const result = describeAttachmentsForTitle("", [image]);
+
+		expect(result).toContain("login-screen.png");
+		expect(result.trim().length).toBeGreaterThan(0);
+	});
+
+	it("keeps the user's own words first when there are both", () => {
+		const doc = storeAttachment("s-title", {
+			filename: "spec.pdf",
+			mimeType: "application/pdf",
+			bytes: bytes("pdf"),
+		});
+
+		const result = describeAttachmentsForTitle("review this spec", [doc]);
+
+		expect(result.startsWith("review this spec")).toBe(true);
+		expect(result).toContain("spec.pdf");
+	});
+
+	// The Agent's preamble carries paths and copy instructions; a 3-4 word
+	// title derived from those would be dominated by them.
+	it("omits the paths and copy instructions the Agent's preamble carries", () => {
+		const image = storeAttachment("s-title", {
+			filename: "shot.png",
+			mimeType: "image/png",
+			bytes: bytes("png"),
+		});
+
+		const result = describeAttachmentsForTitle("hi", [image]);
+
+		expect(result).not.toContain(image.path);
+		expect(result.toLowerCase()).not.toContain("worktree");
+	});
+
+	it("is just the text when there are no attachments", () => {
+		expect(describeAttachmentsForTitle("plain message", [])).toBe(
+			"plain message",
+		);
 	});
 });
 

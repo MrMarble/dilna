@@ -168,6 +168,98 @@ describe("composer attachments", () => {
 		});
 	});
 
+	// Issue #53's "drag a file/image into the prompt".
+	it("attaches files dropped onto the composer", async () => {
+		const attachment = makeAttachment();
+		vi.mocked(api.sessions.uploadAttachment).mockResolvedValue(attachment);
+		renderShell();
+
+		const file = new File(["bytes"], "dropped.png", { type: "image/png" });
+		const composer = screen.getByRole("textbox").parentElement as HTMLElement;
+		const dataTransfer = { files: [file], types: ["Files"] };
+
+		fireEvent.dragEnter(composer, { dataTransfer });
+		fireEvent.dragOver(composer, { dataTransfer });
+		fireEvent.drop(composer, { dataTransfer });
+
+		await waitFor(() => {
+			expect(api.sessions.uploadAttachment).toHaveBeenCalledWith(
+				"sess-1",
+				file,
+			);
+		});
+		expect(await screen.findByText("dropped.png")).toBeTruthy();
+	});
+
+	// Dragged text should still land in the textarea rather than being
+	// swallowed as a (nonexistent) file drop.
+	it("ignores a drop that carries no files", async () => {
+		renderShell();
+		const composer = screen.getByRole("textbox").parentElement as HTMLElement;
+
+		fireEvent.drop(composer, {
+			dataTransfer: { files: [], types: ["text/plain"] },
+		});
+
+		expect(api.sessions.uploadAttachment).not.toHaveBeenCalled();
+	});
+
+	// A failed upload stays in the tray on purpose, so treating it as "not
+	// ready" would wedge the composer: a typed draft could not be sent until
+	// the user spotted the small remove button.
+	it("still sends the text when one upload failed", async () => {
+		vi.mocked(api.sessions.uploadAttachment).mockRejectedValue(
+			new Error("upload failed"),
+		);
+		vi.mocked(api.sessions.send).mockResolvedValue({
+			ok: true,
+			message: {
+				id: "m1",
+				sessionId: "sess-1",
+				role: "user",
+				parts: [{ type: "text", text: "send anyway" }],
+				turnId: null,
+				createdAt: 1,
+			},
+		});
+		renderShell();
+
+		pickFiles(new File(["bytes"], "doomed.png", { type: "image/png" }));
+		await screen.findByText(/upload failed/);
+
+		const textarea = screen.getByRole("textbox");
+		await userEvent.type(textarea, "send anyway");
+
+		const send = screen.getByTitle("Send");
+		expect((send as HTMLButtonElement).disabled).toBe(false);
+
+		await userEvent.click(send);
+		await waitFor(() => {
+			// The errored file is simply left behind, not sent.
+			expect(api.sessions.send).toHaveBeenCalledWith(
+				"sess-1",
+				"send anyway",
+				[],
+			);
+		});
+	});
+
+	it("blocks sending only while an upload is still in flight", async () => {
+		// A promise that never settles — the upload stays "uploading".
+		vi.mocked(api.sessions.uploadAttachment).mockReturnValue(
+			new Promise(() => {}),
+		);
+		renderShell();
+
+		pickFiles(new File(["bytes"], "slow.png", { type: "image/png" }));
+		await screen.findByText("Uploading…");
+
+		await userEvent.type(screen.getByRole("textbox"), "wait for it");
+		expect((screen.getByTitle("Send") as HTMLButtonElement).disabled).toBe(
+			true,
+		);
+	});
+
 	// "Look at this" with no words is a real message.
 	it("sends an attachment-only message with no text", async () => {
 		const attachment = makeAttachment();

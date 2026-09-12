@@ -1,4 +1,4 @@
-import type { Attachment } from "@dilna/shared";
+import { type Attachment, MAX_ATTACHMENTS_PER_MESSAGE } from "@dilna/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api/client";
 
@@ -18,10 +18,11 @@ import { api } from "@/api/client";
  * server id is known — and a failed upload never gets one at all.
  */
 
-/** Ceiling on tray size, mirroring the server's own per-message bound
- * (`MAX_ATTACHMENTS_PER_MESSAGE`). Enforced client-side too so the user is
- * stopped at the picker rather than at a rejected send. */
-export const MAX_ATTACHMENTS = 10;
+/** Ceiling on tray size. The bound itself comes from `packages/shared`, so
+ * this genuinely *is* the server's limit rather than a copy asserted to match
+ * one — enforced client-side too so the user is stopped at the picker rather
+ * than at a rejected send. */
+export const MAX_ATTACHMENTS = MAX_ATTACHMENTS_PER_MESSAGE;
 
 export type PendingAttachment = {
 	/** Client-minted, stable for the entry's whole life — see the module

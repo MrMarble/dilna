@@ -1,12 +1,13 @@
 import { readFile } from "node:fs/promises";
-import type {
-	AgentType,
-	Attachment,
-	ChangedFile,
-	CommitInfo,
-	ContextUsageEstimate,
-	Message,
-	SessionView,
+import {
+	type AgentType,
+	type Attachment,
+	type ChangedFile,
+	type CommitInfo,
+	type ContextUsageEstimate,
+	MAX_ATTACHMENTS_PER_MESSAGE,
+	type Message,
+	type SessionView,
 } from "@dilna/shared";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
@@ -66,8 +67,13 @@ const sendBodySchema = z
 		text: z.string().max(200_000),
 		/** Ids from `POST /:id/attachments`, in the order the composer showed
 		 * them. Resolved and ownership-checked before the turn is claimed — see
-		 * the send handler. */
-		attachmentIds: z.array(z.string().min(1)).max(20).optional(),
+		 * the send handler. Bounded by the same shared constant the resolver and
+		 * the composer use, so a send can't pass validation here only to be
+		 * rejected downstream for a limit this schema disagreed about. */
+		attachmentIds: z
+			.array(z.string().min(1))
+			.max(MAX_ATTACHMENTS_PER_MESSAGE)
+			.optional(),
 	})
 	.refine((body) => body.text.trim().length > 0 || body.attachmentIds?.length, {
 		message: "a message needs text or at least one attachment",

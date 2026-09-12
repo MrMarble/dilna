@@ -67,3 +67,10 @@ pictures the turn already acted on.
 - Only the four image MIME types every Provider in dilna's catalog accepts take
   the inline channel. An `image/tiff` is classified as a document, which
   degrades to "the Agent reads it off disk" rather than a turn-level API error.
+- Files reach the tray three ways — the Plus button's picker, paste, and drag
+  and drop — but all three funnel into one `addFiles`, so the upload, cap and
+  error handling have a single implementation.
+- `MAX_ATTACHMENTS_PER_MESSAGE` and `formatAttachmentSize` live in
+  `packages/shared` because both sides enforce/render them and must agree; two
+  independent copies of the cap had already drifted (20 in the route schema vs
+  10 in the resolver) before they were unified.

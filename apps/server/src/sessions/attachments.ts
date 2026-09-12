@@ -1,7 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Attachment, AttachmentKind } from "@dilna/shared";
+import {
+	type Attachment,
+	type AttachmentKind,
+	formatAttachmentSize,
+	MAX_ATTACHMENTS_PER_MESSAGE,
+} from "@dilna/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import { getDataDir, getDb } from "../db";
 import { attachments as attachmentsTable } from "../db/schema";
@@ -42,10 +47,10 @@ import { attachments as attachmentsTable } from "../db/schema";
  */
 export const ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
 
-/** Hard cap on how many files one message may carry. Bounds both the prompt
- * preamble {@link describeAttachmentsForPrompt} builds and the number of
- * base64 images a single turn can inline. */
-export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+// The per-message cap lives in `packages/shared` — both sides enforce it and
+// they have to agree (see its doc comment). Re-exported here so this module
+// stays the one place the rest of the server asks about attachment policy.
+export { MAX_ATTACHMENTS_PER_MESSAGE };
 
 /**
  * MIME types dilna sends to a Provider as actual image content. Restricted
@@ -274,7 +279,7 @@ export function describeAttachmentsForPrompt(
 	if (attachments.length === 0) return "";
 	const lines = attachments.map((a) => {
 		const shown = a.kind === "image" ? " (shown to you inline)" : "";
-		return `- ${a.filename} — ${a.mimeType}, ${formatBytes(a.size)}${shown}\n  ${a.path}`;
+		return `- ${a.filename} — ${a.mimeType}, ${formatAttachmentSize(a.size)}${shown}\n  ${a.path}`;
 	});
 	return [
 		attachments.length === 1
@@ -286,10 +291,23 @@ export function describeAttachmentsForPrompt(
 	].join("\n");
 }
 
-function formatBytes(size: number): string {
-	if (size < 1024) return `${size} B`;
-	if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+/**
+ * The prompt `maybeDeriveTitle` derives a Session's title from — the user's
+ * own words plus the names of anything they attached.
+ *
+ * Separate from {@link describeAttachmentsForPrompt} on purpose: that one is
+ * for the Agent doing the work, and its paths and copy instructions would
+ * dominate a 3-4 word title. This exists because a first turn can legitimately
+ * carry no text at all ("look at this" with just a screenshot, issue #53), and
+ * deriving a title from an empty string gives the model nothing to work with.
+ */
+export function describeAttachmentsForTitle(
+	text: string,
+	attachments: Attachment[],
+): string {
+	return [text, ...attachments.map((a) => `[attached: ${a.filename}]`)]
+		.filter((part) => part.length > 0)
+		.join("\n");
 }
 
 function rowToAttachment(

@@ -1,10 +1,11 @@
-import type {
-	AgentStreamEvent,
-	AgentType,
-	Attachment,
-	Message as ChatMessage,
-	MessagePart,
-	SessionView,
+import {
+	type AgentStreamEvent,
+	type AgentType,
+	type Attachment,
+	type Message as ChatMessage,
+	formatAttachmentSize,
+	type MessagePart,
+	type SessionView,
 } from "@dilna/shared";
 import {
 	AlertCircle,
@@ -152,12 +153,42 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const { pending, addFiles, removePending, clearPending } =
 		usePendingAttachments(sessionId);
 
+	/** The tray entries a send can actually reference — uploaded, with a
+	 * server id. Errored and still-uploading entries are excluded, so this is
+	 * both what gets sent and what "is there anything to send?" is measured
+	 * against. */
+	const readyToSend = useMemo(
+		() =>
+			pending.flatMap((p) =>
+				p.status === "done" && p.attachment ? [p.attachment] : [],
+			),
+		[pending],
+	);
+
 	/** Paste-to-attach: a clipboard image (the usual screenshot path) becomes
 	 * an attachment instead of nothing. Pasted *text* is left entirely alone —
 	 * `clipboardData.files` is empty for it, so the default paste runs. */
 	const handlePaste = useCallback(
 		(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
 			const files = Array.from(e.clipboardData.files);
+			if (files.length === 0) return;
+			e.preventDefault();
+			void addFiles(files);
+		},
+		[addFiles],
+	);
+
+	/** Drag-and-drop onto the composer (issue #53's "drag a file/image into
+	 * the prompt"). Counted rather than toggled: dragging over a child element
+	 * fires `dragleave` on the parent, so a boolean flickers the highlight off
+	 * mid-drag. */
+	const [dragDepth, setDragDepth] = useState(0);
+	const handleDrop = useCallback(
+		(e: React.DragEvent) => {
+			const files = Array.from(e.dataTransfer.files);
+			setDragDepth(0);
+			// Only claim the drop when it actually carries files — dragged text
+			// should still land in the textarea as text.
 			if (files.length === 0) return;
 			e.preventDefault();
 			void addFiles(files);
@@ -406,15 +437,17 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const handleSend = useCallback(async () => {
 		const text = input.trim();
 		// Attachments alone are a valid message ("look at this"), but only once
-		// every upload has landed — an in-flight one has no id to reference yet.
-		const ready = pending.filter((p) => p.status === "done" && p.attachment);
-		if ((!text && ready.length === 0) || sending || working) return;
-		if (pending.some((p) => p.status !== "done")) return;
+		// their upload has landed — an in-flight one has no id to reference yet.
+		// An errored entry is simply left behind (see the Send button's own
+		// comment): it must not block the send, or one bad file wedges the
+		// composer.
+		if ((!text && readyToSend.length === 0) || sending || working) return;
+		if (pending.some((p) => p.status === "uploading")) return;
 		setError(null);
 		setSending(true);
 		setThinking(true);
 
-		const attached = ready.flatMap((p) => (p.attachment ? [p.attachment] : []));
+		const attached = readyToSend;
 		// Optimistic user message placeholder — visible immediately so autoscroll
 		// follows it; replaced by the authoritative DB row at the idle reconcile.
 		// Mirrors the server's own part order (attachments first, then text) so
@@ -486,7 +519,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		} finally {
 			setSending(false);
 		}
-	}, [input, sending, working, sessionId, pending, clearPending]);
+	}, [input, sending, working, sessionId, pending, readyToSend, clearPending]);
 
 	const handleStop = useCallback(async () => {
 		try {
@@ -600,7 +633,27 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 				    left, send/stop on the right. Putting the buttons on their own
 				    row rather than beside the text is what leaves room for more
 				    controls later without squeezing the input. */}
-				<div className="mx-auto flex max-w-[max(48rem,80%)] flex-col gap-1 rounded-xl border border-border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60">
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: drag-and-drop is an addition to the keyboard-accessible Plus button and file input below, not a replacement for them. */}
+				<div
+					onDragEnter={(e) => {
+						if (!e.dataTransfer.types.includes("Files")) return;
+						e.preventDefault();
+						setDragDepth((d) => d + 1);
+					}}
+					onDragOver={(e) => {
+						// Required for `drop` to fire at all; without it the browser
+						// navigates to the dropped file instead.
+						if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+					}}
+					onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
+					onDrop={handleDrop}
+					className={cn(
+						"mx-auto flex max-w-[max(48rem,80%)] flex-col gap-1 rounded-xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60",
+						dragDepth > 0
+							? "border-primary border-dashed bg-accent/40"
+							: "border-border",
+					)}
+				>
 					{pending.length > 0 && (
 						<div className="flex flex-wrap gap-2 px-1 pt-1 pb-0.5">
 							{pending.map((item) => (
@@ -681,10 +734,17 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 								// An attachment-only message is still a message worth
 								// sending ("look at this"), but not while an upload is
 								// still in flight — its id doesn't exist yet.
+								//
+								// Only `"uploading"` blocks, never `"error"`: a failed
+								// upload deliberately stays in the tray (so the user sees
+								// which file didn't make it), and treating that as "not
+								// ready" would wedge the composer — a typed draft could
+								// not be sent until the user spotted the small ✕. The
+								// send simply leaves errored entries behind.
 								disabled={
-									(!input.trim() && pending.length === 0) ||
+									(!input.trim() && readyToSend.length === 0) ||
 									sending ||
-									pending.some((p) => p.status !== "done")
+									pending.some((p) => p.status === "uploading")
 								}
 								className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
 								title="Send"
@@ -763,7 +823,7 @@ function PendingAttachmentCard({
 						? (item.error ?? "upload failed")
 						: item.status === "uploading"
 							? "Uploading…"
-							: formatBytes(item.size)}
+							: formatAttachmentSize(item.size)}
 				</span>
 			</span>
 			{item.status === "uploading" && (
@@ -780,15 +840,6 @@ function PendingAttachmentCard({
 			</button>
 		</div>
 	);
-}
-
-/** Human-readable size for an attachment card. Shared by the composer's
- * pending tray and the sent-message card so the same file reads identically
- * before and after sending. */
-function formatBytes(size: number): string {
-	if (size < 1024) return `${size} B`;
-	if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-	return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
@@ -833,7 +884,7 @@ function SentAttachment({ attachment }: { attachment: Attachment }) {
 					{attachment.filename}
 				</span>
 				<span className="block text-xs text-muted-foreground">
-					{formatBytes(attachment.size)}
+					{formatAttachmentSize(attachment.size)}
 				</span>
 			</span>
 		</a>
