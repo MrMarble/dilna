@@ -27,3 +27,7 @@ _Avoid_: backend (see Agent)
 **Model**:
 The specific LLM a **Provider** serves — e.g. Claude Opus, DeepSeek-V3, Kimi K2, GLM-4.7. Selected alongside Provider via the same env var; see ADR-0020.
 _Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
+
+**Attachment**:
+A file the user uploaded to a **Session** and sent with a message. An Attachment belongs to exactly one Session and is stored outside every **Worktree**, so it is never part of a **Repo**'s git history unless the user asks the **Agent** to copy it in; see ADR-0031. An Attachment is either an *image* (one the Provider can see as pixels) or a *document* (one the Agent reads from disk).
+_Avoid_: upload, file (unqualified — "file" means a file in the Worktree), asset, media

@@ -325,6 +325,46 @@ describe("dilnaMessagesToInitialState", () => {
 		]);
 	});
 
+	// Issue #53: a cold start rebuilds the *whole* history, so re-inlining
+	// every image a Session ever received would grow the seeded context
+	// without bound. The paths replay instead — which is what the Agent needs
+	// to look at the file again.
+	it("replays an attachment as its on-disk path, not re-inlined bytes", () => {
+		const messages: Message[] = [
+			{
+				id: "m1",
+				sessionId: "s1",
+				role: "user",
+				parts: [
+					{
+						type: "attachment",
+						attachment: {
+							id: "a1",
+							sessionId: "s1",
+							filename: "shot.png",
+							mimeType: "image/png",
+							size: 10,
+							kind: "image",
+							path: "/data/attachments/s1/abc-shot.png",
+							createdAt: 41,
+						},
+					},
+					{ type: "text", text: "look at this" },
+				],
+				turnId: null,
+				createdAt: 42,
+			},
+		];
+
+		const out = dilnaMessagesToInitialState(messages);
+
+		expect(out).toHaveLength(1);
+		const content = (out[0] as { content: string }).content;
+		expect(content).toContain("/data/attachments/s1/abc-shot.png");
+		expect(content).toContain("shot.png");
+		expect(content).toContain("look at this");
+	});
+
 	it("splits an assistant row with a tool_call part into an AssistantMessage plus a trailing ToolResultMessage", () => {
 		const messages: Message[] = [
 			{

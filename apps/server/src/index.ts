@@ -87,9 +87,11 @@ app.use(
 		allowMethods: ["GET", "POST", "DELETE", "PATCH"],
 	}),
 );
-// Nothing here needs a payload anywhere near this large (the biggest is a
-// chat message's text) — this just puts a ceiling on the previously-uncapped
-// request body rather than tuning it tightly.
+// A ceiling on the previously-uncapped request body rather than a tightly
+// tuned budget. Attachment uploads (issue #53) are the only route that
+// deliberately uses much of it; `ATTACHMENT_MAX_BYTES` is set below this so
+// an oversized file is refused by the route with a clear message rather than
+// truncated here — keep the two in that order if either moves.
 app.use("/api/*", bodyLimit({ maxSize: 5 * 1024 * 1024 }));
 
 app.route("/api/config", configRoute);

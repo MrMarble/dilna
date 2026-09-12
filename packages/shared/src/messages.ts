@@ -1,3 +1,46 @@
+/** How an {@link Attachment} is presented to the user and handed to the
+ * Agent. `"image"` is the only kind a Provider can see *as pixels* — it
+ * travels inline in the prompt as base64 (`pi-agent-core`'s
+ * `prompt(text, images)`), and renders in chat as the picture itself. Every
+ * other upload is a `"document"`: the Agent is told where it is on disk and
+ * reads it with its own tools, and chat renders a name-and-icon card.
+ *
+ * Derived from the MIME type at upload time and stored, rather than
+ * re-derived per render: the kind decides which prompt channel the file
+ * took, so a later change to the derivation rule must not retroactively
+ * rewrite what an already-sent turn claims to have sent. */
+export type AttachmentKind = "image" | "document";
+
+/** A file the user uploaded to a Session, stored outside every Worktree (see
+ * ADR-0031) and referenced from the message that sent it.
+ *
+ * Deliberately carries no bytes: this shape travels in every `Message` the
+ * chat renders, the transcript export serializes, and the Agent re-seeds
+ * from, so inlining even a small image would multiply through all three.
+ * The web fetches the bytes separately from
+ * `GET /api/sessions/:sessionId/attachments/:id` only for the kinds that
+ * actually render them. */
+export type Attachment = {
+	id: string;
+	sessionId: string;
+	/** The name as the user's filesystem had it, kept for display and for
+	 * naming the file the Agent is pointed at. Sanitized at upload (see the
+	 * server's `attachments.ts`) — never used to build a path unvalidated. */
+	filename: string;
+	mimeType: string;
+	/** Bytes on disk. Shown on the document card, and what the upload limit
+	 * is enforced against. */
+	size: number;
+	kind: AttachmentKind;
+	/** Absolute path on the server, inside the Session's attachment
+	 * directory. Present so the *Agent* can be told where to find the file —
+	 * it is the whole point of storing outside the Worktree (the user asks
+	 * the agent to copy it in if they want it committed). Sent to the web
+	 * too, which only ever displays it as a hint; the browser can't read it. */
+	path: string;
+	createdAt: number;
+};
+
 export type MessagePart =
 	| { type: "text"; text: string }
 	| {
@@ -7,7 +50,20 @@ export type MessagePart =
 			input: unknown;
 			output: unknown;
 			error?: string;
-	  };
+	  }
+	/** A file the user sent with this message. Only ever appears on a
+	 * `"user"` row — an Agent has no way to produce one (it writes files into
+	 * the Worktree instead), so nothing in the normalization path mints these.
+	 *
+	 * The part embeds the full {@link Attachment} record rather than just an
+	 * id so a message renders, exports and re-seeds from the row alone, with
+	 * no second lookup and no join that could come back empty. The
+	 * `attachments` table stays the source of truth for the file itself (it's
+	 * what `GET /api/sessions/:sessionId/attachments/:id` serves and what
+	 * deletion walks); this is a snapshot of its metadata at send time, which
+	 * is the correct thing for a transcript to preserve even if the row is
+	 * later gone. */
+	| { type: "attachment"; attachment: Attachment };
 
 export type Message = {
 	id: string;
@@ -46,6 +102,37 @@ export type Message = {
 	turnId: string | null;
 };
 
+/**
+ * Hard cap on how many files one message may carry. Lives here because both
+ * sides enforce it and they must agree: the composer stops the user at the
+ * picker, the server rejects a send that exceeds it. Two independent
+ * constants drifted apart once already (the route's zod schema said 20 while
+ * the server's own resolver said 10, so a 15-id send passed validation and
+ * then failed downstream).
+ */
+export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+
+/**
+ * Render a byte count the way dilna shows file sizes — on the composer's
+ * pending tray, on a sent message's document card, and in the prompt
+ * preamble the Agent reads.
+ *
+ * Shared rather than duplicated per side: all three render the *same*
+ * attachment's size, so a divergence would have the user and the Agent
+ * quoting different numbers for one file.
+ */
+export function formatAttachmentSize(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 export type SendMessageInput = {
 	text: string;
+	/** Attachments to send with this message, already uploaded via
+	 * `POST /api/sessions/:id/attachments` — the send references them by id
+	 * rather than carrying bytes, so the turn-claiming POST stays a small
+	 * JSON body and an upload that fails never costs the user their draft.
+	 * Ids that don't belong to this Session are rejected, not ignored. */
+	attachmentIds?: string[];
 };

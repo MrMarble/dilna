@@ -159,6 +159,50 @@ export const messages = sqliteTable("messages", {
 });
 
 /**
+ * A file the user uploaded to a Session (issue #53, ADR-0031) — one row per
+ * upload, minted by `POST /api/sessions/:id/attachments` before the message
+ * that references it is ever sent.
+ *
+ * Metadata only: the bytes live on disk at `path`, under
+ * `<data>/attachments/<sessionId>/`, deliberately outside every Worktree so
+ * an upload never lands in a Repo's git tree (ADR-0031). That directory is
+ * also what the Agent is granted read access to, which is what lets the user
+ * say "copy that image into `public/`" and have the Agent actually do it.
+ *
+ * A row outlives the message that references it only in the sense that
+ * nothing prunes orphans: an upload the user abandoned without sending keeps
+ * its row and its bytes until the Session is deleted, which removes both
+ * (`SessionManager.delete`). Message rows embed a *snapshot* of this record
+ * (`MessagePart`'s `attachment` variant), so a transcript still renders a
+ * file's name and kind after the row and bytes are gone — it just can't
+ * serve the pixels.
+ */
+export const attachments = sqliteTable("attachments", {
+	id: text("id").primaryKey(),
+	/** Owning Session. No FK (consistent with the rest of this schema);
+	 * `SessionManager.delete` removes these rows and the on-disk directory
+	 * explicitly. Every read path filters on it too — an attachment id is only
+	 * ever resolvable within the Session that owns it. */
+	sessionId: text("session_id").notNull(),
+	/** The user's own filename, sanitized at upload. Also the basename of
+	 * `path`, so the Agent sees a recognizable name on disk rather than an id. */
+	filename: text("filename").notNull(),
+	mimeType: text("mime_type").notNull(),
+	size: integer("size").notNull(),
+	/** `packages/shared`'s `AttachmentKind` — `"image"` or `"document"`.
+	 * Stored rather than re-derived from `mimeType` per read: it records which
+	 * prompt channel the file actually took (inline base64 vs a path the Agent
+	 * reads), so changing the derivation rule can't retroactively rewrite what
+	 * an already-sent turn claims to have sent. */
+	kind: text("kind").notNull(),
+	/** Absolute on-disk path. Stored rather than recomputed from
+	 * `<data>/attachments/<sessionId>/<filename>` so a row keeps pointing at
+	 * its real file even if the derivation (or `DILNA_DATA_DIR`) changes. */
+	path: text("path").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+});
+
+/**
  * Per-Repo agent-curated memory (issue #59): short, durable facts an agent
  * discovers about a Repo (e.g. "tests need FOO_ENV set") that should survive
  * across otherwise-isolated Sessions/Worktrees (ADR-0010). One row per repo,

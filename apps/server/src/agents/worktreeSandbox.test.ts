@@ -280,7 +280,7 @@ describe("worktreeSandbox", () => {
 				const moduleDir = path.join(checkout, "apps", "server", "src");
 				mkdirSync(moduleDir, { recursive: true });
 
-				const grant = resolveSandboxGrant(worktree, moduleDir);
+				const grant = resolveSandboxGrant(worktree, [], moduleDir);
 
 				expect(grant.nestedInCheckout).toBe(true);
 				expect(grant.denyReadPaths).toContain(checkout);
@@ -299,7 +299,7 @@ describe("worktreeSandbox", () => {
 				const moduleDir = path.join(root, "elsewhere", "dist");
 				mkdirSync(moduleDir, { recursive: true });
 
-				const grant = resolveSandboxGrant(worktree, moduleDir);
+				const grant = resolveSandboxGrant(worktree, [], moduleDir);
 
 				expect(grant.nestedInCheckout).toBe(false);
 				expect(grant.denyReadPaths).toEqual([]);

@@ -1,4 +1,5 @@
 import type { MessagePart } from "@dilna/shared";
+import { attachmentUrl } from "@/api/client";
 import { getToolMeta } from "@/lib/tool-meta";
 
 /**
@@ -14,6 +15,12 @@ import { getToolMeta } from "@/lib/tool-meta";
  * structured `tool_call` part — so they're rendered as the same one-line
  * summary the collapsed UI shows, in italics, to keep the transcript readable
  * without dumping raw tool JSON. Pass `includeToolCalls: false` for text only.
+ *
+ * Attachments become ordinary markdown links (image syntax for the image
+ * kind), pointing at the API URL that serves the bytes. Deliberately *not*
+ * gated by `includeToolCalls`: that flag exists to suppress the agent's tool
+ * noise, whereas an attachment is content the user themselves put in the
+ * message — dropping it would make the copy say less than the user wrote.
  */
 export function partsToMarkdown(
 	parts: MessagePart[],
@@ -24,6 +31,10 @@ export function partsToMarkdown(
 		if (part.type === "text") {
 			const text = part.text.trim();
 			if (text) chunks.push(text);
+		} else if (part.type === "attachment") {
+			const { filename, sessionId, id, kind } = part.attachment;
+			const url = attachmentUrl(sessionId, id);
+			chunks.push(`${kind === "image" ? "!" : ""}[${filename}](${url})`);
 		} else if (includeToolCalls) {
 			const meta = getToolMeta(part.tool, part.input);
 			const detail = meta.detail ? ` ${meta.detail}` : "";

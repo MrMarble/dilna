@@ -68,7 +68,7 @@ export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
 				messageId: turn.messageId,
 				chunk: part.text,
 			});
-		} else {
+		} else if (part.type === "tool_call") {
 			events.push({
 				type: "tool_call_start",
 				messageId: turn.messageId,
@@ -86,6 +86,11 @@ export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
 				});
 			}
 		}
+		// `attachment` parts are skipped: this replays an *assistant* turn's
+		// accumulated parts, and only a user row ever carries one (see
+		// `MessagePart`). There is also no event in the stream contract that
+		// would express one — a subscriber gets the user's attachments from the
+		// `user_message` broadcast and the REST history, not from turn replay.
 	}
 	return events;
 }

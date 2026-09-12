@@ -164,6 +164,59 @@ describe("confinement", () => {
 			expect(result?.block).toBe(true);
 		});
 
+		// The attachment directory (issue #53, ADR-0031): readable so the Agent
+		// can act on an upload, never writable — copying a file *into* the
+		// worktree is the supported move, editing the user's original is not.
+		describe("with a read-only root (the session's attachments)", () => {
+			it.each([
+				"read",
+				"grep",
+				"find",
+				"ls",
+			])("allows %s inside the read-only root", async (tool) => {
+				const hook = createConfinementHook(worktree, [outside]);
+				const result = await hook(
+					ctx(tool, { path: path.join(outside, "secret.txt") }),
+				);
+				expect(result).toBeUndefined();
+			});
+
+			it.each([
+				"write",
+				"edit",
+			])("still blocks %s inside the read-only root", async (tool) => {
+				const hook = createConfinementHook(worktree, [outside]);
+				const result = await hook(
+					ctx(tool, { path: path.join(outside, "secret.txt") }),
+				);
+				expect(result?.block).toBe(true);
+			});
+
+			it("blocks a read outside both the worktree and the read-only root", async () => {
+				const elsewhere = mkdtempSync(
+					path.join(tmpdir(), "dilna-confinement-elsewhere-"),
+				);
+				try {
+					writeFileSync(path.join(elsewhere, "other.txt"), "other\n");
+					const hook = createConfinementHook(worktree, [outside]);
+					const result = await hook(
+						ctx("read", { path: path.join(elsewhere, "other.txt") }),
+					);
+					expect(result?.block).toBe(true);
+				} finally {
+					rmSync(elsewhere, { recursive: true, force: true });
+				}
+			});
+
+			it("leaves the worktree fully writable", async () => {
+				const hook = createConfinementHook(worktree, [outside]);
+				const result = await hook(
+					ctx("write", { path: "nested/new-file.txt" }),
+				);
+				expect(result).toBeUndefined();
+			});
+		});
+
 		it("passes a non-path tool (bash) through untouched", async () => {
 			const hook = createConfinementHook(worktree);
 			const result = await hook(ctx("bash", { command: "rm -rf /" }));

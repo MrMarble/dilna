@@ -1,10 +1,13 @@
-import type {
-	AgentType,
-	ChangedFile,
-	CommitInfo,
-	ContextUsageEstimate,
-	Message,
-	SessionView,
+import { readFile } from "node:fs/promises";
+import {
+	type AgentType,
+	type Attachment,
+	type ChangedFile,
+	type CommitInfo,
+	type ContextUsageEstimate,
+	MAX_ATTACHMENTS_PER_MESSAGE,
+	type Message,
+	type SessionView,
 } from "@dilna/shared";
 import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
@@ -13,6 +16,12 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { logger } from "../logger";
 import { RepoNotFoundError, repoManager } from "../repos/manager";
+import {
+	AttachmentRejectedError,
+	getAttachment,
+	resolveAttachments,
+	storeAttachment,
+} from "../sessions/attachments";
 import {
 	SessionManagerDrainingError,
 	SessionNotFoundError,
@@ -50,9 +59,25 @@ const createBodySchema = z.object({
 	repoId: z.string().min(1),
 	agentType: z.enum(["pi", "openai"]).optional(),
 });
-const sendBodySchema = z.object({
-	text: z.string().min(1).max(200_000),
-});
+const sendBodySchema = z
+	.object({
+		// Empty is allowed at the field level so an attachment-only message
+		// ("look at this") can be sent; the refinement below still rejects a
+		// send that carries neither text nor files.
+		text: z.string().max(200_000),
+		/** Ids from `POST /:id/attachments`, in the order the composer showed
+		 * them. Resolved and ownership-checked before the turn is claimed — see
+		 * the send handler. Bounded by the same shared constant the resolver and
+		 * the composer use, so a send can't pass validation here only to be
+		 * rejected downstream for a limit this schema disagreed about. */
+		attachmentIds: z
+			.array(z.string().min(1))
+			.max(MAX_ATTACHMENTS_PER_MESSAGE)
+			.optional(),
+	})
+	.refine((body) => body.text.trim().length > 0 || body.attachmentIds?.length, {
+		message: "a message needs text or at least one attachment",
+	});
 
 export const sessionsRoute = new Hono();
 
@@ -176,9 +201,21 @@ sessionsRoute.post(
 		// doc comment; ADR-0016 §2). This is what makes the pre-202 409 the only
 		// duplicate-send surface: a fast second POST can no longer land its own
 		// 202 by racing the claim through an `await`.
+		// Resolved *before* the turn is claimed: an id that doesn't belong to
+		// this Session must fail the send outright (400, draft preserved) rather
+		// than start a turn whose message silently lost a file the user attached.
+		let attachments: Attachment[];
+		try {
+			attachments = resolveAttachments(id, body.attachmentIds ?? []);
+		} catch (err) {
+			if (err instanceof AttachmentRejectedError) {
+				throw new HTTPException(400, { message: err.message });
+			}
+			throw err;
+		}
 		let message: Message;
 		try {
-			message = sessionManager.beginTurn(id, body.text);
+			message = sessionManager.beginTurn(id, body.text, attachments);
 		} catch (err) {
 			if (err instanceof SessionNotFoundError) {
 				throw new HTTPException(404, { message: err.message });
@@ -200,7 +237,7 @@ sessionsRoute.post(
 		// the chat can keep streaming even if this request times out. The 202
 		// body echoes the same persisted row already broadcast as `user_message`
 		// (ADR-0016 §6), so every client converges on one message id.
-		const turnPromise = sessionManager.runTurn(id, body.text);
+		const turnPromise = sessionManager.runTurn(id, body.text, attachments);
 		sessionManager.trackRunningTurn(id, turnPromise);
 		turnPromise.catch((err) => {
 			log.error({ sessionId: id, err }, "runTurn failed");
@@ -208,6 +245,98 @@ sessionsRoute.post(
 		return c.json({ ok: true, message }, 202);
 	},
 );
+
+/**
+ * Upload one file to a Session (issue #53). Deliberately separate from the
+ * send below rather than a multipart send: the upload is the slow, large,
+ * retryable half, and decoupling it means a failed upload costs the user
+ * nothing (the draft is untouched, no turn was claimed) while the send stays
+ * the small JSON POST whose 409 semantics ADR-0016 §2 depends on.
+ *
+ * One file per request — the composer uploads a multi-file selection
+ * concurrently, so batching here would only trade independent per-file
+ * progress and failure for an all-or-nothing round trip.
+ */
+sessionsRoute.post("/:id/attachments", async (c) => {
+	const id = c.req.param("id");
+	const session = await sessionManager.get(id);
+	if (!session) throw new HTTPException(404, { message: "session not found" });
+
+	let file: File;
+	try {
+		const body = await c.req.parseBody();
+		const candidate = body.file;
+		if (!(candidate instanceof File)) {
+			throw new HTTPException(400, {
+				message: "expected a multipart body with a `file` field",
+			});
+		}
+		file = candidate;
+	} catch (err) {
+		if (err instanceof HTTPException) throw err;
+		throw new HTTPException(400, { message: "malformed multipart body" });
+	}
+
+	try {
+		const attachment = storeAttachment(id, {
+			filename: file.name,
+			// A browser that can't guess the type sends an empty string; keep the
+			// generic binary type rather than an empty one so `attachmentKindFor`
+			// and the download's Content-Type both have something valid.
+			mimeType: file.type || "application/octet-stream",
+			bytes: new Uint8Array(await file.arrayBuffer()),
+		});
+		const body: { attachment: Attachment } = { attachment };
+		return c.json(body, 201);
+	} catch (err) {
+		if (err instanceof AttachmentRejectedError) {
+			throw new HTTPException(413, { message: err.message });
+		}
+		log.error({ sessionId: id, err }, "attachment upload failed");
+		throw new HTTPException(500, { message: "upload failed" });
+	}
+});
+
+/**
+ * Serve an attachment's bytes — what the chat's `<img>` points at, and the
+ * only way the browser ever sees an upload's content (the `Attachment`
+ * records embedded in messages carry metadata only).
+ *
+ * Scoped under the Session, not a flat `/api/attachments/:id`: an attachment
+ * id is only meaningful within its owning Session (see
+ * `getAttachment`), and routing it this way makes that containment the URL's
+ * shape rather than a check a future handler could forget.
+ *
+ * `Content-Disposition: inline` because the overwhelmingly common case is an
+ * image the page renders; the filename is still supplied so an explicit
+ * download saves it under the name the user uploaded.
+ */
+sessionsRoute.get("/:id/attachments/:attachmentId", async (c) => {
+	const id = c.req.param("id");
+	const attachment = getAttachment(id, c.req.param("attachmentId"));
+	if (!attachment) {
+		throw new HTTPException(404, { message: "attachment not found" });
+	}
+	let bytes: Buffer;
+	try {
+		bytes = await readFile(attachment.path);
+	} catch {
+		// Row without bytes — the file was removed underneath us. A 404 is the
+		// honest answer; the message still renders its card from the embedded
+		// metadata.
+		throw new HTTPException(404, { message: "attachment file is missing" });
+	}
+	c.header("Content-Type", attachment.mimeType);
+	c.header(
+		"Content-Disposition",
+		`inline; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,
+	);
+	// Immutable: an attachment's bytes never change once stored (a re-upload
+	// mints a new id), so the browser can keep an image across re-renders and
+	// reloads instead of refetching it on every message-list update.
+	c.header("Cache-Control", "private, max-age=31536000, immutable");
+	return c.body(bytes.buffer as ArrayBuffer);
+});
 
 sessionsRoute.post("/:id/stop", async (c) => {
 	const id = c.req.param("id");

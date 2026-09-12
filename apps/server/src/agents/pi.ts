@@ -52,6 +52,7 @@ import {
 	REPO_MEMORY_MAX_CHARS,
 	setRepoMemory,
 } from "../repos/memory";
+import { attachmentDir } from "../sessions/attachments";
 import {
 	formatSkillsPrompt,
 	type LoadedSkill,
@@ -320,8 +321,10 @@ function createSandboxedBashOperations(grant: SandboxGrant): BashOperations {
 						denyRead: grant.denyReadPaths,
 						// Re-open the worktree (and everything it's otherwise allowed to
 						// write) for reads within the broader deny — see
-						// `SandboxGrant.writablePaths`' own doc comment.
-						allowRead: grant.writablePaths,
+						// `SandboxGrant.writablePaths`' own doc comment. The read-only
+						// roots (the Session's attachments) are readable here and
+						// deliberately absent from `allowWrite` below.
+						allowRead: [...grant.writablePaths, ...grant.readOnlyPaths],
 						allowWrite: grant.writablePaths,
 						denyWrite: [],
 					},
@@ -450,7 +453,11 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 
 	// Every filesystem/toolchain grant this Session's sandboxed bash runs
 	// under, as one value — see worktreeSandbox.ts for the policy itself.
-	const grant = resolveSandboxGrant(opts.worktreePath);
+	// The Session's attachment dir goes in read-only (issue #53, ADR-0031):
+	// the Agent can `cat`/`cp` an upload, but the copy lands in the Worktree.
+	const grant = resolveSandboxGrant(opts.worktreePath, [
+		attachmentDir(opts.sessionId),
+	]);
 
 	const hasCodegraph = existsSync(path.join(opts.worktreePath, ".codegraph"));
 
@@ -500,7 +507,12 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		sessionId: opts.sessionId,
 		streamFn: streamSimple,
 		getApiKey: (p) => resolveApiKey(p),
-		beforeToolCall: createConfinementHook(opts.worktreePath),
+		// The Session's attachment directory is readable but not writable
+		// (issue #53, ADR-0031): uploads live outside the Worktree so they never
+		// land in the git tree, and this is what keeps them reachable anyway.
+		beforeToolCall: createConfinementHook(opts.worktreePath, [
+			attachmentDir(opts.sessionId),
+		]),
 	});
 
 	return wirePiHandle(agent, opts.worktreePath, provider, modelId);
@@ -641,7 +653,20 @@ export async function chatPi(
 	opts.abortSignal?.addEventListener("abort", abortHandler, { once: true });
 
 	try {
-		await agent.prompt(opts.message);
+		// pi's own two-arg overload (`prompt(text, images)`) builds the mixed
+		// text+image user message; dilna never assembles content blocks itself.
+		// Passing `undefined` rather than `[]` when there are none keeps the
+		// single-arg shape for the overwhelmingly common text-only turn.
+		await agent.prompt(
+			opts.message,
+			opts.images?.length
+				? opts.images.map((img) => ({
+						type: "image" as const,
+						data: img.data,
+						mimeType: img.mimeType,
+					}))
+				: undefined,
+		);
 		if (!deliberatelyAborted) {
 			const last = agent.state.messages.at(-1);
 			if (
@@ -1099,10 +1124,22 @@ export function dilnaMessagesToInitialState(
 	for (const message of messages) {
 		const timestamp = message.createdAt * 1000;
 		if (message.role === "user") {
-			const text = message.parts
-				.filter((p) => p.type === "text")
-				.map((p) => p.text)
-				.join("\n");
+			// Attachments replay as the same on-disk description the live turn
+			// prepended (issue #53), not as re-inlined base64: a cold start
+			// reconstructs the *whole* history, so re-encoding every image a
+			// Session ever received would grow the seeded context without bound
+			// and re-charge the user for pictures the turn already acted on. The
+			// Agent keeps the paths, which is what it needs to look again.
+			const attached = message.parts
+				.filter((p) => p.type === "attachment")
+				.map(
+					(p) =>
+						`[attached file: ${p.attachment.filename} — ${p.attachment.path}]`,
+				);
+			const text = [
+				...attached,
+				...message.parts.filter((p) => p.type === "text").map((p) => p.text),
+			].join("\n");
 			out.push({ role: "user", content: text, timestamp });
 			continue;
 		}
@@ -1112,7 +1149,7 @@ export function dilnaMessagesToInitialState(
 		for (const part of message.parts) {
 			if (part.type === "text") {
 				content.push({ type: "text", text: part.text });
-			} else {
+			} else if (part.type === "tool_call") {
 				content.push({
 					type: "toolCall",
 					id: part.callId,
@@ -1120,6 +1157,10 @@ export function dilnaMessagesToInitialState(
 					arguments: (part.input as Record<string, unknown>) ?? {},
 				});
 			}
+			// `attachment` parts only ever appear on user rows (see MessagePart)
+			// — handled in the user branch above; an assistant row carrying one
+			// would be a bug elsewhere, and silently minting a malformed toolCall
+			// from it (which the old `else` did) would corrupt the seeded context.
 		}
 		out.push({
 			role: "assistant",
