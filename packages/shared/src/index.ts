@@ -1,3 +1,6 @@
+// Not type-only: artefact.ts also exports the runtime
+// `ARTEFACT_MAX_BYTES`/`formatArtefactSize` both sides share (issue #194).
+export * from "./artefact";
 export type * from "./diff";
 export type * from "./events";
 // Not type-only: the live-message fold is behaviour both server and web need

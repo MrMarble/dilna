@@ -1,20 +1,25 @@
 import type {
+	Artefact,
 	ChangedFile,
 	CommitInfo,
 	Repo,
 	RepoStats,
 	SessionView,
 } from "@dilna/shared";
+import { formatArtefactSize } from "@dilna/shared";
 import {
+	ExternalLink,
 	FileDiff,
 	FilePlus,
+	FileText,
 	FileX,
 	GitCommitHorizontal,
 	PanelRightClose,
 	Pencil,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/api/client";
+import { api, artefactUrl } from "@/api/client";
+import { ArtefactViewer } from "@/components/ArtefactViewer";
 import { useSessionContextUsage } from "@/hooks/useSessionContextUsage";
 import { useSessionUsage } from "@/hooks/useSessionUsage";
 import {
@@ -76,6 +81,9 @@ export function ContextPanel({
 	const isSheet = variant === "sheet";
 	const [files, setFiles] = useState<ChangedFile[]>([]);
 	const [commits, setCommits] = useState<CommitInfo[]>([]);
+	const [artefacts, setArtefacts] = useState<Artefact[]>([]);
+	/** The artefact shown in the full-screen viewer, or null when closed. */
+	const [viewing, setViewing] = useState<Artefact | null>(null);
 	const [error, setError] = useState<string | null>(null);
 
 	const loadCommits = useCallback(() => {
@@ -88,7 +96,25 @@ export function ContextPanel({
 	useEffect(() => {
 		let cancelled = false;
 		setFiles([]);
+		setArtefacts([]);
 		setError(null);
+
+		// Artefacts published in earlier turns (issue #194) — the live
+		// `artefact_published` event below only carries new ones.
+		//
+		// Wrapped rather than only `.catch`-chained: artefacts are a secondary
+		// surface, and a failure here (including a synchronous throw, which a
+		// chained catch wouldn't see) must not take the whole panel down with
+		// it. Failure degrades to "no artefacts listed", matching how the
+		// commits fetch above already treats its own errors.
+		void (async () => {
+			try {
+				const { artefacts: list } = await api.sessions.artefacts(session.id);
+				if (!cancelled) setArtefacts(list);
+			} catch {
+				if (!cancelled) setArtefacts([]);
+			}
+		})();
 
 		// Initial snapshot so the panel has content immediately (e.g. resuming
 		// a session with prior turns), before any live event arrives.
@@ -110,6 +136,17 @@ export function ContextPanel({
 			if (ev.type === "changed_files") {
 				setFiles(ev.files);
 				loadCommits();
+			}
+			if (ev.type === "artefact_published") {
+				// Prepend: the list is newest-first, and this event is incremental
+				// rather than a snapshot (an Artefact is immutable once published).
+				// Guarded against duplicates so a reconnect that replays an event
+				// already in the initial fetch doesn't double a row.
+				setArtefacts((prev) =>
+					prev.some((a) => a.id === ev.artefact.id)
+						? prev
+						: [ev.artefact, ...prev],
+				);
 			}
 		});
 		return () => {
@@ -147,10 +184,92 @@ export function ContextPanel({
 			<div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
 				<RepositorySection repo={repo} stats={stats} />
 				<SessionSection session={session} showTokens={isSheet} />
+				<ArtefactsSection
+					sessionId={session.id}
+					artefacts={artefacts}
+					onOpen={setViewing}
+				/>
 				<ChangedFilesSection files={files} error={error} />
 				<CommitsSection commits={commits} />
 			</div>
+			<ArtefactViewer
+				sessionId={session.id}
+				artefact={viewing}
+				onClose={() => setViewing(null)}
+			/>
 		</aside>
+	);
+}
+
+/**
+ * Artefacts an Agent published this Session (issue #194, ADR-0032).
+ *
+ * Listed newest-first and never collapsed into one row per filename:
+ * republishing a regenerated report mints a *new* artefact precisely so the
+ * previous version stays openable for comparison, so deduplicating here would
+ * throw away the thing the storage design exists to preserve.
+ *
+ * The section is hidden entirely when empty rather than showing an empty
+ * state — unlike changed files or commits, most Sessions never publish
+ * anything, and a permanent "No artefacts yet" row would be noise in a panel
+ * that is already dense.
+ */
+function ArtefactsSection({
+	sessionId,
+	artefacts,
+	onOpen,
+}: {
+	sessionId: string;
+	artefacts: Artefact[];
+	onOpen: (artefact: Artefact) => void;
+}) {
+	if (artefacts.length === 0) return null;
+	return (
+		<SectionCard
+			title="Artefacts"
+			badge={
+				<span className="rounded-full bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">
+					{artefacts.length}
+				</span>
+			}
+		>
+			<ul className="space-y-0.5">
+				{artefacts.map((artefact) => (
+					<li key={artefact.id}>
+						<div className="group flex items-center gap-2 rounded-md px-1 py-1 hover:bg-sidebar-accent">
+							<button
+								type="button"
+								onClick={() => onOpen(artefact)}
+								className="flex min-w-0 flex-1 items-center gap-2 text-left"
+								title={`Open ${artefact.title}`}
+							>
+								<FileText className="size-4 shrink-0 text-muted-foreground" />
+								<span className="min-w-0 flex-1">
+									<span className="block truncate text-sm">
+										{artefact.title}
+									</span>
+									<span className="block truncate text-xs text-muted-foreground">
+										{artefact.sourcePath} · {formatArtefactSize(artefact.size)}
+									</span>
+								</span>
+							</button>
+							{/* Escape hatch from the sandboxed iframe: a report that
+							    wants the full window, or to be bookmarked. Same
+							    hardened response either way — the CSP travels with it. */}
+							<a
+								href={artefactUrl(sessionId, artefact.id)}
+								target="_blank"
+								rel="noreferrer"
+								title="Open in a new tab"
+								className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+							>
+								<ExternalLink className="size-3.5" />
+							</a>
+						</div>
+					</li>
+				))}
+			</ul>
+		</SectionCard>
 	);
 }
 

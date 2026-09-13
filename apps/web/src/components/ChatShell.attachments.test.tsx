@@ -38,6 +38,7 @@ vi.mock("@/api/client", () => ({
 			stream: vi.fn(),
 			changedFiles: vi.fn(),
 			commits: vi.fn(),
+			artefacts: vi.fn(),
 			get: vi.fn(),
 		},
 	},
@@ -74,6 +75,7 @@ beforeEach(() => {
 	vi.mocked(api.sessions.messages).mockResolvedValue({ messages: [] });
 	vi.mocked(api.sessions.changedFiles).mockResolvedValue({ files: [] });
 	vi.mocked(api.sessions.commits).mockResolvedValue({ commits: [] });
+	vi.mocked(api.sessions.artefacts).mockResolvedValue({ artefacts: [] });
 	// History is fetched by the on-open resync routine (ADR-0016 §4), not by
 	// a mount effect — so the fake stream has to fire `onOpen` or the chat
 	// renders permanently empty.

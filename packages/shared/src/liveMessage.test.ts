@@ -151,6 +151,7 @@ describe("isMessageContentEvent", () => {
 		"turn_activity",
 		"user_message",
 		"changed_files",
+		"artefact_published",
 	] as const)("rejects %s", (type) => {
 		expect(isMessageContentEvent({ type } as unknown as AgentStreamEvent)).toBe(
 			false,

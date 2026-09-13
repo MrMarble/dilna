@@ -203,6 +203,49 @@ export const attachments = sqliteTable("attachments", {
 });
 
 /**
+ * A file an Agent published for the user to open (issue #194, ADR-0032) —
+ * one row per publish, minted by the `dilna_publish_artefact` tool.
+ *
+ * The mirror image of `attachments` above: metadata only, bytes on disk
+ * under `<data>/artefacts/<sessionId>/`, deliberately outside every Worktree.
+ * Where an attachment travels user→Agent, an artefact travels Agent→user.
+ *
+ * **Rows are append-only.** Publishing the same Worktree file twice inserts a
+ * second row rather than updating the first, which is what lets the user
+ * compare successive versions of a regenerated report (ADR-0032). Nothing in
+ * the write path updates an existing row; `SessionManager.delete` removes
+ * them and the on-disk directory together.
+ */
+export const artefacts = sqliteTable("artefacts", {
+	id: text("id").primaryKey(),
+	/** Owning Session. No FK (consistent with the rest of this schema), and
+	 * every read path filters on it — an artefact id is only ever resolvable
+	 * within the Session that published it. */
+	sessionId: text("session_id").notNull(),
+	/** Human label the Agent supplied, falling back to the filename. What the
+	 * context panel lists: several runs of the same report would otherwise be
+	 * an indistinguishable column of `report.html`. */
+	title: text("title").notNull(),
+	/** Basename of the stored copy, sanitized at publish. */
+	filename: text("filename").notNull(),
+	/** Worktree-relative path the copy was taken from, kept for provenance:
+	 * once the Worktree moves on, this is the only record of which repo file
+	 * produced this snapshot. Never used to locate the bytes. */
+	sourcePath: text("source_path").notNull(),
+	/** `packages/shared`'s `ArtefactKind` — `"html"` today. Stored rather than
+	 * re-derived per read so a later widening of the accepted set can't
+	 * retroactively reclassify an already-published file. */
+	kind: text("kind").notNull(),
+	mimeType: text("mime_type").notNull(),
+	size: integer("size").notNull(),
+	/** Absolute on-disk path of the published copy, stored for the same reason
+	 * `attachments.path` is: the row keeps pointing at its real file even if
+	 * the derivation (or `DILNA_DATA_DIR`) changes. */
+	path: text("path").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+});
+
+/**
  * Per-Repo agent-curated memory (issue #59): short, durable facts an agent
  * discovers about a Repo (e.g. "tests need FOO_ENV set") that should survive
  * across otherwise-isolated Sessions/Worktrees (ADR-0010). One row per repo,

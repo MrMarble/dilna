@@ -4,6 +4,7 @@ import path from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import type {
 	AgentStreamEvent,
+	Artefact,
 	Message,
 	MessagePart,
 	UsageTotals,
@@ -58,6 +59,7 @@ import {
 	type LoadedSkill,
 	loadSkillsForRepo,
 } from "../skills/loader";
+import { createPublishArtefactTool } from "./artefactTools";
 import { createConfinementHook } from "./confinement";
 import {
 	createOrchestratorTools,
@@ -108,6 +110,12 @@ export type PiStartOptions = {
 	 * "resume by id" path the way Claude's transcript-backed resume needed,
 	 * since pi keeps no external transcript of its own to resume from. */
 	initialMessages: AgentMessage[];
+	/** Called when the Agent publishes an Artefact (issue #194, ADR-0032),
+	 * so `SessionManager` can broadcast `artefact_published` and the user's
+	 * panel updates mid-turn. Optional: a Session started without it simply
+	 * has no publish tool, which is what the orchestrator (no Worktree of its
+	 * own to publish from) wants. */
+	onArtefactPublished?: (artefact: Artefact) => void;
 };
 
 /**
@@ -496,6 +504,20 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		// domains); see webFetchTool.ts's module doc comment and ADR-0026.
 		createWebFetchTool(),
 	];
+
+	// Only registered when the caller wired a sink for the result (issue #194,
+	// ADR-0032) — a publish nobody is listening for would store bytes the user
+	// never learns exist.
+	if (opts.onArtefactPublished) {
+		const onPublished = opts.onArtefactPublished;
+		tools.push(
+			createPublishArtefactTool({
+				sessionId: opts.sessionId,
+				worktreePath: opts.worktreePath,
+				onPublished,
+			}),
+		);
+	}
 
 	const agent = new Agent({
 		initialState: {
