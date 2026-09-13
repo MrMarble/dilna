@@ -46,6 +46,7 @@ import {
 	type PendingAttachment,
 	usePendingAttachments,
 } from "@/hooks/usePendingAttachments";
+import { useSessionDraft } from "@/hooks/useSessionDraft";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
 import {
@@ -122,7 +123,13 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [live, setLive] = useState<Record<string, LiveMessage>>({});
 	const [status, setStatus] = useState<SessionView["status"]>(session.status);
-	const [input, setInput] = useState("");
+	/** Composer text, persisted per Session so navigating away (another
+	 * Session, Settings, a reload) doesn't lose a half-written message. */
+	const {
+		value: input,
+		setValue: setInput,
+		clear: clearDraft,
+	} = useSessionDraft(sessionId);
 	const [sending, setSending] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	/** Transient degraded-not-failed line (ADR-0016 §2's `notice`) — separate
@@ -476,8 +483,9 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 			);
 			// Only clear the composer once the send is actually accepted — the
 			// tray included, so a rejected send keeps the files too, not just the
-			// text.
-			setInput("");
+			// text. `clearDraft` (not `setInput("")`) so the persisted draft goes
+			// immediately, with no debounce window for a reload to resurrect it.
+			clearDraft();
 			clearPending();
 			// Swap the optimistic tempId bubble for the persisted row's real id
 			// (ADR-0016 §6) — the same row every other subscriber sees via the
@@ -519,7 +527,16 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		} finally {
 			setSending(false);
 		}
-	}, [input, sending, working, sessionId, pending, readyToSend, clearPending]);
+	}, [
+		input,
+		sending,
+		working,
+		sessionId,
+		pending,
+		readyToSend,
+		clearDraft,
+		clearPending,
+	]);
 
 	const handleStop = useCallback(async () => {
 		try {

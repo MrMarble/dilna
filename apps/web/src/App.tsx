@@ -25,6 +25,7 @@ import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
 import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
 import { useRoute } from "@/hooks/useRoute";
+import { clearSessionDraft } from "@/hooks/useSessionDraft";
 import { useSessionNotifications } from "@/hooks/useSessionNotifications";
 import { isReservedSlug, type Route } from "@/lib/routes";
 
@@ -422,6 +423,9 @@ export function App() {
 			setDeletingSessionIds((prev) => [...prev, id]);
 			try {
 				await api.sessions.delete(id);
+				// The Session is gone, so its persisted composer draft is garbage —
+				// without this, drafts for deleted Sessions pile up in localStorage.
+				clearSessionDraft(id);
 				setSessionsById((prev) => {
 					if (!(id in prev)) return prev;
 					const next = { ...prev };
