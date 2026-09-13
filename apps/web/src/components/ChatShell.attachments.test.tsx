@@ -72,6 +72,9 @@ function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	// The composer persists its draft per Session (useSessionDraft) — without
+	// this, text typed in one test leaks into the next one's textarea.
+	localStorage.clear();
 	vi.mocked(api.sessions.messages).mockResolvedValue({ messages: [] });
 	vi.mocked(api.sessions.changedFiles).mockResolvedValue({ files: [] });
 	vi.mocked(api.sessions.commits).mockResolvedValue({ commits: [] });
