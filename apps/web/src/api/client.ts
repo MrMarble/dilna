@@ -1,6 +1,7 @@
 import type {
 	AgentStreamEvent,
 	AgentType,
+	Artefact,
 	Attachment,
 	ChangedFile,
 	CommitInfo,
@@ -208,6 +209,20 @@ export function attachmentUrl(sessionId: string, attachmentId: string): string {
 	return `/api/sessions/${sessionId}/attachments/${attachmentId}`;
 }
 
+/**
+ * URL that serves a published artefact's bytes — the `<iframe src>` for the
+ * preview and the link target for "open in new tab".
+ *
+ * Relative, like {@link attachmentUrl}, and for the same reason: the browser
+ * loads it directly rather than through {@link request}. The response carries
+ * a restrictive CSP that confines whatever the Agent generated (see the
+ * server route and ADR-0032) — this URL is safe to put in an iframe, but not
+ * because of anything on this side.
+ */
+export function artefactUrl(sessionId: string, artefactId: string): string {
+	return `/api/sessions/${sessionId}/artefacts/${artefactId}`;
+}
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,
@@ -301,6 +316,8 @@ export const api = {
 			request<{ files: ChangedFile[] }>(`/api/sessions/${id}/changed-files`),
 		commits: (id: string) =>
 			request<{ commits: CommitInfo[] }>(`/api/sessions/${id}/commits`),
+		artefacts: (id: string) =>
+			request<{ artefacts: Artefact[] }>(`/api/sessions/${id}/artefacts`),
 		send: (id: string, text: string, attachmentIds?: string[]) =>
 			request<{ ok: boolean; message: Message }>(
 				`/api/sessions/${id}/messages`,

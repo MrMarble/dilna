@@ -1,5 +1,6 @@
 import {
 	Bot,
+	FileOutput,
 	FilePen,
 	FilePlus,
 	FileText,
@@ -104,6 +105,15 @@ export function getToolMeta(tool: string, input: unknown): ToolMeta {
 			return { icon: Bot, label: "Task", detail: str(obj, "description") };
 		case "TodoWrite":
 			return { icon: ListTodo, label: "Todos", detail: todoDetail(obj.todos) };
+		// dilna's own publish tool (issue #194). Titled by what the user will
+		// see in the Artefacts panel, falling back to the path when the Agent
+		// published without a title.
+		case "dilna_publish_artefact":
+			return {
+				icon: FileOutput,
+				label: "Publish",
+				detail: str(obj, "title") ?? shortDetail(obj, "path"),
+			};
 		default:
 			return { icon: Wrench, label: tool };
 	}

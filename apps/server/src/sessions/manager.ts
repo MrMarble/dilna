@@ -53,6 +53,7 @@ import {
 	getArchivedSession,
 	listArchivedSessions,
 } from "./archive";
+import { deleteArtefactsForSession } from "./artefacts";
 import {
 	deleteAttachmentsForSession,
 	describeAttachmentsForPrompt,
@@ -606,6 +607,8 @@ class SessionManager {
 		// rollback couldn't undo anyway. Deleting the Session is the only thing
 		// that prunes attachments at all; see the schema's table comment.
 		deleteAttachmentsForSession(id);
+		// Same reasoning for the Session's published artefacts (issue #194).
+		deleteArtefactsForSession(id);
 		this.events.broadcastGlobal({ type: "session_deleted", sessionId: id });
 	}
 
@@ -1724,6 +1727,15 @@ class SessionManager {
 						provider: session.provider,
 						model: session.model,
 						initialMessages,
+						// Issue #194/ADR-0032: a publish is broadcast the moment the
+						// tool returns, so the panel gains the artefact mid-turn
+						// rather than at end-of-turn like `changed_files`.
+						onArtefactPublished: (artefact) => {
+							this.events.broadcast(id, {
+								type: "artefact_published",
+								artefact,
+							});
+						},
 					} satisfies PiStartOptions);
 
 		const active: ActiveAgent = {

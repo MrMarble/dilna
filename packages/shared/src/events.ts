@@ -1,9 +1,21 @@
+import type { Artefact } from "./artefact";
 import type { ChangedFile } from "./diff";
 import type { Message } from "./messages";
 
 export type AgentStreamEvent =
 	| { type: "session_status"; status: SessionStatus }
 	| { type: "changed_files"; files: ChangedFile[] }
+	| {
+			/** An Agent published an Artefact this turn (issue #194, ADR-0032).
+			 * Carries the whole record, not an id, so the context panel appends
+			 * without a refetch — the same reason `changed_files` carries files.
+			 *
+			 * Unlike `changed_files` this is *incremental*, not a snapshot: an
+			 * Artefact is immutable once published, so there is no recomputed
+			 * list to re-send. Consumers append. */
+			type: "artefact_published";
+			artefact: Artefact;
+	  }
 	| {
 			/** Broadcast at accept time (ADR-0016 §6), carrying the same
 			 * persisted row the 202 response echoes back to the sender — every

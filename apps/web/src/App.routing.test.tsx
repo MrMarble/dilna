@@ -79,6 +79,7 @@ vi.mock("@/api/client", () => ({
 			stop: async () => ({}),
 			changedFiles: async () => ({ files: [] }),
 			commits: async () => ({ commits: [] }),
+			artefacts: async () => ({ artefacts: [] }),
 			contextUsage: async () => ({
 				usage: { usedTokens: 0, maxTokens: 100_000 },
 			}),

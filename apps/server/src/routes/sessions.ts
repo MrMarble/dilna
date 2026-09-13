@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import {
 	type AgentType,
+	type Artefact,
 	type Attachment,
 	type ChangedFile,
 	type CommitInfo,
@@ -16,6 +17,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { logger } from "../logger";
 import { RepoNotFoundError, repoManager } from "../repos/manager";
+import { getArtefact, listArtefacts } from "../sessions/artefacts";
 import {
 	AttachmentRejectedError,
 	getAttachment,
@@ -334,6 +336,69 @@ sessionsRoute.get("/:id/attachments/:attachmentId", async (c) => {
 	// Immutable: an attachment's bytes never change once stored (a re-upload
 	// mints a new id), so the browser can keep an image across re-renders and
 	// reloads instead of refetching it on every message-list update.
+	c.header("Cache-Control", "private, max-age=31536000, immutable");
+	return c.body(bytes.buffer as ArrayBuffer);
+});
+
+/**
+ * A Session's published artefacts, newest first (issue #194, ADR-0032) — the
+ * context panel's initial snapshot, before any `artefact_published` event
+ * arrives on the stream.
+ */
+sessionsRoute.get("/:id/artefacts", async (c) => {
+	const id = c.req.param("id");
+	const session = await sessionManager.get(id);
+	if (!session) throw new HTTPException(404, { message: "session not found" });
+	const body: { artefacts: Artefact[] } = { artefacts: listArtefacts(id) };
+	return c.json(body);
+});
+
+/**
+ * Serve a published artefact's bytes — what the UI's iframe points at.
+ *
+ * **The header set here is load-bearing security, not hygiene.** The content
+ * is model-generated HTML served from dilna's own origin, alongside an
+ * unauthenticated `/api/*` surface. Without a restrictive CSP, a generated
+ * report could `fetch('/api/sessions/...')` and read or mutate every Session
+ * on the instance — the classic self-XSS shape, except the attacker-controlled
+ * input is the Agent's own output. `sandbox` (no token) drops the response
+ * into a unique opaque origin, so same-origin requests aren't possible even
+ * if a script did run; `default-src 'none'` plus no `script-src` means none
+ * does. `style-src 'unsafe-inline'` is the one allowance, because a
+ * self-contained report is nearly always a `<style>` block — see ADR-0032 for
+ * why interactivity is deliberately not supported here.
+ *
+ * Do not relax these without reading that ADR; a change that makes a report
+ * "work properly" is how this becomes exploitable.
+ */
+sessionsRoute.get("/:id/artefacts/:artefactId", async (c) => {
+	const id = c.req.param("id");
+	const artefact = getArtefact(id, c.req.param("artefactId"));
+	if (!artefact) {
+		throw new HTTPException(404, { message: "artefact not found" });
+	}
+	let bytes: Buffer;
+	try {
+		bytes = await readFile(artefact.path);
+	} catch {
+		throw new HTTPException(404, { message: "artefact file is missing" });
+	}
+	c.header("Content-Type", artefact.mimeType);
+	c.header(
+		"Content-Security-Policy",
+		"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'",
+	);
+	// Belt and braces with the CSP's `default-src 'none'`: stops a browser
+	// from ignoring the declared type and sniffing the bytes as something
+	// else entirely.
+	c.header("X-Content-Type-Options", "nosniff");
+	c.header("Referrer-Policy", "no-referrer");
+	c.header(
+		"Content-Disposition",
+		`inline; filename*=UTF-8''${encodeURIComponent(artefact.filename)}`,
+	);
+	// Immutable by construction (ADR-0032): republishing mints a new id, so a
+	// given artefact's bytes never change.
 	c.header("Cache-Control", "private, max-age=31536000, immutable");
 	return c.body(bytes.buffer as ArrayBuffer);
 });
