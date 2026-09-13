@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.25.0](https://github.com/MrMarble/dilna/compare/v0.24.0...v0.25.0) (2026-09-12)
+
+
+### Features
+
+* send images and documents to the agent from the composer ([#192](https://github.com/MrMarble/dilna/issues/192)) ([eb31723](https://github.com/MrMarble/dilna/commit/eb317230d3bab6119ecfdae443e8776c9fbf3c7f))
+
+
+### Bug Fixes
+
+* **server:** actually write push last_success_at, and serve it for diagnosis ([#187](https://github.com/MrMarble/dilna/issues/187)) ([df6e2cf](https://github.com/MrMarble/dilna/commit/df6e2cff0b2f65ee4ad1931959d3d3d1a399930e))
+* **server:** stop the two pi→dilna converters duplicating assistant rows ([#190](https://github.com/MrMarble/dilna/issues/190)) ([#191](https://github.com/MrMarble/dilna/issues/191)) ([6054b98](https://github.com/MrMarble/dilna/commit/6054b98adb80edaa6a1b8fe9346447900e836a9e))
+* **web:** regroup a turn's persisted rows into one message ([#189](https://github.com/MrMarble/dilna/issues/189)) ([1a6efd1](https://github.com/MrMarble/dilna/commit/1a6efd1e0ce43ce3691b8c38848b3aa55515fb69))
+
 ## [0.24.0](https://github.com/MrMarble/dilna/compare/v0.23.3...v0.24.0) (2026-09-10)
 
 
