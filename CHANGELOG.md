@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.27.0](https://github.com/MrMarble/dilna/compare/v0.26.0...v0.27.0) (2026-09-13)
+
+
+### Features
+
+* server-side message queueing while the agent is busy (ADR-0033) ([#200](https://github.com/MrMarble/dilna/issues/200)) ([4df8dee](https://github.com/MrMarble/dilna/commit/4df8dee70e1cfc99fbd6fa876f42ed60c67e6768))
+* **web:** persist the composer draft per Session ([#197](https://github.com/MrMarble/dilna/issues/197)) ([0a48a82](https://github.com/MrMarble/dilna/commit/0a48a821846a42eec7e6c412b6254a1747e79336))
+* **web:** show the provider's brand icon as the agent avatar ([#198](https://github.com/MrMarble/dilna/issues/198)) ([346ee7b](https://github.com/MrMarble/dilna/commit/346ee7bc546232174a14382f84305c0c1f096ed8))
+
 ## [0.26.0](https://github.com/MrMarble/dilna/compare/v0.25.0...v0.26.0) (2026-09-13)
 
 
