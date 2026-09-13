@@ -159,6 +159,32 @@ export const messages = sqliteTable("messages", {
 });
 
 /**
+ * A message the user submitted while the Session's Agent was busy
+ * (ADR-0033) — the server-held send queue. One row per queued submission,
+ * minted by `POST /api/sessions/:id/queue`; the whole queue is drained into
+ * the next turn (combined into one message) when the in-flight turn ends,
+ * and the drained rows are deleted. Deliberately *not* a `messages` row:
+ * nothing here has been sent to an Agent yet, and an entry is removable
+ * until it dispatches — `messages` is the durable transcript, this is a
+ * holding pen.
+ */
+export const queuedMessages = sqliteTable("queued_messages", {
+	id: text("id").primaryKey(),
+	/** Owning Session. No FK (consistent with the rest of this schema);
+	 * `SessionManager.delete` clears a Session's queue explicitly. */
+	sessionId: text("session_id").notNull(),
+	text: text("text").notNull(),
+	/** JSON `Attachment[]` snapshot, resolved and ownership-checked at
+	 * enqueue time — same shape `messages.parts_json` embeds. Snapshotted
+	 * rather than stored as ids because attachment rows only ever disappear
+	 * with the whole Session (which takes this queue with it), so the
+	 * snapshot can't go stale — and the queue renders filenames without a
+	 * join. */
+	attachmentsJson: text("attachments_json").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+});
+
+/**
  * A file the user uploaded to a Session (issue #53, ADR-0031) — one row per
  * upload, minted by `POST /api/sessions/:id/attachments` before the message
  * that references it is ever sent.

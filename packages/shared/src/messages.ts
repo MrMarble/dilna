@@ -113,6 +113,29 @@ export type Message = {
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 
 /**
+ * A message the user submitted while the Session's Agent was busy with a
+ * turn (ADR-0033) — held server-side in the `queued_messages` table, not a
+ * `messages` row: nothing has been sent to the Agent yet, and the entry is
+ * removable until it dispatches. When the in-flight turn ends, the whole
+ * queue is drained into the *next* turn (all entries combined into one
+ * message) and cleared.
+ *
+ * `attachments` is a snapshot of the already-uploaded records (the tray
+ * uploads eagerly, so ids exist by enqueue time) — same reasoning as
+ * `MessagePart`'s attachment variant: the queue renders filenames without a
+ * per-entry fetch, and the records are stable until the Session is deleted,
+ * which drops its queue too.
+ */
+export type QueuedMessage = {
+	id: string;
+	sessionId: string;
+	text: string;
+	attachments: Attachment[];
+	/** Epoch seconds. */
+	createdAt: number;
+};
+
+/**
  * Render a byte count the way dilna shows file sizes — on the composer's
  * pending tray, on a sent message's document card, and in the prompt
  * preamble the Agent reads.

@@ -8,6 +8,7 @@ import {
 	type ContextUsageEstimate,
 	MAX_ATTACHMENTS_PER_MESSAGE,
 	type Message,
+	type QueuedMessage,
 	type SessionView,
 } from "@dilna/shared";
 import { zValidator } from "@hono/zod-validator";
@@ -247,6 +248,70 @@ sessionsRoute.post(
 		return c.json({ ok: true, message }, 202);
 	},
 );
+
+/**
+ * Enqueue a message submitted while a turn is in flight (ADR-0033). Same
+ * body shape and attachment resolution as the send above, but instead of
+ * claiming the turn slot (which would 409 mid-turn), the message lands in
+ * the Session's durable server-held queue and dispatches at the next turn
+ * boundary — whether or not any browser is still connected, which is the
+ * whole point: a locked phone can't dispatch a client-held queue.
+ *
+ * Deliberately a separate endpoint rather than making the send route queue
+ * on conflict: the send's pre-202 409 is the turn protocol's one
+ * duplicate-send surface (ADR-0016 §2), and a send that sometimes runs now
+ * and sometimes queues would make that contract ambiguous. The client
+ * chooses which intent it means; a queue POST that finds the Session idle
+ * still dispatches immediately (see `enqueueMessage`), so choosing "queue"
+ * on a stale status snapshot is harmless.
+ *
+ * 202: accepted for later delivery — exactly what this is.
+ */
+sessionsRoute.post("/:id/queue", zValidator("json", sendBodySchema), (c) => {
+	const id = c.req.param("id");
+	const body = c.req.valid("json");
+	let attachments: Attachment[];
+	try {
+		attachments = resolveAttachments(id, body.attachmentIds ?? []);
+	} catch (err) {
+		if (err instanceof AttachmentRejectedError) {
+			throw new HTTPException(400, { message: err.message });
+		}
+		throw err;
+	}
+	try {
+		const entry = sessionManager.enqueueMessage(id, body.text, attachments);
+		return c.json({ ok: true, entry }, 202);
+	} catch (err) {
+		if (err instanceof SessionNotFoundError) {
+			throw new HTTPException(404, { message: err.message });
+		}
+		const msg = err instanceof Error ? err.message : "enqueue failed";
+		throw new HTTPException(500, { message: msg });
+	}
+});
+
+// The queue's initial snapshot — mirrors GET /:id/messages: fetched by the
+// client's on-open resync routine (ADR-0016 §4), then kept live via
+// `queue_update` events thereafter.
+sessionsRoute.get("/:id/queue", async (c) => {
+	const id = c.req.param("id");
+	const session = await sessionManager.getView(id);
+	if (!session) throw new HTTPException(404, { message: "session not found" });
+	const body: { queued: QueuedMessage[] } = {
+		queued: sessionManager.listQueuedMessages(id),
+	};
+	return c.json(body);
+});
+
+// Withdraw a queued entry before it dispatches. Idempotent: an entry that's
+// already gone (removed elsewhere, or drained into a turn) is still `ok` —
+// either way it is no longer queued, which is all the caller asked for.
+sessionsRoute.delete("/:id/queue/:queuedId", (c) => {
+	const id = c.req.param("id");
+	sessionManager.removeQueuedMessage(id, c.req.param("queuedId"));
+	return c.json({ ok: true });
+});
 
 /**
  * Upload one file to a Session (issue #53). Deliberately separate from the

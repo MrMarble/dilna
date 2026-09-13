@@ -76,6 +76,9 @@ vi.mock("@/api/client", () => ({
 			// unsubscribe is enough, since none of them is under test here.
 			stream: () => () => {},
 			send: async () => ({}),
+			queueMessage: async () => ({}),
+			queuedMessages: async () => ({ queued: [] }),
+			removeQueuedMessage: async () => ({ ok: true }),
 			stop: async () => ({}),
 			changedFiles: async () => ({ files: [] }),
 			commits: async () => ({ commits: [] }),
