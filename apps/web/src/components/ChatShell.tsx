@@ -571,6 +571,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 															i === 0 || rendered[i - 1]?.role !== m.role
 														}
 														agentType={session.agentType}
+														provider={session.provider}
 														modelName={session.model}
 														isStreaming={m.id in live}
 														thinkingChunk={thinkingBuffers[m.id]}
@@ -911,6 +912,7 @@ function ChatMessageRow({
 	createdAt,
 	showAttribution,
 	agentType,
+	provider,
 	modelName,
 	isStreaming,
 	thinkingChunk,
@@ -922,6 +924,9 @@ function ChatMessageRow({
 	createdAt: number;
 	showAttribution: boolean;
 	agentType: AgentType;
+	/** `SessionView.provider` — picks the brand icon for the avatar; null/
+	 * absent (pre-multi-provider Sessions) falls back to the Agent glyph. */
+	provider?: string | null;
 	modelName?: string | null;
 	isStreaming?: boolean;
 	thinkingChunk?: string;
@@ -989,7 +994,11 @@ function ChatMessageRow({
 			{role === "user" ? (
 				<User className="size-4" />
 			) : (
-				<AgentIcon agentType={agentType} className="size-4" />
+				<AgentIcon
+					agentType={agentType}
+					provider={provider}
+					className="size-4"
+				/>
 			)}
 		</span>
 	);
