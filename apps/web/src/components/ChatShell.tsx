@@ -540,7 +540,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 				<MessageScrollerProvider autoScroll>
 					<MessageScroller className="h-full">
 						<MessageScrollerViewport>
-							<MessageScrollerContent className="mx-auto w-full max-w-[max(48rem,80%)] px-6 pt-5 pb-8">
+							<MessageScrollerContent className="mx-auto w-full max-w-[max(48rem,80%)] px-4 pt-5 pb-8 sm:px-6">
 								{rendered.length === 0 && !thinking ? (
 									<EmptyHint />
 								) : (
@@ -613,7 +613,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 				</MessageScrollerProvider>
 			</div>
 
-			<div className="px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+			<div className="px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] sm:px-6">
 				{degraded && (
 					<p className="mx-auto mb-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
 						Reconnecting…
@@ -984,22 +984,29 @@ function ChatMessageRow({
 		/>
 	);
 
+	const avatar = showAttribution && (
+		<span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted">
+			{role === "user" ? (
+				<User className="size-4" />
+			) : (
+				<AgentIcon agentType={agentType} className="size-4" />
+			)}
+		</span>
+	);
+
 	return (
-		<Message className="group/message gap-3">
-			<div className="flex w-8 shrink-0 justify-center self-start">
-				{showAttribution && (
-					<span className="flex size-7 items-center justify-center rounded-full bg-muted">
-						{role === "user" ? (
-							<User className="size-4" />
-						) : (
-							<AgentIcon agentType={agentType} className="size-4" />
-						)}
-					</span>
-				)}
+		// The avatar gutter is a desktop-only affordance: on phones the column
+		// would indent *every* line — including the continuation rows that have
+		// no avatar at all — by ~44px of an already-narrow measure. Below `sm`
+		// the gutter collapses and the avatar rides inline in the header row.
+		<Message className="group/message gap-0 sm:gap-3">
+			<div className="hidden w-8 shrink-0 justify-center self-start sm:flex">
+				{avatar}
 			</div>
 			<MessageContent>
 				{showAttribution ? (
-					<MessageHeader className="items-baseline gap-2 px-0">
+					<MessageHeader className="items-center gap-2 px-0 sm:items-baseline">
+						<span className="sm:hidden">{avatar}</span>
 						<span className="text-lg font-semibold leading-tight text-foreground">
 							{name}
 						</span>
