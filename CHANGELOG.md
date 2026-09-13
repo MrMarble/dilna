@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.26.0](https://github.com/MrMarble/dilna/compare/v0.25.0...v0.26.0) (2026-09-13)
+
+
+### Features
+
+* let an agent publish HTML artefacts the user can open ([#194](https://github.com/MrMarble/dilna/issues/194)) ([#195](https://github.com/MrMarble/dilna/issues/195)) ([72fd35d](https://github.com/MrMarble/dilna/commit/72fd35dd2ede13b1b2a9c9dfedd1700043af4f7e))
+
+
+### Bug Fixes
+
+* **web:** collapse the avatar gutter on mobile ([#193](https://github.com/MrMarble/dilna/issues/193)) ([1b992de](https://github.com/MrMarble/dilna/commit/1b992de7605ac72ce6d6dcb12eb1aa8844f2b4a4))
+
 ## [0.25.0](https://github.com/MrMarble/dilna/compare/v0.24.0...v0.25.0) (2026-09-12)
 
 
