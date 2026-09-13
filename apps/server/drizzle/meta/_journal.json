@@ -169,6 +169,13 @@
 			"when": 1789000000004,
 			"tag": "0023_artefacts",
 			"breakpoints": true
+		},
+		{
+			"idx": 24,
+			"version": "6",
+			"when": 1789000000005,
+			"tag": "0024_queued_messages",
+			"breakpoints": true
 		}
 	]
 }

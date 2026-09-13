@@ -1,6 +1,6 @@
 import type { Artefact } from "./artefact";
 import type { ChangedFile } from "./diff";
-import type { Message } from "./messages";
+import type { Message, QueuedMessage } from "./messages";
 
 export type AgentStreamEvent =
 	| { type: "session_status"; status: SessionStatus }
@@ -24,6 +24,15 @@ export type AgentStreamEvent =
 			 * its own optimistic bubble independently. */
 			type: "user_message";
 			message: Message;
+	  }
+	| {
+			/** The Session's send queue changed (ADR-0033) — an entry was added,
+			 * removed, or the whole queue was drained into a turn. Level-based
+			 * like `changed_files`: carries the entire queue, so every subscriber
+			 * converges without diffing, and a client that missed one is healed
+			 * by the next (or by the REST refetch its resync already does). */
+			type: "queue_update";
+			queued: QueuedMessage[];
 	  }
 	| { type: "message_start"; messageId: string; role: "user" | "assistant" }
 	| { type: "token"; messageId: string; chunk: string }

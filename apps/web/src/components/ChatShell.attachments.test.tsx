@@ -33,6 +33,9 @@ vi.mock("@/api/client", () => ({
 		sessions: {
 			messages: vi.fn(),
 			send: vi.fn(),
+			queueMessage: vi.fn(),
+			queuedMessages: vi.fn(),
+			removeQueuedMessage: vi.fn(),
 			uploadAttachment: vi.fn(),
 			stop: vi.fn(),
 			stream: vi.fn(),
@@ -76,6 +79,7 @@ beforeEach(() => {
 	// this, text typed in one test leaks into the next one's textarea.
 	localStorage.clear();
 	vi.mocked(api.sessions.messages).mockResolvedValue({ messages: [] });
+	vi.mocked(api.sessions.queuedMessages).mockResolvedValue({ queued: [] });
 	vi.mocked(api.sessions.changedFiles).mockResolvedValue({ files: [] });
 	vi.mocked(api.sessions.commits).mockResolvedValue({ commits: [] });
 	vi.mocked(api.sessions.artefacts).mockResolvedValue({ artefacts: [] });

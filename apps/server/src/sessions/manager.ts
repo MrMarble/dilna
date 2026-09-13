@@ -10,6 +10,7 @@ import type {
 	ContextUsageEstimate,
 	Message,
 	MessagePart,
+	QueuedMessage,
 	RateLimitWindow,
 	RateLimitWindowKind,
 	Session,
@@ -72,6 +73,7 @@ import {
 	type LiveTurn,
 	liveTurnReplayEvents,
 } from "./liveTurn";
+import * as messageQueue from "./messageQueue";
 import * as messageStore from "./messageStore";
 import { isTurnCompletion, notifyTurnComplete } from "./pushSender";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
@@ -609,6 +611,9 @@ class SessionManager {
 		deleteAttachmentsForSession(id);
 		// Same reasoning for the Session's published artefacts (issue #194).
 		deleteArtefactsForSession(id);
+		// A deleted Session's queued-but-never-sent messages go with it
+		// (ADR-0033) — there is no Session left for them to dispatch into.
+		messageQueue.deleteQueueForSession(id);
 		this.events.broadcastGlobal({ type: "session_deleted", sessionId: id });
 	}
 
@@ -1061,6 +1066,121 @@ class SessionManager {
 	}
 
 	/**
+	 * Append a message to the Session's server-held send queue (ADR-0033) —
+	 * the accept path for a message submitted while a turn is in flight.
+	 * Stored durably (`queued_messages`), so the queue survives the browser
+	 * tab: a locked phone or closed laptop doesn't lose the message, and
+	 * dispatch happens server-side at the next turn boundary regardless of
+	 * who's watching.
+	 *
+	 * Ends by attempting a dispatch, which is what makes enqueue safe to call
+	 * whatever the Session's status: enqueue-while-idle (or the race where
+	 * the turn ended between the client's status snapshot and its POST)
+	 * drains immediately instead of stranding the entry until some later
+	 * turn ends.
+	 *
+	 * `attachments` are resolved/ownership-checked by the route, exactly as
+	 * the send path's are.
+	 */
+	enqueueMessage(
+		id: string,
+		text: string,
+		attachments: Attachment[] = [],
+	): QueuedMessage {
+		const row = getDb()
+			.select({ id: sessionsTable.id })
+			.from(sessionsTable)
+			.where(eq(sessionsTable.id, id))
+			.get();
+		if (!row) throw new SessionNotFoundError();
+		const entry = messageQueue.enqueueMessage(id, text, attachments);
+		this.broadcastQueue(id);
+		void this.dispatchQueuedMessages(id).catch((err) => {
+			log.error({ sessionId: id, err }, "queue dispatch after enqueue failed");
+		});
+		return entry;
+	}
+
+	/** The Session's current queue, oldest first — what `GET /:id/queue`
+	 * serves and every `queue_update` broadcast carries. */
+	listQueuedMessages(id: string): QueuedMessage[] {
+		return messageQueue.listQueuedMessages(id);
+	}
+
+	/** Withdraw a queued entry before it dispatches. Returns false when the
+	 * entry was already gone (typically: a dispatch won the race) — callers
+	 * treat that as success, since either way it's no longer queued. */
+	removeQueuedMessage(id: string, queuedId: string): boolean {
+		const removed = messageQueue.removeQueuedMessage(id, queuedId);
+		if (removed) this.broadcastQueue(id);
+		return removed;
+	}
+
+	private broadcastQueue(id: string): void {
+		this.events.broadcast(id, {
+			type: "queue_update",
+			queued: messageQueue.listQueuedMessages(id),
+		});
+	}
+
+	/**
+	 * Drain the queue into one turn, if a turn can start right now (ADR-0033).
+	 * Called from every turn's exit path in `runTurn` and after every
+	 * enqueue; a no-op when the queue is empty, a turn is in flight, or the
+	 * manager is draining (a queued entry survives a shutdown in the DB and
+	 * dispatches on the next boot's first turn boundary — or next enqueue).
+	 *
+	 * All entries dispatch **as one combined message** (texts joined by a
+	 * blank line, attachments concatenated), not one turn each: the entries
+	 * accumulated against the same in-flight turn, so they are one batch of
+	 * "also do this" context the Agent should see together — and one
+	 * combined turn can't interleave with fresh direct sends the way a
+	 * several-turn drain could.
+	 *
+	 * Concurrency: everything between the queue read and the claim is
+	 * synchronous, so the only race is with a concurrent direct send — and
+	 * `beginTurn`'s claim settles that: whoever loses simply leaves the
+	 * queue intact for the next turn boundary.
+	 */
+	async dispatchQueuedMessages(id: string): Promise<void> {
+		if (this.turns.isDraining() || this.turns.has(id)) return;
+		const entries = messageQueue.listQueuedMessages(id);
+		if (entries.length === 0) return;
+		const text = entries
+			.map((e) => e.text.trim())
+			.filter(Boolean)
+			.join("\n\n");
+		const attachments = entries.flatMap((e) => e.attachments);
+		try {
+			this.beginTurn(id, text, attachments);
+		} catch (err) {
+			// Lost the claim to a concurrent direct send — that turn's own exit
+			// re-runs this dispatch, so the entries just wait their turn.
+			if (err instanceof TurnInProgressError) return;
+			if (err instanceof SessionManagerDrainingError) return;
+			if (err instanceof SessionNotFoundError) {
+				// Session deleted out from under its queue — nothing left to
+				// dispatch into, ever.
+				messageQueue.deleteQueueForSession(id);
+				return;
+			}
+			throw err;
+		}
+		// Clear exactly what was read — an entry enqueued after the read above
+		// belongs to the *next* drain, not this one's delete.
+		messageQueue.removeQueuedMessagesById(
+			id,
+			entries.map((e) => e.id),
+		);
+		this.broadcastQueue(id);
+		const turnPromise = this.runTurn(id, text, attachments);
+		this.trackRunningTurn(id, turnPromise);
+		turnPromise.catch((err) => {
+			log.error({ sessionId: id, err }, "queue-dispatched runTurn failed");
+		});
+	}
+
+	/**
 	 * Run a turn already claimed by `beginTurn`: spawn the agent process if
 	 * it isn't running, send the message, and return once the turn reaches a
 	 * terminal status. Live events are broadcast to subscribers as they
@@ -1385,6 +1505,14 @@ class SessionManager {
 			}
 		} finally {
 			this.turns.release(id);
+			// The queue's dispatch point (ADR-0033): every turn — completed,
+			// failed, stopped or crashed — exits through this line, so queued
+			// messages drain the moment the slot frees, whether or not any
+			// browser tab is still open. Fire-and-forget: the drained turn is
+			// its own tracked lifecycle, not this one's.
+			void this.dispatchQueuedMessages(id).catch((err) => {
+				log.error({ sessionId: id, err }, "queue dispatch at turn end failed");
+			});
 		}
 	}
 

@@ -5,12 +5,14 @@ import {
 	type Message as ChatMessage,
 	formatAttachmentSize,
 	type MessagePart,
+	type QueuedMessage,
 	type SessionView,
 } from "@dilna/shared";
 import {
 	AlertCircle,
 	ChevronDown,
 	ChevronRight,
+	Clock,
 	FileText,
 	Info,
 	ListTree,
@@ -159,6 +161,12 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const { pending, addFiles, removePending, clearPending } =
 		usePendingAttachments(sessionId);
+	/** The Session's server-held send queue (ADR-0033) — a mirror of the
+	 * server's `queued_messages` rows, seeded by the on-open resync's GET and
+	 * kept live by `queue_update` events. The server owns enqueue, ordering
+	 * and dispatch (so a locked phone doesn't strand the queue); this state
+	 * exists purely to render the tray. */
+	const [queued, setQueued] = useState<QueuedMessage[]>([]);
 
 	/** The tray entries a send can actually reference — uploaded, with a
 	 * server id. Errored and still-uploading entries are excluded, so this is
@@ -246,13 +254,27 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	// connect, every native EventSource retry, and every reconnect forced by
 	// the client's own staleness check — and also on an explicit `resync`
 	// directive mid-turn (refusal-fallback retraction).
+	const loadQueue = useCallback(async () => {
+		try {
+			const { queued } = await api.sessions.queuedMessages(sessionId);
+			setQueued(queued);
+		} catch {
+			// Non-fatal — the tray just stays as-is until the next `queue_update`
+			// event or resync converges it; history loading already surfaces
+			// connectivity errors.
+		}
+	}, [sessionId]);
+
 	const resync = useCallback(() => {
 		setLive({});
 		setTurnActivity(null);
 		setThinkingBuffers({});
 		sawTurnRef.current = false;
 		loadHistory();
-	}, [loadHistory]);
+		// The queue's REST snapshot (ADR-0033), alongside history's — the
+		// `queue_update` stream keeps it live from here.
+		loadQueue();
+	}, [loadHistory, loadQueue]);
 
 	// Keyed on sessionId only — deliberately NOT session.status: re-running
 	// this effect mid-turn (as a status flip used to) wipes the live entries
@@ -260,6 +282,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	// which is how messages briefly rendered out of order.
 	useEffect(() => {
 		setMessages([]);
+		setQueued([]);
 		setError(null);
 		setNotice(null);
 		setThinking(false);
@@ -390,6 +413,12 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 						setThinking(false);
 						setError(ev.message);
 						break;
+					case "queue_update":
+						// Level-based snapshot (ADR-0033) — replace wholesale, exactly
+						// like `changed_files`: every tab converges on the server's
+						// queue without diffing.
+						setQueued(ev.queued);
+						break;
 					case "notice":
 						setNotice(ev.message);
 						break;
@@ -434,6 +463,11 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	}, [session.status]);
 
 	const working = status === "working" || status === "starting";
+	// Broader than `working`: any status under which the server would 409 a
+	// send (ADR-0016 §2) — "stopping" included, which `working` deliberately
+	// excludes for the Stop button's sake. This is what routes a submit into
+	// the queue instead of a doomed POST.
+	const busy = working || status === "stopping";
 
 	// New word each time the agent starts working, stable while it runs.
 	const [thinkingWord, setThinkingWord] = useState(pickThinkingWord);
@@ -448,13 +482,50 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		// An errored entry is simply left behind (see the Send button's own
 		// comment): it must not block the send, or one bad file wedges the
 		// composer.
-		if ((!text && readyToSend.length === 0) || sending || working) return;
+		if ((!text && readyToSend.length === 0) || sending) return;
 		if (pending.some((p) => p.status === "uploading")) return;
+
+		const attached = readyToSend;
+		// Queue instead of send whenever a direct POST couldn't be accepted
+		// right now (busy → the server would 409) or would jump the line
+		// (entries already queued — ordering is the queue's contract). The
+		// server holds the queue and dispatches at the next turn boundary
+		// (ADR-0033), so this tab — or any tab, or no tab — being open later
+		// doesn't matter. An enqueue that races the turn's end is fine: the
+		// server dispatches immediately when it finds the Session idle.
+		if (busy || queued.length > 0) {
+			setError(null);
+			setSending(true);
+			try {
+				const { entry } = await api.sessions.queueMessage(
+					sessionId,
+					text,
+					attached.map((a) => a.id),
+				);
+				// Composer clears only on acceptance, mirroring the send path —
+				// the message now lives in the visible queue tray. `clearDraft`
+				// (not `setInput("")`) so the persisted draft goes immediately,
+				// with no debounce window for a reload to resurrect it.
+				clearDraft();
+				clearPending();
+				// Optimistic append; the `queue_update` broadcast carries the same
+				// entry id, and level-based replacement makes the merge idempotent
+				// whichever lands first.
+				setQueued((prev) =>
+					prev.some((q) => q.id === entry.id) ? prev : [...prev, entry],
+				);
+			} catch (e) {
+				// Draft preserved (composer untouched above) — same contract as a
+				// rejected direct send.
+				setError(e instanceof Error ? e.message : "failed to queue message");
+			} finally {
+				setSending(false);
+			}
+			return;
+		}
 		setError(null);
 		setSending(true);
 		setThinking(true);
-
-		const attached = readyToSend;
 		// Optimistic user message placeholder — visible immediately so autoscroll
 		// follows it; replaced by the authoritative DB row at the idle reconcile.
 		// Mirrors the server's own part order (attachments first, then text) so
@@ -530,13 +601,30 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	}, [
 		input,
 		sending,
-		working,
+		busy,
+		queued.length,
 		sessionId,
 		pending,
 		readyToSend,
 		clearDraft,
 		clearPending,
 	]);
+
+	/** Withdraw a queued entry (ADR-0033). Optimistic removal after the
+	 * server confirms; idempotent server-side, so racing the dispatch is
+	 * harmless — either way the entry is no longer queued, and the
+	 * `queue_update` broadcast converges every tab. */
+	const handleRemoveQueued = useCallback(
+		async (queuedId: string) => {
+			try {
+				await api.sessions.removeQueuedMessage(sessionId, queuedId);
+				setQueued((prev) => prev.filter((q) => q.id !== queuedId));
+			} catch (e) {
+				setError(e instanceof Error ? e.message : "failed to remove message");
+			}
+		},
+		[sessionId],
+	);
 
 	const handleStop = useCallback(async () => {
 		try {
@@ -672,6 +760,17 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							: "border-border",
 					)}
 				>
+					{queued.length > 0 && (
+						<div className="flex flex-col gap-1 px-1 pt-1 pb-0.5">
+							{queued.map((entry) => (
+								<QueuedMessageRow
+									key={entry.id}
+									entry={entry}
+									onRemove={() => void handleRemoveQueued(entry.id)}
+								/>
+							))}
+						</div>
+					)}
 					{pending.length > 0 && (
 						<div className="flex flex-wrap gap-2 px-1 pt-1 pb-0.5">
 							{pending.map((item) => (
@@ -697,10 +796,9 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 								void handleSend();
 							}
 						}}
-						disabled={working && !input}
 						placeholder={
 							working
-								? `${thinkingWord}…`
+								? `${thinkingWord}… type to queue your next message`
 								: `Message ${assistantDisplayName(session.model, session.agentType)}…`
 						}
 						rows={2}
@@ -736,7 +834,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							<Plus className="size-4" />
 						</button>
 						<div className="flex-1" />
-						{working ? (
+						{working && (
 							<button
 								type="button"
 								onClick={handleStop}
@@ -745,41 +843,47 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							>
 								<Square className="size-3.5" />
 							</button>
-						) : (
-							<button
-								type="button"
-								onClick={handleSend}
-								// An attachment-only message is still a message worth
-								// sending ("look at this"), but not while an upload is
-								// still in flight — its id doesn't exist yet.
-								//
-								// Only `"uploading"` blocks, never `"error"`: a failed
-								// upload deliberately stays in the tray (so the user sees
-								// which file didn't make it), and treating that as "not
-								// ready" would wedge the composer — a typed draft could
-								// not be sent until the user spotted the small ✕. The
-								// send simply leaves errored entries behind.
-								disabled={
-									(!input.trim() && readyToSend.length === 0) ||
-									sending ||
-									pending.some((p) => p.status === "uploading")
-								}
-								className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
-								title="Send"
-							>
-								{sending ? (
-									<LoaderCircle className="size-3.5 animate-spin" />
-								) : (
-									<Send className="size-3.5" />
-								)}
-							</button>
 						)}
+						{/* Rendered alongside Stop while working (it queues then), not
+						    instead of it — mobile has no Enter-to-send, so without a
+						    visible button there'd be no way to queue at all. */}
+						<button
+							type="button"
+							onClick={handleSend}
+							// An attachment-only message is still a message worth
+							// sending ("look at this"), but not while an upload is
+							// still in flight — its id doesn't exist yet.
+							//
+							// Only `"uploading"` blocks, never `"error"`: a failed
+							// upload deliberately stays in the tray (so the user sees
+							// which file didn't make it), and treating that as "not
+							// ready" would wedge the composer — a typed draft could
+							// not be sent until the user spotted the small ✕. The
+							// send simply leaves errored entries behind.
+							disabled={
+								(!input.trim() && readyToSend.length === 0) ||
+								sending ||
+								pending.some((p) => p.status === "uploading")
+							}
+							className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+							title={busy || queued.length > 0 ? "Queue message" : "Send"}
+						>
+							{sending ? (
+								<LoaderCircle className="size-3.5 animate-spin" />
+							) : (
+								<Send className="size-3.5" />
+							)}
+						</button>
 					</div>
 				</div>
 				<p className="mx-auto mt-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
-					{isDesktop
-						? "Enter to send, Shift+Enter for newline."
-						: "Enter for newline, tap Send to submit."}
+					{busy || queued.length > 0
+						? isDesktop
+							? "Enter to queue — sends when the agent is ready."
+							: "Tap Send to queue — sends when the agent is ready."
+						: isDesktop
+							? "Enter to send, Shift+Enter for newline."
+							: "Enter for newline, tap Send to submit."}
 				</p>
 			</div>
 		</div>
@@ -791,6 +895,51 @@ function EmptyHint() {
 		<div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
 			<p className="text-sm">No messages yet.</p>
 			<p className="text-xs">Ask the agent something below.</p>
+		</div>
+	);
+}
+
+/**
+ * One queued message in the composer's queue tray (ADR-0033): a compact
+ * one-line preview of what will be sent, with a remove button — removal is
+ * only possible here, before dispatch; once the server drains the queue
+ * into a turn it's a normal message.
+ */
+function QueuedMessageRow({
+	entry,
+	onRemove,
+}: {
+	entry: QueuedMessage;
+	onRemove: () => void;
+}) {
+	const label =
+		entry.text.trim() ||
+		(entry.attachments.length > 0
+			? entry.attachments.map((a) => a.filename).join(", ")
+			: "(empty message)");
+	return (
+		<div
+			className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 px-2.5 py-1.5 text-xs"
+			title={entry.text}
+		>
+			<Clock className="size-3.5 shrink-0 text-muted-foreground" />
+			<span className="min-w-0 flex-1 truncate">{label}</span>
+			{entry.attachments.length > 0 && (
+				<span className="shrink-0 text-muted-foreground">
+					{entry.attachments.length} file
+					{entry.attachments.length > 1 ? "s" : ""}
+				</span>
+			)}
+			<span className="shrink-0 text-muted-foreground">queued</span>
+			<button
+				type="button"
+				onClick={onRemove}
+				className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+				title="Remove"
+				aria-label="Remove queued message"
+			>
+				<X className="size-3" />
+			</button>
 		</div>
 	);
 }

@@ -8,6 +8,7 @@ import type {
 	ContextUsageEstimate,
 	DiskUsage,
 	Message,
+	QueuedMessage,
 	RateLimitWindow,
 	Repo,
 	RepoSkill,
@@ -28,6 +29,7 @@ export type {
 	CommitInfo,
 	DiskUsage,
 	Message,
+	QueuedMessage,
 	RateLimitWindow,
 	Repo,
 	RepoSkill,
@@ -100,6 +102,7 @@ const SESSION_EVENT_TYPES: AgentStreamEvent["type"][] = [
 	"turn_activity",
 	"resync",
 	"usage_update",
+	"queue_update",
 ];
 
 const SESSION_LIST_EVENT_TYPES: SessionListEvent["type"][] = [
@@ -344,6 +347,30 @@ export const api = {
 			);
 			return attachment;
 		},
+		/** Enqueue a message submitted while a turn is in flight (ADR-0033).
+		 * Stored server-side and dispatched at the next turn boundary, so it
+		 * survives a locked phone or closed tab. Same body shape as `send`. */
+		queueMessage: (id: string, text: string, attachmentIds?: string[]) =>
+			request<{ ok: boolean; entry: QueuedMessage }>(
+				`/api/sessions/${id}/queue`,
+				{
+					method: "POST",
+					body: JSON.stringify({
+						text,
+						...(attachmentIds?.length ? { attachmentIds } : {}),
+					}),
+				},
+			),
+		/** The queue's initial snapshot — fetched by the on-open resync, then
+		 * kept live via `queue_update` stream events. */
+		queuedMessages: (id: string) =>
+			request<{ queued: QueuedMessage[] }>(`/api/sessions/${id}/queue`),
+		/** Withdraw a queued entry before it dispatches. Idempotent on the
+		 * server — an entry that already drained into a turn is still `ok`. */
+		removeQueuedMessage: (id: string, queuedId: string) =>
+			request<{ ok: boolean }>(`/api/sessions/${id}/queue/${queuedId}`, {
+				method: "DELETE",
+			}),
 		stop: (id: string) =>
 			request<{ ok: boolean; id: string }>(`/api/sessions/${id}/stop`, {
 				method: "POST",

@@ -95,4 +95,16 @@ describe("sessionsRoute validation", () => {
 		});
 		expect(res.status).toBe(400);
 	});
+
+	// The queue endpoint shares the send's body schema (ADR-0033) — an
+	// enqueue that would be an invalid send must be an invalid enqueue too,
+	// or the queue becomes a validation bypass for the dispatch it turns into.
+	it("rejects POST /:id/queue with no text and no attachments", async () => {
+		const res = await app.request("/some-id/queue", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ text: "   " }),
+		});
+		expect(res.status).toBe(400);
+	});
 });

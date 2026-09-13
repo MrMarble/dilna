@@ -32,6 +32,10 @@ _Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
 A file an **Agent** produced and explicitly *published* for the user to open — an HTML report today. An Artefact belongs to exactly one **Session** and is stored outside every **Worktree**, the mirror image of an **Attachment** (Agent→user rather than user→Agent); see ADR-0032. An Artefact is an immutable *copy* taken at publish time, not a pointer at a Worktree file: republishing a regenerated report mints a second Artefact so the two versions can be compared. A file the Agent merely wrote into its Worktree is not an Artefact until it publishes it.
 _Avoid_: output, export, report (a report is one *kind* of Artefact), asset
 
+**Queued Message**:
+A message the user submitted to a **Session** while its **Agent** was still busy with a turn. Held durably on the server (ADR-0033) — not in any browser, so a locked phone or closed tab loses nothing — and drained automatically when the in-flight turn ends: the whole queue becomes *one* combined next turn, in submission order. Visible in the composer of every connected client and removable until drained; after that it is part of an ordinary message. Draining happens at every turn boundary regardless of how the turn ended (completed, failed, stopped).
+_Avoid_: draft (a draft is unsubmitted composer text), scheduled message, pending message (ambiguous with a pending **Attachment** upload)
+
 **Attachment**:
 A file the user uploaded to a **Session** and sent with a message. An Attachment belongs to exactly one Session and is stored outside every **Worktree**, so it is never part of a **Repo**'s git history unless the user asks the **Agent** to copy it in; see ADR-0031. An Attachment is either an *image* (one the Provider can see as pixels) or a *document* (one the Agent reads from disk).
 _Avoid_: upload, file (unqualified — "file" means a file in the Worktree), asset, media
