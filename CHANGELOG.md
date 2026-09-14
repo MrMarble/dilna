@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/MrMarble/dilna/compare/v0.27.0...v0.28.0) (2026-09-14)
+
+
+### Features
+
+* read-only subagents via a `task` tool (ADR-0034) ([#207](https://github.com/MrMarble/dilna/issues/207)) ([cd2ad87](https://github.com/MrMarble/dilna/commit/cd2ad876bd94ea195008be34a249cd6807eaf11e)), closes [#206](https://github.com/MrMarble/dilna/issues/206)
+
 ## [0.27.0](https://github.com/MrMarble/dilna/compare/v0.26.0...v0.27.0) (2026-09-13)
 
 
