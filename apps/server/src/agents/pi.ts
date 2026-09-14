@@ -66,6 +66,7 @@ import {
 	ORCHESTRATOR_SYSTEM_PROMPT,
 	type OrchestratorDeps,
 } from "./orchestratorTools";
+import { createTaskTool, type RunningTask } from "./taskTool";
 import {
 	ensureWritablePathsExist,
 	resolveSandboxGrant,
@@ -116,6 +117,12 @@ export type PiStartOptions = {
 	 * has no publish tool, which is what the orchestrator (no Worktree of its
 	 * own to publish from) wants. */
 	onArtefactPublished?: (artefact: Artefact) => void;
+	/** Called when the set of running subagents changes (issue #206,
+	 * ADR-0034), so `SessionManager` can broadcast a fresh `turn_activity`.
+	 * Level-based: receives the whole current list, never a delta. Optional:
+	 * a Session started without it still gets the `task` tool, just with no
+	 * live activity surfaced. */
+	onTasksChanged?: (tasks: RunningTask[]) => void;
 };
 
 /**
@@ -149,6 +156,11 @@ export type PiHandle = {
 	 * every `turn_failed` broadcast (Claude- or pi-sourced) fills in the same
 	 * way. */
 	stderrTail: string[];
+	/** Clears the per-turn `task` call counter (issue #206, ADR-0034). Called
+	 * by {@link chatPi} at the start of every turn, so the cap is per-turn
+	 * rather than per-Session. No-op for an orchestrator handle, which has no
+	 * `task` tool. */
+	resetTurnLimits: () => void;
 };
 
 const DILNA_AGENT_CONTEXT = `You run headless inside dilna, a self-hosted workspace that runs coding agents against cloned repos.
@@ -505,6 +517,21 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		createWebFetchTool(),
 	];
 
+	// Read-only subagents (issue #206, ADR-0034). Registered for ordinary
+	// Sessions only — `startOrchestrator` has no filesystem tools to delegate.
+	// The child shares this Worktree, which is why it gets no write/edit/bash:
+	// concurrent writers on one worktree is data loss, and dilna has no lock
+	// layer to arbitrate it.
+	const task = createTaskTool({
+		worktreePath: opts.worktreePath,
+		sessionId: opts.sessionId,
+		extraReadablePaths: [attachmentDir(opts.sessionId)],
+		model,
+		getApiKey: (p) => resolveApiKey(p),
+		onTasksChanged: opts.onTasksChanged ?? (() => {}),
+	});
+	tools.push(task.tool);
+
 	// Only registered when the caller wired a sink for the result (issue #194,
 	// ADR-0032) — a publish nobody is listening for would store bytes the user
 	// never learns exist.
@@ -537,7 +564,13 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		]),
 	});
 
-	return wirePiHandle(agent, opts.worktreePath, provider, modelId);
+	return wirePiHandle(
+		agent,
+		opts.worktreePath,
+		provider,
+		modelId,
+		task.resetTurn,
+	);
 }
 
 /**
@@ -551,6 +584,7 @@ function wirePiHandle(
 	worktreePath: string,
 	provider: string,
 	model: string,
+	resetTurnLimits: () => void = () => {},
 ): PiHandle {
 	const listeners = new Set<Listener>();
 	const state: NormalizeState = createNormalizeState();
@@ -586,6 +620,7 @@ function wirePiHandle(
 		provider,
 		model,
 		stderrTail: [],
+		resetTurnLimits,
 	};
 }
 
@@ -663,6 +698,10 @@ export async function chatPi(
 		// dispatching a message.
 		return;
 	}
+	// Per-turn caps reset here rather than in `SessionManager` because this is
+	// the single entry point every turn goes through (ADR-0034).
+	handle.resetTurnLimits();
+
 	const { agent, listeners } = handle;
 	const chatListener: Listener = (ev) => opts.onEvent(ev);
 	listeners.add(chatListener);
