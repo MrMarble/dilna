@@ -4,10 +4,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createServerContext } from "../container";
 import { getDb } from "../db";
 import { messages as messagesTable } from "../db/schema";
-import { repoManager } from "../repos/manager";
-import { sessionManager } from "./manager";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -16,6 +15,13 @@ const git = (args: string[], opts?: { cwd?: string }) =>
 let dataDir: string;
 let fixtureRepo: string;
 let oldDataDir: string | undefined;
+
+// Built inside beforeAll, once DILNA_DATA_DIR points at the scratch dir
+// above — the managers resolve their DB handle and data dir at
+// construction now, so building them at import time would capture the
+// real dev state instead (issue #150).
+let repoManager: ReturnType<typeof createServerContext>["repos"];
+let sessionManager: ReturnType<typeof createServerContext>["sessions"];
 
 beforeAll(async () => {
 	dataDir = mkdtempSync(path.join(tmpdir(), "dilna-test-"));
@@ -29,6 +35,8 @@ beforeAll(async () => {
 	writeFileSync(path.join(fixtureRepo, "README.md"), "# fixture\n");
 	await git(["add", "."], { cwd: fixtureRepo });
 	await git(["commit", "-m", "initial"], { cwd: fixtureRepo });
+
+	({ repos: repoManager, sessions: sessionManager } = createServerContext());
 });
 
 afterAll(() => {

@@ -4,14 +4,23 @@ import path from "node:path";
 import { decodeSkillId, encodeSkillId } from "@dilna/shared";
 import { Hono } from "hono";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { createServerContext } from "../container";
 import { closeDb, getDb } from "../db";
 import { repos as reposTable, skills as skillsTable } from "../db/schema";
-import { skillsRoute } from "./skills";
+import { createSkillsRoute } from "./skills";
 
 // zod validation runs in the zValidator middleware, before the handler (and
 // therefore the DB/network) is ever touched — so these need no fixture.
+// The validation below rejects before any handler runs, so the managers
+// are never actually touched — injection lets this file say that out loud
+// with a cast, instead of depending on a real singleton (issue #150).
+const noManagers = {
+	repos: {} as never,
+	sessions: {} as never,
+};
+
 describe("skillsRoute validation", () => {
-	const app = new Hono().route("/", skillsRoute);
+	const app = new Hono().route("/", createSkillsRoute(noManagers));
 
 	it("rejects POST / with no url", async () => {
 		const res = await app.request("/", {
@@ -78,7 +87,10 @@ describe("skillsRoute validation", () => {
  * production routing.
  */
 describe("skillsRoute /:id/enabled and DELETE /:id (real DB)", () => {
-	const app = new Hono().route("/", skillsRoute);
+	// Unlike the validation suite above, these reach handlers that resolve a
+	// Repo, so they need a real RepoManager — built in beforeAll, after
+	// DILNA_DATA_DIR points at the scratch dir (issue #150).
+	let app: Hono;
 	const skillId = "owner/repo/skill";
 	let dataDir: string;
 	let oldDataDir: string | undefined;
@@ -87,6 +99,8 @@ describe("skillsRoute /:id/enabled and DELETE /:id (real DB)", () => {
 		dataDir = mkdtempSync(path.join(tmpdir(), "dilna-test-skills-route-"));
 		oldDataDir = process.env.DILNA_DATA_DIR;
 		process.env.DILNA_DATA_DIR = dataDir;
+		const { repos } = createServerContext();
+		app = new Hono().route("/", createSkillsRoute({ repos }));
 	});
 
 	afterAll(() => {

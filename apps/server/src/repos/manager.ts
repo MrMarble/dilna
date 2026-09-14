@@ -5,16 +5,12 @@ import { promisify } from "node:util";
 import type { Repo, RepoStats, RepoSyncStatus } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { getDataDir, getDb } from "../db";
+import type { Db } from "../db";
 import {
 	repoMemory as repoMemoryTable,
 	repos as reposTable,
 } from "../db/schema";
 import { logger } from "../logger";
-// Cyclical with sessions/manager.ts (which imports `repoManager` from this
-// file) — safe here because both sides only reach for the other singleton
-// from inside async method bodies, never at module-evaluation time.
-import { sessionManager } from "../sessions/manager";
 import { deleteRepoSkills } from "../skills/store";
 import { languagesFromFiles, type TreeFile } from "./languages";
 
@@ -88,13 +84,52 @@ export class RepoNotFoundError extends Error {
 	}
 }
 
+/**
+ * The slice of `SessionManager` that `RepoManager.delete` needs to cascade-
+ * clean a Repo's Sessions. Declared structurally, and satisfied by the real
+ * `SessionManager`, so this file never has to import `sessions/manager` —
+ * which is what dissolves the import cycle the two modules used to have
+ * (see ADR-0036). A test can satisfy it with an object literal.
+ */
+export interface SessionCascade {
+	listByRepo(repoId: string): Promise<{ id: string }[]>;
+	delete(id: string): Promise<void>;
+}
+
+/** Everything `RepoManager` reaches for that isn't its own state. */
+export interface RepoManagerDeps {
+	db: Db;
+	dataDir: string;
+}
+
 export class RepoManager {
+	private readonly db: Db;
+	private readonly dataDir: string;
+	/** Set once at composition time via {@link setSessions}, because the two
+	 * managers are mutually dependent and one has to be built first. */
+	private sessions?: SessionCascade;
+
+	constructor(deps: RepoManagerDeps) {
+		this.db = deps.db;
+		this.dataDir = deps.dataDir;
+	}
+
+	/**
+	 * Supply the SessionManager side of the Repo->Session cascade. Separate
+	 * from the constructor only because `SessionManager` needs a `RepoManager`
+	 * to be constructed, so they can't both be complete at `new` time; the
+	 * composition root calls this immediately after building both.
+	 */
+	setSessions(sessions: SessionCascade): void {
+		this.sessions = sessions;
+	}
+
 	get reposDir(): string {
-		return path.join(getDataDir(), "repos");
+		return path.join(this.dataDir, "repos");
 	}
 
 	get worktreesDir(): string {
-		return path.join(getDataDir(), "worktrees");
+		return path.join(this.dataDir, "worktrees");
 	}
 
 	repoPath(slug: string): string {
@@ -106,19 +141,19 @@ export class RepoManager {
 	}
 
 	async list(): Promise<Repo[]> {
-		const db = getDb();
+		const db = this.db;
 		const rows = db.select().from(reposTable).all();
 		return rows.map(rowToRepo).filter((r) => r.slug !== ORCHESTRATOR_REPO_SLUG);
 	}
 
 	async get(id: string): Promise<Repo | null> {
-		const db = getDb();
+		const db = this.db;
 		const row = db.select().from(reposTable).where(eq(reposTable.id, id)).get();
 		return row ? rowToRepo(row) : null;
 	}
 
 	async getBySlug(slug: string): Promise<Repo | null> {
-		const db = getDb();
+		const db = this.db;
 		const row = db
 			.select()
 			.from(reposTable)
@@ -166,7 +201,7 @@ export class RepoManager {
 			createdAt: now,
 		};
 
-		const db = getDb();
+		const db = this.db;
 		db.insert(reposTable)
 			.values({
 				id: repo.id,
@@ -236,7 +271,7 @@ export class RepoManager {
 			remoteUrl: "",
 			createdAt: now,
 		};
-		const db = getDb();
+		const db = this.db;
 		db.insert(reposTable)
 			.values({
 				id: repo.id,
@@ -413,7 +448,7 @@ export class RepoManager {
 	async delete(id: string): Promise<void> {
 		const repo = await this.get(id);
 		if (!repo) return;
-		const db = getDb();
+		const db = this.db;
 
 		// Stop and fully clean up every Session still pointing at this repo
 		// before tearing down its worktrees/bare clone below — otherwise their
@@ -422,8 +457,13 @@ export class RepoManager {
 		// SessionManager.delete's own stop/archive/git-cleanup/row-delete
 		// rather than duplicating it here; its worktree/branch removal is
 		// redundant with the wholesale rmSync below but harmless.
-		for (const session of await sessionManager.listByRepo(id)) {
-			await sessionManager.delete(session.id);
+		if (!this.sessions) {
+			throw new Error(
+				"RepoManager.delete needs the Session cascade — call setSessions() at composition time",
+			);
+		}
+		for (const session of await this.sessions.listByRepo(id)) {
+			await this.sessions.delete(session.id);
 		}
 
 		const wtBase = this.worktreeBase(repo.slug);
@@ -452,5 +492,3 @@ function rowToRepo(row: typeof reposTable.$inferSelect): Repo {
 		createdAt: row.createdAt,
 	};
 }
-
-export const repoManager = new RepoManager();

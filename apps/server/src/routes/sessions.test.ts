@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
-import { parseCommitsLimit, sessionsRoute } from "./sessions";
+import { createSessionsRoute, parseCommitsLimit } from "./sessions";
 
 describe("parseCommitsLimit", () => {
 	it("passes through a valid limit", () => {
@@ -23,8 +23,16 @@ describe("parseCommitsLimit", () => {
 // zod validation happens in the zValidator middleware, before the handler
 // (and therefore the DB) is ever touched — so these can run with no DB
 // fixture at all.
+// The validation below rejects before any handler runs, so the managers
+// are never actually touched — injection lets this file say that out loud
+// with a cast, instead of depending on a real singleton (issue #150).
+const noManagers = {
+	repos: {} as never,
+	sessions: {} as never,
+};
+
 describe("sessionsRoute validation", () => {
-	const app = new Hono().route("/", sessionsRoute);
+	const app = new Hono().route("/", createSessionsRoute(noManagers));
 
 	it("rejects POST / with no repoId", async () => {
 		const res = await app.request("/", {

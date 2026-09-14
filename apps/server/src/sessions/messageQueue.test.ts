@@ -5,9 +5,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { AgentStreamEvent } from "@dilna/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createServerContext } from "../container";
 import { closeDb } from "../db";
-import { repoManager } from "../repos/manager";
-import { sessionManager } from "./manager";
 import {
 	deleteQueueForSession,
 	enqueueMessage,
@@ -60,6 +59,13 @@ let dataDir: string;
 let fixtureRepo: string;
 let oldDataDir: string | undefined;
 
+// Built inside beforeAll, once DILNA_DATA_DIR points at the scratch dir
+// above — the managers resolve their DB handle and data dir at
+// construction now, so building them at import time would capture the
+// real dev state instead (issue #150).
+let repoManager: ReturnType<typeof createServerContext>["repos"];
+let sessionManager: ReturnType<typeof createServerContext>["sessions"];
+
 beforeAll(async () => {
 	dataDir = mkdtempSync(path.join(tmpdir(), "dilna-queue-"));
 	oldDataDir = process.env.DILNA_DATA_DIR;
@@ -71,6 +77,8 @@ beforeAll(async () => {
 	writeFileSync(path.join(fixtureRepo, "README.md"), "# fixture\n");
 	await git(["add", "."], { cwd: fixtureRepo });
 	await git(["commit", "-m", "initial"], { cwd: fixtureRepo });
+
+	({ repos: repoManager, sessions: sessionManager } = createServerContext());
 });
 
 afterAll(() => {
