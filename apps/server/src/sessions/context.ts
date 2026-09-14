@@ -179,8 +179,8 @@ export type SessionContextCheck = {
 	 * immediately rather than only at its next cold start. Returned rather
 	 * than written straight into `handle.agent.state.messages` so this module
 	 * never reaches into a live Agent; `SessionManager` owns the handle and
-	 * applies it (it has to touch the handle anyway, to reset its
-	 * `persistedCount` high-water mark against the replacement array). */
+	 * applies it (it has to touch the handle anyway, to rebase its
+	 * `TurnLedger` against the replacement array). */
 	newContext: AgentMessage[] | null;
 };
 
