@@ -121,8 +121,8 @@ export function promotePendingUserMessage(sessionId: string): void {
  * The id-based dedup here only catches rows dilna itself has seen before by
  * id; it cannot recognize re-converted content, because both pi→dilna
  * converters mint fresh UUIDs. Keeping an overlapping retry slice from
- * duplicating rounds is therefore the *caller's* job — see
- * `ActiveAgent.persistedRounds` and issue #190.
+ * duplicating rounds is therefore the *caller's* job — see `TurnLedger`
+ * (`sessions/turnLedger.ts`) and issue #190.
  */
 export function persistConverted(
 	sessionId: string,

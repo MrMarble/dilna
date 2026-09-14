@@ -957,8 +957,9 @@ export function normalizePiEvent(
 // ---- Persistence bridge ----------------------------------------------------
 
 /**
- * Convert one turn's new transcript entries (`agent.state.messages.slice(
- * persistedCount)`, captured by the caller — see `sessions/manager.ts`'s
+ * Convert one turn's new transcript entries (the gap
+ * `sessions/turnLedger.ts`'s `TurnLedger.settle` reports, captured by the
+ * caller — see `sessions/manager.ts`'s
  * `persistMessagesFromAgent`) into dilna `Message[]` rows, **one assistant
  * row per pi-agent-core round**, exactly matching what the incremental path
  * ({@link piRoundToDilnaMessage}) writes for the same content.
@@ -972,10 +973,9 @@ export function normalizePiEvent(
  *
  * Matching granularity alone doesn't fix that (both converters mint fresh
  * UUIDs, so ids still never match); it is what makes the *other* half
- * expressible. The manager skips rounds it already persisted, tracked by
- * entry identity in `ActiveAgent.persistedRounds` — and "round N already
- * landed" has no meaning against a row that merged rounds N-1..N+2. See
- * `persistMessagesFromAgent`.
+ * expressible. The `TurnLedger` skips rounds it already recorded as durable,
+ * tracked by entry identity — and "round N already landed" has no meaning
+ * against a row that merged rounds N-1..N+2. See `TurnLedger.settle`.
  *
  * A round is an assistant entry plus the `toolResult` entries that answer its
  * tool calls — the same unit raw pi-agent-core reports as one `turn_end`, and

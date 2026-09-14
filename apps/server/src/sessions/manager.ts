@@ -83,6 +83,7 @@ import {
 	sessionCompactionOf,
 	toView,
 } from "./sessionStore";
+import { TurnLedger } from "./turnLedger";
 import { type Turn, TurnRegistry } from "./turnRegistry";
 import { accumulateSessionUsage } from "./usageAccounting";
 import {
@@ -161,46 +162,12 @@ type ActiveAgent = {
 	 * turns — cleared after the turn's rows are persisted. */
 	liveTurn: LiveTurn | null;
 	/**
-	 * How far into `handle.agent.state.messages` dilna has already *examined*
-	 * — the slice boundary `runTurn` reads a turn's new entries from (see
-	 * `persistMessagesFromAgent`). A position, not a success counter:
-	 * {@link ActiveAgent.persistedRounds} is what records which of those
-	 * entries actually reached the DB.
-	 *
-	 * Keeping the two separate matters (issue #190). When this doubled as a
-	 * "successfully persisted" counter, a round whose incremental write threw
-	 * left it unadvanced while *later* rounds still advanced it — so it came
-	 * to point past the failed round rather than at it. The turn-end slice
-	 * then started mid-transcript: it re-offered an already-persisted round
-	 * (which, the two converters minting different ids, inserted a duplicate
-	 * row) and never re-offered the failed one at all.
-	 *
-	 * On a whole-turn persistence failure this still stays put, so the turn's
-	 * entries are retried as part of turn N+1's slice instead of being
-	 * silently skipped once `state.messages` has moved past them.
-	 * Initialized in `startAgent` to the length of the seeded
-	 * `initialMessages` (dilna's own persisted history) — everything at or
-	 * before that point is already in the DB by construction. */
-	persistedCount: number;
-	/**
-	 * The assistant entries whose rows the *incremental* path
-	 * (`persistRoundEvent`) already wrote for the in-flight turn, held by
-	 * object identity — these are the very `AgentMessage` objects sitting in
-	 * `handle.agent.state.messages`, so identity is exact and needs no
-	 * content hashing or index arithmetic.
-	 *
-	 * Exists because `persistedCount` alone cannot express the overlap
-	 * (issue #190): it is a single high-water mark, so one round failing to
-	 * persist pins it behind *every* later round, and the turn-end safety
-	 * net's retry slice then re-offers rounds that already landed. Dedup in
-	 * `persistConverted` is id-based and both converters mint fresh UUIDs, so
-	 * those re-offered rounds would insert as duplicate assistant rows. This
-	 * set is what lets the safety net offer only the genuine gap.
-	 *
-	 * A `WeakSet` so abandoned transcript entries — a stalled turn's
-	 * background `chatPi` call, or a compaction that replaces
-	 * `state.messages` wholesale — can still be garbage collected. */
-	persistedRounds: WeakSet<object>;
+	 * What of this session's transcript is already durable — the transcript
+	 * position and the durable-round identity set that together make turn
+	 * persistence exactly-once. See {@link TurnLedger}, which owns both and is
+	 * the only thing that may move either.
+	 */
+	ledger: TurnLedger;
 };
 
 /**
@@ -215,6 +182,9 @@ type ActiveAgent = {
  * - {@link SessionBroadcaster} — subscriber bookkeeping, event fan-out, and
  *   the retained events that make up ADR-0016 §4's opening snapshot.
  * - {@link TurnRegistry} — turn-slot claim/release and ADR-0026 draining.
+ * - {@link TurnLedger} — which of a turn's entries have reached the DB
+ *   (issue #201): the transcript position and durable-round identity set
+ *   that make two overlapping persistence paths write exactly once.
  * - `./worktree` — the git shell-outs.
  * - `./usageAccounting`, `./sessionStore`, `./liveTurn` — usage rows, row
  *   mapping, and the live-turn fold.
@@ -1315,7 +1285,7 @@ class SessionManager {
 			// stall-timeout path below: a stalled turn's abandoned background
 			// `chatPi` call keeps running after this turn has already been given up
 			// on, and any round it completes after that point must not touch
-			// `active.persistedCount` — that content isn't lost, it's simply left
+			// `active.ledger` — that content isn't lost, it's simply left
 			// for the next turn's wider, overlapping retry slice to pick up instead
 			// (same fallback `persistRoundEvent`'s own persist-failure catch
 			// already relies on).
@@ -1410,7 +1380,7 @@ class SessionManager {
 			} finally {
 				clearTimeout(stallTimer);
 				// Stop the incremental round listener from touching
-				// `active.persistedCount` from here on — see its setup comment
+				// `active.ledger` from here on — see its setup comment
 				// above for why a stale background call can still fire after this
 				// point, and why that's safe to just ignore.
 				turnSettled = true;
@@ -1426,18 +1396,10 @@ class SessionManager {
 					const result = await this.persistMessagesFromAgent(
 						id,
 						handle,
-						active.persistedCount,
+						active.ledger,
 						turnId,
-						active.persistedRounds,
 					);
 					persistedUserMessage = result.persistedUserMessage;
-					// Only advance past this turn's entries once they're actually
-					// durable — on a thrown persistence failure (below),
-					// `active.persistedCount` stays put so the same entries are
-					// retried as part of the *next* turn's slice instead of being
-					// silently skipped forever. `active.persistedRounds` keeps that
-					// wider, overlapping slice from re-writing rounds that did land.
-					active.persistedCount = result.newPersistedCount;
 				} catch (err) {
 					log.error({ sessionId: id, err }, "failed to persist turn messages");
 					this.failTurn(id, turn, {
@@ -1550,12 +1512,9 @@ class SessionManager {
 				// the only layer that owns the live handle — and it has to touch
 				// it either way for the high-water mark below.
 				active.handle.agent.state.messages = newContext;
-				// `newContext` is a reconstruction of already-persisted dilna
-				// rows (plus a synthetic summary message) — none of it is new
-				// data to persist, so the high-water mark must track the
-				// replacement array's own length, not grow from its prior
-				// value (see `ActiveAgent.persistedCount`'s doc comment).
-				active.persistedCount = newContext.length;
+				// The ledger's position tracks the replacement array rather than
+				// growing from its prior value — see `TurnLedger.rebase`.
+				active.ledger.rebase(newContext);
 				getDb()
 					.update(sessionsTable)
 					.set({
@@ -1664,7 +1623,7 @@ class SessionManager {
 	/**
 	 * ADR-0026's incremental-persistence handler: one raw pi-agent-core event
 	 * from `runTurn`'s dedicated `handle.agent.subscribe` (independent of the
-	 * normalized `onEvent` stream), advancing `active.persistedCount` in step
+	 * normalized `onEvent` stream), advancing the ledger's position in step
 	 * with `handle.agent.state.messages`'s real growth and persisting each
 	 * completed round as its own row as soon as it's known-complete. Split out
 	 * from `runTurn` as its own method purely so it's unit-testable without a
@@ -1680,18 +1639,11 @@ class SessionManager {
 	 * writes regroups as one message on reload).
 	 * Every other event type is a no-op here. A persistence failure is caught
 	 * and logged, not re-thrown into the agent's own event dispatch: the round
-	 * simply isn't added to `active.persistedRounds`, which is what tells the
-	 * turn-end safety net (`persistMessagesFromAgent`) to write it after all.
+	 * simply isn't recorded on the ledger, which is what tells the turn-end
+	 * safety net (`persistMessagesFromAgent`) to write it after all.
 	 *
-	 * `persistedCount` advances on *every* entry this sees, success or
-	 * failure — it is a position in `handle.agent.state.messages`, not a
-	 * success counter. Skipping the advance on failure (as this used to do)
-	 * desynchronized it from the transcript: later rounds kept advancing it,
-	 * so the mark ended up pointing *past* the failed round. The safety net's
-	 * slice then began mid-transcript, re-offering a round that had already
-	 * landed while never re-offering the one that hadn't — the duplicate half
-	 * of issue #190, and a silent data-loss half alongside it. Which rounds
-	 * are durable is now `persistedRounds`'s job exclusively.
+	 * The position advances on *every* entry this sees, success or failure;
+	 * `TurnLedger`'s doc comment has the issue #190 history behind that rule.
 	 */
 	private persistRoundEvent(
 		sessionId: string,
@@ -1700,73 +1652,63 @@ class SessionManager {
 		turnId: string,
 	): void {
 		if (event.type === "message_end" && event.message.role === "user") {
-			active.persistedCount += 1;
+			active.ledger.examine(1);
 			return;
 		}
 		if (event.type === "turn_end") {
 			try {
 				const message = piRoundToDilnaMessage(sessionId, event, turnId);
 				if (message) messageStore.persistMessage(sessionId, message);
-				// Marked done only *after* the write succeeded, so a throw above
+				// Recorded only *after* the write succeeded, so a throw above
 				// leaves the round for the safety net. An empty round (null
-				// message) is marked too: it has no row to write, and re-offering
+				// message) is recorded too: it has no row to write, and re-offering
 				// it would only make the safety net re-derive the same nothing.
-				active.persistedRounds.add(event.message);
+				active.ledger.recordRound(event.message);
 			} catch (err) {
 				log.error(
 					{ sessionId, err },
 					"failed to incrementally persist a round (will retry at turn end)",
 				);
 			} finally {
-				active.persistedCount += 1 + event.toolResults.length;
+				active.ledger.examine(1 + event.toolResults.length);
 			}
 		}
 	}
 
 	/**
-	 * Persist this turn's new entries off `handle.agent.state.messages`
-	 * (everything from `persistedCount` onward — the caller's
-	 * `active.persistedCount`, the high-water mark of what's already durably
-	 * persisted; see `ActiveAgent.persistedCount`'s doc comment for why this
-	 * isn't just "however many messages existed before this turn started").
+	 * Persist this turn's new entries off `handle.agent.state.messages`: the
+	 * gap the ledger reports (see {@link TurnLedger.settle} for what that
+	 * spans and why the incremental path's rounds are filtered out by identity
+	 * rather than left to `persistConverted`'s id-based dedup).
+	 * `piMessagesToDilna` emits one row per round to match, which is what
+	 * makes "skip exactly these rounds" expressible.
+	 *
 	 * Unlike Claude's transcript file, this is already complete and
 	 * authoritative the moment `chatPi`'s `agent.prompt()` call resolves — no
 	 * transcript-write-lag retry poll needed (ADR-0007's "read complete
 	 * authoritative state after the turn" pattern, sourced from in-process
 	 * state instead of a re-read file). Returns whether a user-role row was
 	 * among the freshly persisted ones — the caller uses that to decide the
-	 * pending-user placeholder's fate (drop vs promote, see runTurn) — and
-	 * the new high-water mark for the caller to advance `persistedCount` to,
-	 * but only once persistence has actually succeeded.
+	 * pending-user placeholder's fate (drop vs promote, see runTurn).
 	 *
-	 * Rounds the incremental path already wrote are filtered out of the slice
-	 * by entry identity, rather than left to `persistConverted`'s dedup, which
-	 * is id-based and therefore blind to them: both converters mint fresh
-	 * UUIDs for the same content, so an overlapping round would insert a
-	 * second copy (issue #190). The overlap is real whenever a round's
-	 * incremental write failed — that round is left out of `persistedRounds`
-	 * while the rest of the turn's rounds are in it, so this slice legitimately
-	 * spans both. `piMessagesToDilna` emits one row per round to match, which
-	 * is what makes "skip exactly these rounds" expressible.
+	 * The ledger is committed only once the write has actually succeeded; a
+	 * throw propagates with the ledger untouched, so the same entries are
+	 * retried as part of the next turn's wider, overlapping slice instead of
+	 * being silently skipped once `state.messages` has moved past them.
 	 */
 	private async persistMessagesFromAgent(
 		sessionId: string,
 		handle: PiHandle,
-		persistedCount: number,
+		ledger: TurnLedger,
 		turnId: string,
-		persistedRounds: WeakSet<object>,
-	): Promise<{ persistedUserMessage: boolean; newPersistedCount: number }> {
-		const newEntries = handle.agent.state.messages
-			.slice(persistedCount)
-			.filter((entry) => !persistedRounds.has(entry));
+	): Promise<{ persistedUserMessage: boolean }> {
+		const messages = handle.agent.state.messages;
 		const { persistedUserMessage } = messageStore.persistConverted(
 			sessionId,
-			piMessagesToDilna(sessionId, newEntries, turnId),
+			piMessagesToDilna(sessionId, ledger.settle(messages), turnId),
 		);
-		return {
-			persistedUserMessage,
-			newPersistedCount: handle.agent.state.messages.length,
-		};
+		ledger.commit(messages);
+		return { persistedUserMessage };
 	}
 
 	/**
@@ -1885,8 +1827,7 @@ class SessionManager {
 			handle,
 			idleTimer: null,
 			liveTurn: null,
-			persistedCount: initialMessages.length,
-			persistedRounds: new WeakSet(),
+			ledger: new TurnLedger(initialMessages.length),
 		};
 		this.active.set(id, active);
 		// Deliberately no status transition here: per ADR-0016 §1 a cold send's

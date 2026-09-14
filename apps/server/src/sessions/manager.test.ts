@@ -14,6 +14,7 @@ import {
 	liveTurnReplayEvents,
 	sessionManager,
 } from "./manager";
+import { TurnLedger } from "./turnLedger";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -633,34 +634,27 @@ describe("incremental persistence (ADR-0026)", () => {
 		return sessionManager as unknown as {
 			persistRoundEvent: (
 				id: string,
-				active: { persistedCount: number; persistedRounds: WeakSet<object> },
+				active: { ledger: TurnLedger },
 				event: unknown,
 				turnId: string,
 			) => void;
 			persistMessagesFromAgent: (
 				id: string,
 				handle: unknown,
-				persistedCount: number,
+				ledger: TurnLedger,
 				turnId: string,
-				persistedRounds: WeakSet<object>,
-			) => Promise<{
-				persistedUserMessage: boolean;
-				newPersistedCount: number;
-			}>;
+			) => Promise<{ persistedUserMessage: boolean }>;
 		};
 	}
 
-	it("advances persistedCount and persists a row per completed round", async () => {
+	it("advances the ledger position and persists a row per completed round", async () => {
 		const repo = await repoManager.clone(
 			fixtureRepo,
 			`round-event-${Date.now()}`,
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = {
-			persistedCount: 0,
-			persistedRounds: new WeakSet<object>(),
-		};
+		const active = { ledger: new TurnLedger(0) };
 
 		manager.persistRoundEvent(
 			session.id,
@@ -668,7 +662,7 @@ describe("incremental persistence (ADR-0026)", () => {
 			userMessageEnd("hi", 1_000),
 			"turn-1",
 		);
-		expect(active.persistedCount).toBe(1);
+		expect(active.ledger.position).toBe(1);
 
 		manager.persistRoundEvent(
 			session.id,
@@ -690,7 +684,7 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		// 1 assistant message + 1 tool result = advance by 2, on top of the
 		// user message's +1 above.
-		expect(active.persistedCount).toBe(3);
+		expect(active.ledger.position).toBe(3);
 
 		const persisted = await sessionManager.getMessages(session.id);
 		const round = persisted.find((m) => m.role === "assistant");
@@ -724,10 +718,7 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = {
-			persistedCount: 0,
-			persistedRounds: new WeakSet<object>(),
-		};
+		const active = { ledger: new TurnLedger(0) };
 		const turnId = "the-turn";
 
 		// Claim the turn first, so the user's own row really exists — the
@@ -787,10 +778,7 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = {
-			persistedCount: 0,
-			persistedRounds: new WeakSet<object>(),
-		};
+		const active = { ledger: new TurnLedger(0) };
 
 		sessionManager.beginTurn(session.id, "do a big refactor");
 		await sessionManager.setStatus(session.id, "working");
@@ -835,12 +823,13 @@ describe("incremental persistence (ADR-0026)", () => {
 
 	/**
 	 * Issue #190. `persistRoundEvent` swallows its own persist failures and
-	 * deliberately leaves `persistedCount` unadvanced, so the turn-end safety
-	 * net retries that content. But `persistedCount` is a single high-water
-	 * mark: it stays pinned behind the *failed* round while later rounds keep
-	 * persisting fine, so the retry slice spans rounds that already landed.
-	 * With the two converters at different granularities and dedup keyed on
-	 * id, those already-landed rounds used to come back as duplicate rows.
+	 * deliberately leaves the failed round off the ledger, so the turn-end
+	 * safety net retries that content. But the ledger's position is a single
+	 * high-water mark: it stays pinned behind the *failed* round while later
+	 * rounds keep persisting fine, so the retry slice spans rounds that already
+	 * landed. With the two converters at different granularities and dedup
+	 * keyed on id, those already-landed rounds used to come back as duplicate
+	 * rows.
 	 *
 	 * Round 2 is forced to fail by making its conversion throw — a content
 	 * shape `piRoundToDilnaMessage` chokes on — which reproduces the failure
@@ -860,10 +849,7 @@ describe("incremental persistence (ADR-0026)", () => {
 		);
 		const session = await sessionManager.create(repo.id);
 		const manager = withPersistRoundEvent();
-		const active = {
-			persistedCount: 0,
-			persistedRounds: new WeakSet<object>(),
-		};
+		const active = { ledger: new TurnLedger(0) };
 		const turnId = "turn-overlap";
 
 		sessionManager.beginTurn(session.id, "refactor it");
@@ -936,7 +922,7 @@ describe("incremental persistence (ADR-0026)", () => {
 		// incremental path saw — user + 3 rounds — regardless of which of them
 		// actually persisted. That's what keeps it aligned with the transcript
 		// the safety net is about to slice.
-		expect(active.persistedCount).toBe(4);
+		expect(active.ledger.position).toBe(4);
 		expect(
 			(await sessionManager.getMessages(session.id))
 				.filter((m) => m.role === "assistant")
@@ -946,21 +932,21 @@ describe("incremental persistence (ADR-0026)", () => {
 			[{ type: "text", text: "third" }],
 		]);
 
-		// The turn ends. The safety net re-reads this turn's entries; the
-		// skip-list, not the offset, is what keeps already-written rounds out.
-		const transcript = [
-			userEntry,
-			...rounds.map((r) => r.message),
-			// Round 2's tool call never resolved (its round failed), so nothing
-			// else follows it in the transcript.
-		];
+		// The turn ends and the safety net re-reads this turn's entries. The
+		// ledger supplies its own position — the same one production would have
+		// at this point — so what keeps already-written rounds out is the
+		// identity skip-list, not the offset.
+		//
+		// Round 2's tool call never resolved (its round failed), so nothing
+		// else follows it in the transcript. That makes the transcript exactly
+		// as long as the position: see the `it` below for why the slice is
+		// nonetheless non-empty here.
+		const transcript = [userEntry, ...rounds.map((r) => r.message)];
 		await manager.persistMessagesFromAgent(
 			session.id,
 			{ agent: { state: { messages: transcript } } },
-			// The turn began at the start of this transcript.
-			0,
+			active.ledger,
 			turnId,
-			active.persistedRounds,
 		);
 
 		const assistantRows = (await sessionManager.getMessages(session.id)).filter(
