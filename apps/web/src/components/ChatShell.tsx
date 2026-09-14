@@ -734,6 +734,18 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							` (${turnActivity.phase.attempt}/${turnActivity.phase.maxRetries})`}
 					</p>
 				)}
+				{/* Running subagents (issue #206, ADR-0034). A bare count, not a
+				    per-task breakdown: the point is that the user knows work is
+				    fanned out, and the turn's own tool-call rows already carry the
+				    detail. `turn_activity.tasks` does carry description/lastTool,
+				    so a richer view is a client-only change later. */}
+				{turnActivity && turnActivity.tasks.length > 0 && (
+					<p className="mx-auto mb-1.5 max-w-[max(48rem,80%)] text-center text-xs text-muted-foreground">
+						{turnActivity.tasks.length === 1
+							? "1 active task"
+							: `${turnActivity.tasks.length} active tasks`}
+					</p>
+				)}
 				{/* Two stacked rows (the ChatGPT composer shape): the text area on
 				    top spanning the full width, controls beneath it — attach on the
 				    left, send/stop on the right. Putting the buttons on their own

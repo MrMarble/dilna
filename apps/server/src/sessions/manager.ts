@@ -1864,6 +1864,21 @@ class SessionManager {
 								artefact,
 							});
 						},
+						// Issue #206/ADR-0034: subagent activity surfaced through
+						// `turn_activity.tasks`, the field ADR-0016 §5 already defined
+						// (and which has had no producer since the ADR-0020 backend
+						// swap). `SessionBroadcaster.record` retains this for the
+						// mid-turn opening snapshot, so a reconnecting tab sees
+						// running tasks with no extra work here.
+						onTasksChanged: (tasks) => {
+							this.events.broadcast(id, {
+								type: "turn_activity",
+								phase: null,
+								runningTools: [],
+								tasks,
+								serverTime: Date.now(),
+							});
+						},
 					} satisfies PiStartOptions);
 
 		const active: ActiveAgent = {
