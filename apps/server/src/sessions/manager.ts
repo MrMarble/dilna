@@ -42,13 +42,13 @@ import {
 	STOP_TIMEOUT_MS,
 	TURN_TIMEOUT_MS,
 } from "../agents/types";
-import { getDb } from "../db";
+import type { Db } from "../db";
 import {
 	rateLimits as rateLimitsTable,
 	sessions as sessionsTable,
 } from "../db/schema";
 import { logger } from "../logger";
-import { RepoNotFoundError, repoManager } from "../repos/manager";
+import { type RepoManager, RepoNotFoundError } from "../repos/manager";
 import {
 	archiveSession as archiveSessionRow,
 	getArchivedSession,
@@ -196,7 +196,22 @@ type ActiveAgent = {
  * of any one step, so splitting the sequence across objects would spread a
  * single invariant over several files without making any of them simpler.
  */
-class SessionManager {
+/** Everything `SessionManager` reaches for that isn't its own state. */
+export interface SessionManagerDeps {
+	db: Db;
+	repos: RepoManager;
+}
+
+export class SessionManager {
+	private readonly db: Db;
+	private readonly repos: RepoManager;
+
+	constructor(deps: SessionManagerDeps) {
+		this.db = deps.db;
+		this.repos = deps.repos;
+		this.hydrateRateLimits();
+	}
+
 	/** Map of active dilna session id -> running agent process. */
 	private active = new Map<string, ActiveAgent>();
 	/** Map of dilna session id -> in-flight `ensureStarted` promise. Without
@@ -239,7 +254,7 @@ class SessionManager {
 	}
 
 	async listByRepo(repoId: string): Promise<SessionView[]> {
-		const db = getDb();
+		const db = this.db;
 		const rows = db
 			.select()
 			.from(sessionsTable)
@@ -252,7 +267,7 @@ class SessionManager {
 	/** All sessions across every repo, for the cross-session status stream
 	 * (per ADR-0008) to snapshot on subscribe. */
 	async listAll(): Promise<SessionView[]> {
-		const db = getDb();
+		const db = this.db;
 		const rows = db
 			.select()
 			.from(sessionsTable)
@@ -266,7 +281,7 @@ class SessionManager {
 	async usageTotalsByRepo(): Promise<
 		{ repoId: string; inputTokens: number; outputTokens: number }[]
 	> {
-		const db = getDb();
+		const db = this.db;
 		const rows = db
 			.select({
 				repoId: sessionsTable.repoId,
@@ -301,8 +316,9 @@ class SessionManager {
 		orchestratorSessionId: string,
 	): OrchestratorDeps {
 		return {
+			listRepos: () => this.repos.list(),
 			listSessions: async (repoId, spawnedByMe) => {
-				const db = getDb();
+				const db = this.db;
 				const conditions = [eq(sessionsTable.kind, "session")];
 				if (repoId) conditions.push(eq(sessionsTable.repoId, repoId));
 				if (spawnedByMe) {
@@ -361,7 +377,7 @@ class SessionManager {
 	}
 
 	async get(id: string): Promise<Session | null> {
-		const db = getDb();
+		const db = this.db;
 		const row = db
 			.select()
 			.from(sessionsTable)
@@ -443,14 +459,14 @@ class SessionManager {
 		if (agentType !== "pi") {
 			throw new Error(`${agentType} agent backend is not implemented`);
 		}
-		const repo = await repoManager.get(repoId);
+		const repo = await this.repos.get(repoId);
 		if (!repo) throw new RepoNotFoundError(repoId);
 
 		const id = nanoid();
 		const branchName = `dilna/${id}`;
 		const worktreeDirName = id;
 		const worktreePath = path.join(
-			repoManager.worktreeBase(repo.slug),
+			this.repos.worktreeBase(repo.slug),
 			worktreeDirName,
 		);
 
@@ -496,7 +512,7 @@ class SessionManager {
 		};
 
 		try {
-			getDb()
+			this.db
 				.insert(sessionsTable)
 				.values({
 					id: session.id,
@@ -539,7 +555,7 @@ class SessionManager {
 	 * `POST /orchestrator`, which is what makes this the only entry point).
 	 */
 	async createOrchestrator(): Promise<SessionView> {
-		const metaRepo = await repoManager.ensureOrchestratorRepo();
+		const metaRepo = await this.repos.ensureOrchestratorRepo();
 		return this.create(metaRepo.id, "pi", "orchestrator");
 	}
 
@@ -562,14 +578,14 @@ class SessionManager {
 			await this.archiveBeforeDelete(session, provider, model);
 		}
 
-		const repo = await repoManager.get(session.repoId);
+		const repo = await this.repos.get(session.repoId);
 		await removeWorktree({
 			repoPath: repo?.path ?? null,
 			worktreePath: session.worktreePath,
 			branchName: session.branchName,
 		});
 
-		const db = getDb();
+		const db = this.db;
 		db.transaction(() => {
 			messageStore.deleteMessagesForSession(id);
 			db.delete(sessionsTable).where(eq(sessionsTable.id, id)).run();
@@ -625,7 +641,7 @@ class SessionManager {
 	}
 
 	async touch(id: string): Promise<void> {
-		const db = getDb();
+		const db = this.db;
 		const now = Math.floor(Date.now() / 1000);
 		db.update(sessionsTable)
 			.set({ lastActiveAt: now })
@@ -634,7 +650,7 @@ class SessionManager {
 	}
 
 	async setTitle(id: string, title: string): Promise<void> {
-		const db = getDb();
+		const db = this.db;
 		db.update(sessionsTable)
 			.set({ title })
 			.where(eq(sessionsTable.id, id))
@@ -693,7 +709,7 @@ class SessionManager {
 		id: string,
 		status: Session["status"],
 	): Promise<SessionView | null> {
-		const db = getDb();
+		const db = this.db;
 		const now = Math.floor(Date.now() / 1000);
 		db.update(sessionsTable)
 			.set({ status, lastActiveAt: now })
@@ -782,7 +798,7 @@ class SessionManager {
 	 * boot-time interruption recovery only.
 	 */
 	async resetAllToIdle(): Promise<void> {
-		const db = getDb();
+		const db = this.db;
 		const interrupted = ["working", "starting", "stopping"];
 		const rows = db
 			.select()
@@ -835,14 +851,16 @@ class SessionManager {
 		);
 	}
 
-	/** Load the persisted last-known windows into memory, once. Lazy (first
-	 * read or write) rather than in the constructor because the singleton is
-	 * constructed at module import time, before tests get to point
-	 * DILNA_DATA_DIR at their scratch directory. */
+	/** Load the persisted last-known windows into memory, once. Called from
+	 * the constructor — which is safe now that the manager is built by the
+	 * composition root against an injected `db`, rather than at module import
+	 * time before tests could point DILNA_DATA_DIR at a scratch directory
+	 * (issue #150). The idempotence guard stays because the public readers
+	 * below still call it defensively. */
 	private hydrateRateLimits(): void {
 		if (this.rateLimitsHydrated) return;
 		this.rateLimitsHydrated = true;
-		const rows = getDb().select().from(rateLimitsTable).all();
+		const rows = this.db.select().from(rateLimitsTable).all();
 		for (const row of rows) {
 			if (row.kind !== "five_hour" && row.kind !== "seven_day") continue;
 			this.rateLimits.set(row.kind, {
@@ -874,7 +892,7 @@ class SessionManager {
 		// Read the persisted status once (synchronously — no `await` — so this
 		// stays ordered relative to any broadcast racing the same tick) and
 		// share it between both branches below.
-		const row = getDb()
+		const row = this.db
 			.select({ status: sessionsTable.status })
 			.from(sessionsTable)
 			.where(eq(sessionsTable.id, id))
@@ -944,7 +962,7 @@ class SessionManager {
 	async getChangedFiles(id: string): Promise<ChangedFile[]> {
 		const session = await this.get(id);
 		if (!session) return [];
-		const repo = await repoManager.get(session.repoId);
+		const repo = await this.repos.get(session.repoId);
 		if (!repo) return [];
 		return computeChangedFiles(session.worktreePath, repo.defaultBranch);
 	}
@@ -994,7 +1012,7 @@ class SessionManager {
 		if (this.turns.has(id)) {
 			throw new TurnInProgressError();
 		}
-		const row = getDb()
+		const row = this.db
 			.select({ id: sessionsTable.id })
 			.from(sessionsTable)
 			.where(eq(sessionsTable.id, id))
@@ -1057,7 +1075,7 @@ class SessionManager {
 		text: string,
 		attachments: Attachment[] = [],
 	): QueuedMessage {
-		const row = getDb()
+		const row = this.db
 			.select({ id: sessionsTable.id })
 			.from(sessionsTable)
 			.where(eq(sessionsTable.id, id))
@@ -1515,7 +1533,7 @@ class SessionManager {
 				// The ledger's position tracks the replacement array rather than
 				// growing from its prior value — see `TurnLedger.rebase`.
 				active.ledger.rebase(newContext);
-				getDb()
+				this.db
 					.update(sessionsTable)
 					.set({
 						compactedSummary: compaction.summary,
@@ -1877,5 +1895,3 @@ class SessionManager {
 		void this.transitionStatus(id, "crashed");
 	}
 }
-
-export const sessionManager = new SessionManager();

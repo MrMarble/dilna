@@ -9,6 +9,7 @@ import { primeCustomProviders } from "./agents/customProviders";
 import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { primeProviderCredentials } from "./agents/providerCredentials";
+import { createServerContext } from "./container";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
 import { logger } from "./logger";
 import { requestLogger } from "./middleware/requestLogger";
@@ -16,15 +17,13 @@ import {
 	bearerAuthMiddleware,
 	hostAllowlistMiddleware,
 } from "./middleware/security";
-import { repoManager } from "./repos/manager";
 import { configRoute } from "./routes/config";
 import { pushRoute } from "./routes/push";
-import { reposRoute } from "./routes/repos";
-import { sessionsRoute } from "./routes/sessions";
-import { skillsRoute } from "./routes/skills";
-import { streamRoute } from "./routes/stream";
+import { createReposRoute } from "./routes/repos";
+import { createSessionsRoute } from "./routes/sessions";
+import { createSkillsRoute } from "./routes/skills";
+import { createStreamRoute } from "./routes/stream";
 import { usageRoute } from "./routes/usage";
-import { sessionManager } from "./sessions/manager";
 import { primeVapidKeys } from "./sessions/pushSender";
 
 // The instance's provider/model is resolved as: web-settable override (from
@@ -94,12 +93,18 @@ app.use(
 // truncated here — keep the two in that order if either moves.
 app.use("/api/*", bodyLimit({ maxSize: 5 * 1024 * 1024 }));
 
+// The one place `RepoManager`/`SessionManager` are constructed (issue #150).
+// Everything below receives them as parameters rather than importing a
+// module-level singleton — see `container.ts` for why, including how the
+// Repo<->Session mutual dependency is closed without an import cycle.
+const { repos, sessions } = createServerContext();
+
 app.route("/api/config", configRoute);
 app.route("/api/push", pushRoute);
-app.route("/api/repos", reposRoute);
-app.route("/api/sessions", sessionsRoute);
-app.route("/api/skills", skillsRoute);
-app.route("/api/stream", streamRoute);
+app.route("/api/repos", createReposRoute({ repos }));
+app.route("/api/sessions", createSessionsRoute({ sessions, repos }));
+app.route("/api/skills", createSkillsRoute({ repos }));
+app.route("/api/stream", createStreamRoute({ sessions }));
 app.route("/api/usage", usageRoute);
 
 // Flipped by `shutdown()` before it starts draining in-flight turns, so a
@@ -140,12 +145,12 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
 	getDb();
 	// On boot, flip any non-idle sessions back to idle — their agent
 	// processes died when the previous server exited (ADR-0003).
-	await sessionManager.resetAllToIdle();
+	await sessions.resetAllToIdle();
 	// Backfill git defaults (origin fetch refspec, .gitmodules exclude) on
 	// repos cloned before RepoManager.ensureGitDefaults existed — the bare
 	// repo's config is shared by all of its worktrees, so this repairs
 	// existing Sessions too.
-	await repoManager.ensureAllGitDefaults();
+	await repos.ensureAllGitDefaults();
 });
 
 // Grace window for in-flight turns to finish and persist on a *plannable*
@@ -165,7 +170,7 @@ async function shutdown() {
 	shuttingDown = true;
 	draining = true;
 	logger.info("shutting down: draining in-flight turns...");
-	await sessionManager.drain(SHUTDOWN_GRACE_MS);
+	await sessions.drain(SHUTDOWN_GRACE_MS);
 	await new Promise<void>((resolve) => {
 		server.close((err) => {
 			if (err) logger.error({ err }, "error closing HTTP server");

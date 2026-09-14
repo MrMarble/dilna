@@ -4,15 +4,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { createServerContext } from "../container";
 import { getDb } from "../db";
 import { rateLimits as rateLimitsTable } from "../db/schema";
-import { repoManager } from "../repos/manager";
 import { storeAttachment } from "./attachments";
 import {
 	applyEventToLiveTurn,
 	type LiveTurn,
 	liveTurnReplayEvents,
-	sessionManager,
 } from "./manager";
 import { TurnLedger } from "./turnLedger";
 
@@ -23,6 +22,13 @@ const git = (args: string[], opts?: { cwd?: string }) =>
 let dataDir: string;
 let fixtureRepo: string;
 let oldDataDir: string | undefined;
+
+// Built inside beforeAll, once DILNA_DATA_DIR points at the scratch dir
+// above — the managers resolve their DB handle and data dir at
+// construction now, so building them at import time would capture the
+// real dev state instead (issue #150).
+let repoManager: ReturnType<typeof createServerContext>["repos"];
+let sessionManager: ReturnType<typeof createServerContext>["sessions"];
 
 beforeAll(async () => {
 	// Redirect dilna data dir to a temp directory.
@@ -38,6 +44,8 @@ beforeAll(async () => {
 	writeFileSync(path.join(fixtureRepo, "README.md"), "# fixture\n");
 	await git(["add", "."], { cwd: fixtureRepo });
 	await git(["commit", "-m", "initial"], { cwd: fixtureRepo });
+
+	({ repos: repoManager, sessions: sessionManager } = createServerContext());
 });
 
 afterAll(() => {
@@ -360,8 +368,14 @@ describe("SessionManager", () => {
 	// Simulates the restart/reload path: a reading persisted by a previous
 	// server process must be served on the very first getRateLimits() call
 	// (the SSE connect snapshot), without waiting for any agent turn.
-	// Depends on hydration being lazy: no earlier test in this file may call
-	// getRateLimits(), or the singleton hydrates before the row exists.
+	//
+	// Constructing a *fresh* manager over the already-seeded row is what makes
+	// this a real restart simulation. It used to assert against the shared
+	// module-level singleton instead, which only worked because hydration was
+	// lazy and no earlier test in the file had called getRateLimits() yet — an
+	// ordering constraint no one reading those other tests could have seen.
+	// With the manager taking its `db` by injection (issue #150), hydration
+	// moved into the constructor and this test says what it means.
 	it("serves persisted rate-limit windows on first read after a restart", () => {
 		const future = Math.floor(Date.now() / 1000) + 3600;
 		getDb()
@@ -369,7 +383,8 @@ describe("SessionManager", () => {
 			.values({ kind: "five_hour", utilizationPct: 32, resetsAt: future })
 			.run();
 
-		expect(sessionManager.getRateLimits()).toEqual([
+		const restarted = createServerContext().sessions;
+		expect(restarted.getRateLimits()).toEqual([
 			{ kind: "five_hour", utilizationPct: 32, resetsAt: future },
 		]);
 	});

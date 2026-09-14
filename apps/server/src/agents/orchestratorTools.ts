@@ -1,7 +1,6 @@
 import type { Repo, SessionView } from "@dilna/shared";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai/compat";
-import { repoManager } from "../repos/manager";
 import type {
 	ArchivedSession,
 	ArchivedSessionSummary,
@@ -14,6 +13,9 @@ import type {
  * circular import between `sessions/manager.ts` and `agents/pi.ts`).
  */
 export type OrchestratorDeps = {
+	/** Every Repo dilna has cloned, minus the orchestrator's own pseudo-Repo
+	 * (`RepoManager.list` already filters that out). */
+	listRepos: () => Promise<Repo[]>;
 	/** Ordinary (non-orchestrator) Sessions, optionally filtered to one repo
 	 * and/or (ADR-0025) to only those this specific orchestrator Session
 	 * itself created via `dilna_create_session`. */
@@ -110,8 +112,7 @@ export function createOrchestratorTools(
 		description:
 			"List every repo dilna has cloned — id, slug, and default branch. Use the returned id as `repoId` for the other tools.",
 		parameters: emptySchema,
-		execute: async () =>
-			jsonResult(reposToToolPayload(await repoManager.list())),
+		execute: async () => jsonResult(reposToToolPayload(await deps.listRepos())),
 	};
 
 	const listSessions: AgentTool<typeof listSessionsSchema> = {

@@ -6,21 +6,6 @@ import {
 	type OrchestratorDeps,
 } from "./orchestratorTools";
 
-vi.mock("../repos/manager", () => ({
-	repoManager: {
-		list: vi.fn(async () => [
-			{
-				id: "repo-1",
-				slug: "dilna",
-				path: "/data/repos/dilna",
-				defaultBranch: "main",
-				remoteUrl: "git@github.com:owner/dilna.git",
-				createdAt: 1,
-			},
-		]),
-	},
-}));
-
 function makeSession(overrides: Partial<SessionView> = {}): SessionView {
 	return {
 		id: "sess-1",
@@ -38,6 +23,16 @@ function makeSession(overrides: Partial<SessionView> = {}): SessionView {
 
 function makeDeps(overrides: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
 	return {
+		listRepos: vi.fn(async () => [
+			{
+				id: "repo-1",
+				slug: "dilna",
+				path: "/data/repos/dilna",
+				defaultBranch: "main",
+				remoteUrl: "git@github.com:owner/dilna.git",
+				createdAt: 1,
+			},
+		]),
 		listSessions: vi.fn(async () => [makeSession()]),
 		getSession: vi.fn(async () => ({
 			...makeSession(),
@@ -88,7 +83,7 @@ function textOf(result: { content: { type: string; text?: string }[] }) {
 }
 
 describe("createOrchestratorTools", () => {
-	it("dilna_list_repos returns repoManager.list()'s repos, meta-repo already excluded", async () => {
+	it("dilna_list_repos returns listRepos()'s repos, meta-repo already excluded", async () => {
 		const tools = createOrchestratorTools(makeDeps());
 		const result = await toolByName(tools, "dilna_list_repos").execute(
 			"call-1",

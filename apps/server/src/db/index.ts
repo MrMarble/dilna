@@ -12,7 +12,14 @@ import * as schema from "./schema";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-let _db: BetterSQLite3Database<typeof schema> | null = null;
+/**
+ * The drizzle handle, named so collaborators can take it as a constructor
+ * parameter instead of reaching for `getDb()` (issue #150). `getDb()` remains
+ * the process-wide accessor and the composition root's source for it.
+ */
+export type Db = BetterSQLite3Database<typeof schema>;
+
+let _db: Db | null = null;
 let _sqlite: Database.Database | null = null;
 
 function findWorkspaceRoot(start: string): string {

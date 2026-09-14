@@ -6,10 +6,9 @@ import { promisify } from "node:util";
 import type { Attachment } from "@dilna/shared";
 import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createServerContext } from "../container";
 import { closeDb } from "../db";
-import { repoManager } from "../repos/manager";
-import { sessionManager } from "../sessions/manager";
-import { sessionsRoute } from "./sessions";
+import { createSessionsRoute } from "./sessions";
 
 /**
  * The attachment flow end to end over real HTTP (issue #53): upload a file,
@@ -28,7 +27,11 @@ const git = (args: string[], opts?: { cwd?: string }) =>
 let dataDir: string;
 let fixtureRepo: string;
 let oldDataDir: string | undefined;
-const app = new Hono().route("/", sessionsRoute);
+// Built in beforeAll, after DILNA_DATA_DIR points at the scratch dir
+// (issue #150) — constructing at import time would bind the real dev DB.
+let app: Hono;
+let repoManager: ReturnType<typeof createServerContext>["repos"];
+let sessionManager: ReturnType<typeof createServerContext>["sessions"];
 
 beforeAll(async () => {
 	dataDir = mkdtempSync(path.join(tmpdir(), "dilna-attach-e2e-"));
@@ -42,6 +45,12 @@ beforeAll(async () => {
 	writeFileSync(path.join(fixtureRepo, "README.md"), "# fixture\n");
 	await git(["add", "."], { cwd: fixtureRepo });
 	await git(["commit", "-m", "initial"], { cwd: fixtureRepo });
+
+	({ repos: repoManager, sessions: sessionManager } = createServerContext());
+	app = new Hono().route(
+		"/",
+		createSessionsRoute({ sessions: sessionManager, repos: repoManager }),
+	);
 }, 60_000);
 
 afterAll(() => {
