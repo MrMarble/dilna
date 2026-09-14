@@ -21,6 +21,7 @@ import type {
 	UsageSummary,
 } from "@dilna/shared";
 import { encodeSkillId } from "@dilna/shared";
+import { SessionStreamHub } from "./sessionStream";
 
 export type {
 	AgentStreamEvent,
@@ -86,24 +87,6 @@ export type LlmConfig = {
 	 * management section. */
 	customProviders: CustomProviderView[];
 };
-
-const SESSION_EVENT_TYPES: AgentStreamEvent["type"][] = [
-	"session_status",
-	"changed_files",
-	"user_message",
-	"message_start",
-	"token",
-	"thinking",
-	"tool_call_start",
-	"tool_call_end",
-	"message_end",
-	"turn_failed",
-	"notice",
-	"turn_activity",
-	"resync",
-	"usage_update",
-	"queue_update",
-];
 
 const SESSION_LIST_EVENT_TYPES: SessionListEvent["type"][] = [
 	"session_status",
@@ -198,6 +181,22 @@ function openEventStream<T>(
 		es?.close();
 	};
 }
+
+/**
+ * The per-Session fan-out (issue #202), wired to the real `EventSource`
+ * transport. Module-level so every `api.sessions.stream` caller for a given
+ * Session lands on the same connection.
+ */
+const sessionStreamHub = new SessionStreamHub(
+	(sessionId, eventTypes, onEvent, onOpen, onConnectionChange) =>
+		openEventStream<AgentStreamEvent>(
+			`/api/sessions/${sessionId}/stream`,
+			eventTypes,
+			onEvent,
+			onOpen,
+			onConnectionChange,
+		),
+);
 
 /**
  * URL that serves an attachment's bytes — what an `<img src>` points at, and
@@ -383,10 +382,18 @@ export const api = {
 				`/api/sessions/${id}/transcript`,
 				window.location.origin,
 			).toString(),
-		/** Subscribe to a session's live SSE stream. `onOpen` runs on first
-		 * connect and every reconnect (native retry or this function's own
-		 * liveness-driven one) — the single resync point (ADR-0016 §4): the
-		 * caller resets its live-turn state and refetches history there.
+		/** Subscribe to a session's live SSE stream.
+		 *
+		 * Multiple subscribers to the same `id` share one `EventSource` via
+		 * {@link sessionStreamHub} (issue #202) — the connection opens on the
+		 * first subscriber and closes on the last, so N consumers cost one
+		 * socket and one server-side subscriber rather than N of each.
+		 *
+		 * `onOpen` runs on first connect and every reconnect (native retry or
+		 * the liveness-driven one) — the single resync point (ADR-0016 §4): the
+		 * caller resets its live-turn state and refetches history there. It also
+		 * runs immediately if you subscribe to an already-open connection, since
+		 * a late subscriber has missed just as much as a reconnecting one.
 		 * `onConnectionChange` reports degraded/recovered for a "reconnecting…"
 		 * indicator. Returns an unsubscribe. */
 		stream: (
@@ -395,13 +402,11 @@ export const api = {
 			onOpen?: () => void,
 			onConnectionChange?: (connected: boolean) => void,
 		): (() => void) =>
-			openEventStream(
-				`/api/sessions/${id}/stream`,
-				SESSION_EVENT_TYPES,
+			sessionStreamHub.subscribe(id, {
 				onEvent,
 				onOpen,
 				onConnectionChange,
-			),
+			}),
 	},
 	/** Cross-session status stream (per ADR-0008): one subscription per app
 	 * load, notified whenever any session's status changes. Powers the
