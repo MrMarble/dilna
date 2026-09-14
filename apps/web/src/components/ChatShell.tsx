@@ -1,8 +1,6 @@
 import {
-	type AgentStreamEvent,
 	type AgentType,
 	type Attachment,
-	type Message as ChatMessage,
 	formatAttachmentSize,
 	type MessagePart,
 	type QueuedMessage,
@@ -24,7 +22,14 @@ import {
 	Wrench,
 	X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useReducer,
+	useRef,
+	useState,
+} from "react";
 import { ApiError, api, attachmentUrl } from "@/api/client";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Markdown } from "@/components/ui/markdown";
@@ -51,13 +56,17 @@ import {
 import { useSessionDraft } from "@/hooks/useSessionDraft";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
-import {
-	applyEventToLive,
-	type LiveMessage,
-	mergeRenderedMessages,
-	nowSeconds,
-} from "@/lib/live-messages";
+import { mergeRenderedMessages, nowSeconds } from "@/lib/live-messages";
 import { partsToMarkdown } from "@/lib/message-markdown";
+import {
+	initialSessionStreamState,
+	type SessionStreamAction,
+	type SessionStreamState,
+	sessionStreamReducer,
+	/** The in-turn feedback snapshot (ADR-0016 §5) — level-based, valid only
+	 * inside a turn: cleared on any terminal status, never re-derived from it. */
+	type TurnActivity,
+} from "@/lib/sessionStreamReducer";
 import { getToolMeta } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -69,10 +78,6 @@ type Props = {
 	 * newline there instead and the Send button submits. */
 	isDesktop: boolean;
 };
-
-/** The in-turn feedback snapshot (ADR-0016 §5) — level-based, valid only
- * inside a turn: cleared on any terminal status, never re-derived from it. */
-type TurnActivity = Extract<AgentStreamEvent, { type: "turn_activity" }>;
 
 /** Rotating gerunds shown while the agent works (composer placeholder and
  * the in-chat thinking marker), instead of a static "Agent is working". */
@@ -121,10 +126,36 @@ const PHASE_LABEL: Record<string, string> = {
 	retrying: "Retrying…",
 };
 
+/** `useReducer`'s `(state, action) => state` shape. The effects the fold asks
+ * for ride along in `state.requests` (see `EffectRequests`), which the
+ * refetch effects below are keyed on — so this stays a pure, idempotent
+ * reducer even under React's double-invocation. */
+function reduce(
+	state: SessionStreamState,
+	action: SessionStreamAction,
+): SessionStreamState {
+	return sessionStreamReducer(state, action).state;
+}
+
 export function ChatShell({ sessionId, session, isDesktop }: Props) {
-	const [messages, setMessages] = useState<ChatMessage[]>([]);
-	const [live, setLive] = useState<Record<string, LiveMessage>>({});
-	const [status, setStatus] = useState<SessionView["status"]>(session.status);
+	/** All Session-level stream state in one fold (issue #203) — the protocol
+	 * rules live in `sessionStreamReducer`, which is testable without React.
+	 * Only UI-local state (composer, drag depth, expanded toggles) stays as
+	 * ordinary component state below. */
+	const [stream, dispatch] = useReducer(reduce, session.status, (status) =>
+		initialSessionStreamState(sessionId, status),
+	);
+	const {
+		messages,
+		live,
+		status,
+		error,
+		notice,
+		thinking,
+		turnActivity,
+		thinkingBuffers,
+		queued,
+	} = stream;
 	/** Composer text, persisted per Session so navigating away (another
 	 * Session, Settings, a reload) doesn't lose a half-written message. */
 	const {
@@ -133,40 +164,20 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		clear: clearDraft,
 	} = useSessionDraft(sessionId);
 	const [sending, setSending] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	/** Transient degraded-not-failed line (ADR-0016 §2's `notice`) — separate
-	 * from `error` so it renders as an unobtrusive line, not a destructive one. */
-	const [notice, setNotice] = useState<string | null>(null);
-	/** True from send → first assistant token/tool_call; suppresses the
-	 * 'Thinking...' marker once content starts streaming. */
-	const [thinking, setThinking] = useState(false);
-	/** In-turn feedback snapshot (ADR-0016 §5) — replaced wholesale on every
-	 * `turn_activity`, cleared on any terminal status. */
-	const [turnActivity, setTurnActivity] = useState<TurnActivity | null>(null);
-	/** Per-message `thinking` chunk buffers — transient, mirrors `token`'s
-	 * buffering but never persisted; cleared at that message's `message_end`. */
-	const [thinkingBuffers, setThinkingBuffers] = useState<
-		Record<string, string>
-	>({});
 	/** ~3s-debounced "reconnecting…" pill (ADR-0016 §4) — nothing shows while
-	 * healthy, and recovery clears it instantly. */
+	 * healthy, and recovery clears it instantly. Connection state, not stream
+	 * state: it comes from the transport, not from any event. */
 	const [degraded, setDegraded] = useState(false);
 
-	// True once turn activity (a status flip to working, or any mid-turn
-	// content event — which is all a tab joining mid-turn ever sees) has hit
-	// this subscription — gates the idle-time history reconcile so the
-	// subscribe-time idle snapshot doesn't refetch.
-	const sawTurnRef = useRef(false);
+	// Read by the stream effect to seed its reset, via a ref so it is not a
+	// dependency: re-running that effect on a status flip is exactly the bug
+	// its own comment warns about.
+	const statusSeedRef = useRef(session.status);
+	statusSeedRef.current = session.status;
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const { pending, addFiles, removePending, clearPending } =
 		usePendingAttachments(sessionId);
-	/** The Session's server-held send queue (ADR-0033) — a mirror of the
-	 * server's `queued_messages` rows, seeded by the on-open resync's GET and
-	 * kept live by `queue_update` events. The server owns enqueue, ordering
-	 * and dispatch (so a locked phone doesn't strand the queue); this state
-	 * exists purely to render the tray. */
-	const [queued, setQueued] = useState<QueuedMessage[]>([]);
 
 	/** The tray entries a send can actually reference — uploaded, with a
 	 * server id. Errored and still-uploading entries are excluded, so this is
@@ -226,217 +237,69 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
 	}, [input]);
 
-	const loadHistory = useCallback(async () => {
-		try {
-			const { messages } = await api.sessions.messages(sessionId);
-			setMessages(messages);
-			const persistedIds = new Set(messages.map((m) => m.id));
-			setLive((prev) => {
-				const next: Record<string, LiveMessage> = {};
-				let changed = false;
-				for (const [id, m] of Object.entries(prev)) {
-					if (persistedIds.has(id)) {
-						changed = true;
-						continue;
-					}
-					next[id] = m;
-				}
-				return changed ? next : prev;
+	// The two refetches the fold asks for, each keyed on its own request
+	// counter (ADR-0016 §4's on-open routine: reset live-turn state → refetch
+	// → apply the opening snapshot the server replays via the stream). Runs on
+	// the first connect, every native EventSource retry, every reconnect forced
+	// by the client's staleness check, and on an explicit `resync` directive
+	// mid-turn (refusal-fallback retraction).
+	const historyRequest = stream.requests["load-history"];
+	useEffect(() => {
+		// Read so the counter is a genuine dependency: it is the retrigger
+		// mechanism, not incidental — every bump is another refetch the fold
+		// asked for.
+		void historyRequest;
+		let cancelled = false;
+		api.sessions
+			.messages(sessionId)
+			.then(({ messages }) => {
+				if (!cancelled) dispatch({ type: "history-loaded", messages });
+			})
+			.catch((e) => {
+				if (cancelled) return;
+				dispatch({
+					type: "history-failed",
+					message: e instanceof Error ? e.message : "failed to load messages",
+				});
 			});
-		} catch (e) {
-			setError(e instanceof Error ? e.message : "failed to load messages");
-		}
-	}, [sessionId]);
+		return () => {
+			cancelled = true;
+		};
+	}, [sessionId, historyRequest]);
 
-	// The one on-open routine (ADR-0016 §4): reset live-turn state → refetch
-	// history → apply the opening snapshot (the server replays it via the
-	// stream's own subscribe-time events, handled below). Runs on the first
-	// connect, every native EventSource retry, and every reconnect forced by
-	// the client's own staleness check — and also on an explicit `resync`
-	// directive mid-turn (refusal-fallback retraction).
-	const loadQueue = useCallback(async () => {
-		try {
-			const { queued } = await api.sessions.queuedMessages(sessionId);
-			setQueued(queued);
-		} catch {
-			// Non-fatal — the tray just stays as-is until the next `queue_update`
-			// event or resync converges it; history loading already surfaces
-			// connectivity errors.
-		}
-	}, [sessionId]);
-
-	const resync = useCallback(() => {
-		setLive({});
-		setTurnActivity(null);
-		setThinkingBuffers({});
-		sawTurnRef.current = false;
-		loadHistory();
-		// The queue's REST snapshot (ADR-0033), alongside history's — the
-		// `queue_update` stream keeps it live from here.
-		loadQueue();
-	}, [loadHistory, loadQueue]);
+	const queueRequest = stream.requests["load-queue"];
+	useEffect(() => {
+		void queueRequest;
+		let cancelled = false;
+		api.sessions
+			.queuedMessages(sessionId)
+			.then(({ queued }) => {
+				if (!cancelled) dispatch({ type: "queue-loaded", queued });
+			})
+			.catch(() => {
+				// Non-fatal — the tray just stays as-is until the next
+				// `queue_update` event or resync converges it; history loading
+				// already surfaces connectivity errors.
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [sessionId, queueRequest]);
 
 	// Keyed on sessionId only — deliberately NOT session.status: re-running
 	// this effect mid-turn (as a status flip used to) wipes the live entries
 	// and re-fetches history while the turn's rows are still provisional,
 	// which is how messages briefly rendered out of order.
 	useEffect(() => {
-		setMessages([]);
-		setQueued([]);
-		setError(null);
-		setNotice(null);
-		setThinking(false);
+		dispatch({ type: "reset", sessionId, status: statusSeedRef.current });
 		setDegraded(false);
 		let degradedTimer: ReturnType<typeof setTimeout> | null = null;
 		const unsubscribe = api.sessions.stream(
 			sessionId,
-			(ev) => {
-				switch (ev.type) {
-					case "session_status":
-						setStatus(ev.status);
-						if (ev.status === "working" || ev.status === "starting") {
-							sawTurnRef.current = true;
-							// Covers the mid-turn (re)connect: the server replays a
-							// working status on subscribe, and until the snapshot or the
-							// next token arrives the thinking marker is the only signal
-							// the agent is alive. The local send path sets this too.
-							setThinking(true);
-						}
-						if (ev.status === "idle" || ev.status === "crashed") {
-							setThinking(false);
-							// turn_activity/thinking are valid only inside a turn
-							// (ADR-0016 §5) — clear the client's own copy at any terminal
-							// rather than waiting for an explicit clearing event.
-							setTurnActivity(null);
-							setThinkingBuffers({});
-							// Flush live entries into the local list so nothing flickers,
-							// then reconcile against the DB — the source of truth (ADR-0004):
-							// authoritative rows replace the flushed copies' provisional
-							// ids/timestamps, and the optimistic temp user entry (whose
-							// content the server persisted at send time) drops out.
-							setLive((currentLive) => {
-								const entries = Object.entries(currentLive);
-								if (entries.length === 0) return currentLive;
-								const liveIds = new Set(entries.map(([k]) => k));
-								setMessages((prev) => {
-									const kept = prev.filter((m) => !liveIds.has(m.id));
-									const newMsgs = entries.map(([, m]) => ({
-										id: m.id,
-										sessionId,
-										role: m.role,
-										parts: m.parts,
-										// Explicitly ungroupable: a live entry is already one
-										// whole turn's worth of parts (see `rendered`), and
-										// this is a stopgap for the `loadHistory()` right
-										// below, which replaces it with the DB row carrying
-										// the real `turnId`.
-										turnId: null,
-										createdAt: m.startedAt,
-									}));
-									return [...kept, ...newMsgs];
-								});
-								return {};
-							});
-							if (sawTurnRef.current) {
-								sawTurnRef.current = false;
-								loadHistory();
-							}
-						}
-						break;
-					case "user_message":
-						// Broadcast at accept time (ADR-0016 §6) — every subscriber
-						// converges on this id. The sender's own tab may already have
-						// swapped its optimistic tempId bubble for this same id via
-						// handleSend's response (a benign race either way settles on
-						// the same entry); non-sender tabs see this as the only signal
-						// the turn started until the next content event.
-						sawTurnRef.current = true;
-						setLive((prev) => {
-							if (prev[ev.message.id]) return prev;
-							return {
-								...prev,
-								[ev.message.id]: {
-									id: ev.message.id,
-									role: "user",
-									parts: ev.message.parts,
-									startedAt: ev.message.createdAt,
-								},
-							};
-						});
-						break;
-					case "message_start":
-						// Always a new assistant turn message (pi.ts never emits
-						// user-role starts); the optimistic temp user entry stays in
-						// place until the idle-time reconcile swaps in the DB rows.
-						sawTurnRef.current = true;
-						setLive((prev) => {
-							if (prev[ev.messageId]) return prev;
-							return {
-								...prev,
-								[ev.messageId]: {
-									id: ev.messageId,
-									role: ev.role,
-									parts: [],
-									startedAt: nowSeconds(),
-								},
-							};
-						});
-						break;
-					case "token":
-					case "tool_call_start":
-					case "tool_call_end":
-						// Content stops the 'Thinking...' marker — except tool_call_end,
-						// which resolves a call whose _start already cleared it and can
-						// arrive while the next round is thinking again.
-						if (ev.type !== "tool_call_end") {
-							setThinking(false);
-							sawTurnRef.current = true;
-						}
-						setLive((prev) => applyEventToLive(prev, ev));
-						break;
-					case "message_end":
-						// Discard this message's thinking buffer — it never persists
-						// (ADR-0016 §5's invariant: `token` is exactly what persists,
-						// `thinking` is exactly what doesn't).
-						setThinkingBuffers((prev) => {
-							if (!(ev.messageId in prev)) return prev;
-							const next = { ...prev };
-							delete next[ev.messageId];
-							return next;
-						});
-						break;
-					case "turn_failed":
-						// The one failure event (ADR-0016 §2, replacing `error` +
-						// `agent_crashed`): the terminal status itself (idle/crashed)
-						// arrives as a separate session_status right after, handled
-						// above.
-						setThinking(false);
-						setError(ev.message);
-						break;
-					case "queue_update":
-						// Level-based snapshot (ADR-0033) — replace wholesale, exactly
-						// like `changed_files`: every tab converges on the server's
-						// queue without diffing.
-						setQueued(ev.queued);
-						break;
-					case "notice":
-						setNotice(ev.message);
-						break;
-					case "thinking":
-						setThinkingBuffers((prev) => ({
-							...prev,
-							[ev.messageId]: (prev[ev.messageId] ?? "") + ev.chunk,
-						}));
-						break;
-					case "turn_activity":
-						setTurnActivity(ev);
-						break;
-					case "resync":
-						resync();
-						break;
-				}
-			},
-			resync,
+			(event) => dispatch({ type: "event", event }),
+			// ADR-0016 §4's resync point. The fold decides what that means and
+			// asks for the refetches; this only reports the connection opening.
+			() => dispatch({ type: "resync" }),
 			(connected) => {
 				if (connected) {
 					if (degradedTimer) {
@@ -456,10 +319,10 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 			if (degradedTimer) clearTimeout(degradedTimer);
 			unsubscribe();
 		};
-	}, [sessionId, resync, loadHistory]);
+	}, [sessionId]);
 
 	useEffect(() => {
-		setStatus(session.status);
+		dispatch({ type: "status-changed", status: session.status });
 	}, [session.status]);
 
 	const working = status === "working" || status === "starting";
@@ -494,7 +357,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		// doesn't matter. An enqueue that races the turn's end is fine: the
 		// server dispatches immediately when it finds the Session idle.
 		if (busy || queued.length > 0) {
-			setError(null);
+			dispatch({ type: "error", message: null });
 			setSending(true);
 			try {
 				const { entry } = await api.sessions.queueMessage(
@@ -511,30 +374,30 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 				// Optimistic append; the `queue_update` broadcast carries the same
 				// entry id, and level-based replacement makes the merge idempotent
 				// whichever lands first.
-				setQueued((prev) =>
-					prev.some((q) => q.id === entry.id) ? prev : [...prev, entry],
-				);
+				dispatch({ type: "queued", entry });
 			} catch (e) {
 				// Draft preserved (composer untouched above) — same contract as a
 				// rejected direct send.
-				setError(e instanceof Error ? e.message : "failed to queue message");
+				dispatch({
+					type: "error",
+					message: e instanceof Error ? e.message : "failed to queue message",
+				});
 			} finally {
 				setSending(false);
 			}
 			return;
 		}
-		setError(null);
 		setSending(true);
-		setThinking(true);
 		// Optimistic user message placeholder — visible immediately so autoscroll
 		// follows it; replaced by the authoritative DB row at the idle reconcile.
 		// Mirrors the server's own part order (attachments first, then text) so
 		// the bubble doesn't reshuffle when the real row arrives.
 		const tempId = `temp-${Date.now()}`;
-		setLive((prev) => ({
-			...prev,
-			[tempId]: {
+		dispatch({
+			type: "send",
+			message: {
 				id: tempId,
+				sessionId,
 				role: "user",
 				parts: [
 					...attached.map(
@@ -542,9 +405,10 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					),
 					...(text ? [{ type: "text" as const, text }] : []),
 				],
-				startedAt: nowSeconds(),
+				turnId: null,
+				createdAt: nowSeconds(),
 			},
-		}));
+		});
 
 		try {
 			const { message } = await api.sessions.send(
@@ -561,40 +425,29 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 			// Swap the optimistic tempId bubble for the persisted row's real id
 			// (ADR-0016 §6) — the same row every other subscriber sees via the
 			// `user_message` broadcast, so all clients converge on one id.
-			setLive((prev) => {
-				if (!(tempId in prev)) return prev;
-				const next = { ...prev };
-				delete next[tempId];
-				next[message.id] = {
-					id: message.id,
-					role: "user",
-					parts: message.parts,
-					startedAt: message.createdAt,
-				};
-				return next;
-			});
+			dispatch({ type: "send-accepted", tempId, message });
 		} catch (e) {
-			setThinking(false);
 			// The message never reached the server — withdraw the optimistic
 			// entry instead of leaving a bubble the agent never saw.
-			setLive((prev) => {
-				if (!(tempId in prev)) return prev;
-				const next = { ...prev };
-				delete next[tempId];
-				return next;
-			});
-			if (e instanceof ApiError && e.status === 409) {
-				// Lost the race to a concurrent send from another tab (ADR-0016
-				// §6): keep the draft (the composer was never cleared above) and
-				// show a quiet notice, not a destructive error — this tab is
-				// already rendering the in-flight turn it lost to, via the same
-				// stream every subscriber shares.
-				setNotice(
-					"Another tab just sent a message — your draft is still here.",
-				);
-			} else {
-				setError(e instanceof Error ? e.message : "send failed");
-			}
+			dispatch(
+				e instanceof ApiError && e.status === 409
+					? {
+							// Lost the race to a concurrent send from another tab
+							// (ADR-0016 §6): keep the draft (the composer was never
+							// cleared above) and show a quiet notice, not a destructive
+							// error — this tab is already rendering the in-flight turn it
+							// lost to, via the same stream every subscriber shares.
+							type: "send-failed",
+							tempId,
+							notice:
+								"Another tab just sent a message — your draft is still here.",
+						}
+					: {
+							type: "send-failed",
+							tempId,
+							error: e instanceof Error ? e.message : "send failed",
+						},
+			);
 		} finally {
 			setSending(false);
 		}
@@ -618,9 +471,12 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		async (queuedId: string) => {
 			try {
 				await api.sessions.removeQueuedMessage(sessionId, queuedId);
-				setQueued((prev) => prev.filter((q) => q.id !== queuedId));
+				dispatch({ type: "queue-removed", queuedId });
 			} catch (e) {
-				setError(e instanceof Error ? e.message : "failed to remove message");
+				dispatch({
+					type: "error",
+					message: e instanceof Error ? e.message : "failed to remove message",
+				});
 			}
 		},
 		[sessionId],
@@ -630,7 +486,10 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		try {
 			await api.sessions.stop(sessionId);
 		} catch (e) {
-			setError(e instanceof Error ? e.message : "stop failed");
+			dispatch({
+				type: "error",
+				message: e instanceof Error ? e.message : "stop failed",
+			});
 		}
 	}, [sessionId]);
 

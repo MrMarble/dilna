@@ -37,6 +37,9 @@ vi.mock("@/api/client", () => ({
 			uploadAttachment: vi.fn(),
 			stop: vi.fn(),
 			stream: vi.fn(),
+			queuedMessages: vi.fn(),
+			queueMessage: vi.fn(),
+			removeQueuedMessage: vi.fn(),
 			changedFiles: vi.fn(),
 			commits: vi.fn(),
 			artefacts: vi.fn(),
@@ -63,13 +66,8 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	localStorage.clear();
 	vi.mocked(api.sessions.messages).mockResolvedValue({ messages: [] });
-	// History is fetched by the on-open resync routine (ADR-0016 §4), not by
-	// a mount effect — the fake stream has to fire `onOpen` or the chat
-	// renders permanently empty.
-	vi.mocked(api.sessions.stream).mockImplementation((_id, _onEvent, onOpen) => {
-		onOpen?.();
-		return () => {};
-	});
+	vi.mocked(api.sessions.queuedMessages).mockResolvedValue({ queued: [] });
+	vi.mocked(api.sessions.stream).mockImplementation(() => () => {});
 });
 
 function renderShell(sessionId = "sess-1") {
