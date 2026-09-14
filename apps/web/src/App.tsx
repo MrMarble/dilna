@@ -1,11 +1,5 @@
-import type {
-	RateLimitWindow,
-	RepoStats,
-	RepoSyncStatus,
-	SessionListEvent,
-} from "@dilna/shared";
 import { FolderGit2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type Repo, type SessionView } from "@/api/client";
 import { AppVersion } from "@/components/AppVersion";
 import {
@@ -24,20 +18,25 @@ import { Drawer, DrawerContent } from "@/components/ui/drawer";
 import { useIsDesktop } from "@/hooks/useIsDesktop";
 import { useMobileSheet } from "@/hooks/useMobileSheet";
 import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
+import { useRepoList } from "@/hooks/useRepoList";
 import { useRoute } from "@/hooks/useRoute";
 import { clearSessionDraft } from "@/hooks/useSessionDraft";
+import { useSessionList } from "@/hooks/useSessionList";
 import { useSessionNotifications } from "@/hooks/useSessionNotifications";
 import { isReservedSlug, type Route } from "@/lib/routes";
 
 export function App() {
-	const [repos, setRepos] = useState<Repo[]>([]);
-	const [sessionsById, setSessionsById] = useState<Record<string, SessionView>>(
-		{},
-	);
-	const [loadingRepos, setLoadingRepos] = useState(true);
-	// Distinct from `loadingRepos` (the initial fetch) — see pullRepos.
-	const [pullingRepos, setPullingRepos] = useState(false);
-	const [repoError, setRepoError] = useState<string | null>(null);
+	// Repos plus their stats, sync badges and the pull operation (issue #174).
+	const {
+		repos,
+		loading: loadingRepos,
+		pulling: pullingRepos,
+		error: repoError,
+		statsByRepoId,
+		syncStatusByRepoId,
+		reload: reloadRepos,
+		pull: pullRepos,
+	} = useRepoList();
 	// The URL is the single source of truth for which view is showing and what
 	// it's showing (see lib/routes.ts). Everything below derives from `route`
 	// rather than tracking its own copy, which is what keeps deep links, back/
@@ -64,21 +63,9 @@ export function App() {
 			: route.kind === "repo" && selectedRepo
 				? route.sessionId
 				: null;
-	const selectedSession = selectedSessionId
-		? (sessionsById[selectedSessionId] ?? null)
-		: null;
 
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
-	const [rateLimitWindows, setRateLimitWindows] = useState<RateLimitWindow[]>(
-		[],
-	);
-	const [statsByRepoId, setStatsByRepoId] = useState<Record<string, RepoStats>>(
-		{},
-	);
-	const [syncStatusByRepoId, setSyncStatusByRepoId] = useState<
-		Record<string, RepoSyncStatus>
-	>({});
 	// Below 768px the desktop Sidebar/ContextPanel aren't rendered at all
 	// (rather than just hidden via CSS) so their SSE subscriptions don't run
 	// twice alongside the mobile sheet's own instances — see issue #12.
@@ -94,6 +81,27 @@ export function App() {
 		pushSupported,
 		pushSubscribed,
 	} = useSessionNotifications({ selectedSessionId });
+	// Every Session's live state, from the single cross-Session SSE stream
+	// (ADR-0008, issue #174). `handleSessionStatus`/`forgetSession` feed the
+	// unread badges (issue #52) off the same transitions; both are
+	// referentially stable, which is what lets the stream stay open across
+	// re-renders.
+	const {
+		sessionsById,
+		rateLimitWindows,
+		sessionsByRepoId,
+		backgroundSessions,
+		orchestratorSessions,
+		upsert: upsertSession,
+		remove: removeSession,
+	} = useSessionList({
+		selectedSessionId,
+		onSessionStatus: handleSessionStatus,
+		onSessionForgotten: forgetSession,
+	});
+	const selectedSession = selectedSessionId
+		? (sessionsById[selectedSessionId] ?? null)
+		: null;
 	// Desktop-only: the Sidebar/ContextPanel are otherwise always-open fixed
 	// columns that eat most of the width on a laptop-size (not phone-size)
 	// viewport, squeezing the chat. Collapsing is per-panel and persisted so
@@ -112,133 +120,6 @@ export function App() {
 		if (isDesktop) mobileSheet.close();
 	}, [isDesktop, mobileSheet.close]);
 
-	const reloadRepos = useCallback(async () => {
-		setLoadingRepos(true);
-		setRepoError(null);
-		try {
-			const { repos } = await api.repos.list();
-			setRepos(repos);
-		} catch (e) {
-			setRepoError(e instanceof Error ? e.message : "failed to load repos");
-		} finally {
-			setLoadingRepos(false);
-		}
-	}, []);
-
-	// Sidebar's refresh button: pull every repo's default branch from its
-	// origin remote (a bare clone otherwise has no way to pick up upstream
-	// commits — see RepoManager.pull) before reloading the list. A repo whose
-	// remote is unreachable shouldn't block the others from updating.
-	//
-	// Tracked by its own `pullingRepos` flag rather than `loadingRepos`: this
-	// takes seconds (a network fetch per repo) and the sidebar already holds a
-	// rendered repo list, so it drives a spinning refresh icon instead of the
-	// initial-load skeleton, and guards against a second concurrent pull.
-	const pullRepos = useCallback(async () => {
-		if (pullingRepos) return;
-		setPullingRepos(true);
-		setRepoError(null);
-		try {
-			const results = await Promise.allSettled(
-				repos.map((r) => api.repos.pull(r.id)),
-			);
-			const failed = results.filter((r) => r.status === "rejected").length;
-			if (failed > 0) {
-				setRepoError(
-					`failed to pull ${failed} of ${results.length} repositor${results.length === 1 ? "y" : "ies"}`,
-				);
-			}
-			try {
-				const { repos: updated } = await api.repos.list();
-				setRepos(updated);
-			} catch (e) {
-				setRepoError(e instanceof Error ? e.message : "failed to load repos");
-			}
-		} finally {
-			setPullingRepos(false);
-		}
-	}, [repos, pullingRepos]);
-
-	useEffect(() => {
-		reloadRepos();
-	}, [reloadRepos]);
-
-	// Language/file stats per repo, for the sidebar icons and the context
-	// panel. Refetched whenever the repo list changes (initial load, clone,
-	// pull) — a failed repo just keeps its generic icon.
-	useEffect(() => {
-		let cancelled = false;
-		for (const repo of repos) {
-			api.repos
-				.stats(repo.id)
-				.then(({ stats }) => {
-					if (cancelled) return;
-					setStatsByRepoId((prev) => ({ ...prev, [repo.id]: stats }));
-				})
-				.catch(() => {});
-		}
-		return () => {
-			cancelled = true;
-		};
-	}, [repos]);
-
-	// Periodic "N commits behind" check per repo, VS Code-style — entirely
-	// client-driven (no server-side timer) so the fetch only happens while
-	// the app is open. Runs once whenever the repo list changes (covers the
-	// initial load and right after a manual pull, since pullRepos ends by
-	// replacing `repos`) and then every 3 minutes; a repo whose remote is
-	// unreachable just keeps its last-known badge instead of clearing it.
-	useEffect(() => {
-		if (repos.length === 0) return;
-		let cancelled = false;
-		const checkAll = () => {
-			for (const repo of repos) {
-				api.repos
-					.sync(repo.id)
-					.then(({ status }) => {
-						if (cancelled) return;
-						setSyncStatusByRepoId((prev) => ({ ...prev, [repo.id]: status }));
-					})
-					.catch(() => {});
-			}
-		};
-		checkAll();
-		const interval = setInterval(checkAll, 3 * 60_000);
-		return () => {
-			cancelled = true;
-			clearInterval(interval);
-		};
-	}, [repos]);
-
-	// Single cross-session status subscription (per ADR-0008) — the source
-	// of truth for every session's live state, across every repo. Powers the
-	// header's session dropdown and the sidebar's Background Agents panel.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: the stream is opened once; handleSessionStatus/forgetSession are referentially stable (useCallback with no deps) and read mutable/selected state through refs, so listing them would needlessly reconnect the SSE stream.
-	useEffect(() => {
-		const unsubscribe = api.sessionList.stream((ev: SessionListEvent) => {
-			if (ev.type === "session_status") {
-				setSessionsById((prev) => ({ ...prev, [ev.session.id]: ev.session }));
-				// Feed the turn-completion watcher (issue #52) — fires system
-				// notifications and bumps the sidebar's unread badges for
-				// sessions that finished while not focused.
-				handleSessionStatus(ev.session);
-			} else if (ev.type === "session_deleted") {
-				setSessionsById((prev) => {
-					if (!(ev.sessionId in prev)) return prev;
-					const next = { ...prev };
-					delete next[ev.sessionId];
-					return next;
-				});
-				// A deleted session shouldn't keep a stale unread badge or keep
-				// the bell's aggregate count inflated (issue #52).
-				forgetSession(ev.sessionId);
-			} else if (ev.type === "rate_limits") {
-				setRateLimitWindows(ev.windows);
-			}
-		});
-		return unsubscribe;
-	}, []);
-
 	// A deep link naming a repo that doesn't exist shouldn't leave a dead URL
 	// in the bar. Only meaningful once the list has actually loaded — before
 	// that, an unresolved slug just means "not fetched yet".
@@ -255,53 +136,6 @@ export function App() {
 	useEffect(() => {
 		if (selectedSessionId) markRead(selectedSessionId);
 	}, [selectedSessionId, markRead]);
-
-	// Every repo's Sessions, newest-active first — the Sidebar's per-repo
-	// submenu (issue: session switching moved out of the header dropdown and
-	// into the sidebar) only ever renders the selected repo's list, but keeps
-	// this pre-grouped so switching repos doesn't need a fetch or a re-filter
-	// of every Session on every render. Orchestrator Sessions are excluded —
-	// they live under the Sidebar's own top-level "Orchestrator" section, not
-	// nested under the (hidden) meta-repo they technically belong to.
-	const sessionsByRepoId = useMemo(() => {
-		const map: Record<string, SessionView[]> = {};
-		for (const session of Object.values(sessionsById)) {
-			if (session.kind === "orchestrator") continue;
-			let list = map[session.repoId];
-			if (!list) {
-				list = [];
-				map[session.repoId] = list;
-			}
-			list.push(session);
-		}
-		for (const sessions of Object.values(map)) {
-			sessions.sort((a, b) => b.lastActiveAt - a.lastActiveAt);
-		}
-		return map;
-	}, [sessionsById]);
-
-	const backgroundSessions = useMemo(
-		() =>
-			Object.values(sessionsById)
-				.filter(
-					(s) =>
-						s.kind !== "orchestrator" &&
-						s.id !== selectedSessionId &&
-						s.status !== "idle",
-				)
-				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
-		[sessionsById, selectedSessionId],
-	);
-
-	// The Sidebar's own top-level "Orchestrator" section — not nested under a
-	// repo (it's global, ADR-0021), so it isn't part of sessionsByRepoId.
-	const orchestratorSessions = useMemo(
-		() =>
-			Object.values(sessionsById)
-				.filter((s) => s.kind === "orchestrator")
-				.sort((a, b) => b.lastActiveAt - a.lastActiveAt),
-		[sessionsById],
-	);
 
 	// The route for a repo-bound Session (or the repo's bare path when there's
 	// no Session to land on). A repo whose slug collides with a standalone
@@ -353,11 +187,11 @@ export function App() {
 
 	const handleSessionCreated = useCallback(
 		(session: SessionView) => {
-			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
+			upsertSession(session);
 			navigate(repoRoute(session.repoId, session.id));
 			mobileSheet.close();
 		},
-		[repoRoute, navigate, mobileSheet.close],
+		[upsertSession, repoRoute, navigate, mobileSheet.close],
 	);
 
 	// No agent picker to confirm (Claude is the only backend), so "New
@@ -384,7 +218,7 @@ export function App() {
 		setCreatingOrchestrator(true);
 		try {
 			const { session } = await api.sessions.createOrchestrator();
-			setSessionsById((prev) => ({ ...prev, [session.id]: session }));
+			upsertSession(session);
 			navigate({ kind: "orchestrator", sessionId: session.id });
 			mobileSheet.close();
 		} catch (e) {
@@ -392,7 +226,7 @@ export function App() {
 		} finally {
 			setCreatingOrchestrator(false);
 		}
-	}, [creatingOrchestrator, navigate, mobileSheet.close]);
+	}, [creatingOrchestrator, upsertSession, navigate, mobileSheet.close]);
 
 	// Cmd/Ctrl+K creates a new session for the currently selected repo,
 	// mirroring the sidebar button's shortcut hint. No-op with no repo
@@ -426,12 +260,7 @@ export function App() {
 				// The Session is gone, so its persisted composer draft is garbage —
 				// without this, drafts for deleted Sessions pile up in localStorage.
 				clearSessionDraft(id);
-				setSessionsById((prev) => {
-					if (!(id in prev)) return prev;
-					const next = { ...prev };
-					delete next[id];
-					return next;
-				});
+				removeSession(id);
 				// Deleting the Session that's currently routed to leaves the URL
 				// pointing at something that no longer exists — drop back to its
 				// repo (or home for an orchestrator Session, which has none).
@@ -452,6 +281,7 @@ export function App() {
 			selectedRepoId,
 			repoRoute,
 			navigate,
+			removeSession,
 			deletingSessionIds,
 		],
 	);
