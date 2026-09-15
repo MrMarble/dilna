@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { SessionManager } from "../sessions/manager";
 import { createSessionsRoute, parseCommitsLimit } from "./sessions";
 
 describe("parseCommitsLimit", () => {
@@ -114,5 +115,91 @@ describe("sessionsRoute validation", () => {
 			body: JSON.stringify({ text: "   " }),
 		});
 		expect(res.status).toBe(400);
+	});
+});
+
+/**
+ * The `requireSession` seam (issue #204). The 404-on-unknown-`:id` rule used
+ * to be three lines repeated in each handler; these tests pin it to the
+ * middleware so a *new* endpoint mounted behind it is covered by construction,
+ * and — just as importantly — pin the endpoints that deliberately stay
+ * outside it, whose behaviour would silently change if someone "tidied up" by
+ * mounting the guard blanket-style across `/:id/*`.
+ */
+describe("requireSession on sessions routes", () => {
+	// `get` resolving null is the whole fixture: the middleware 404s before any
+	// handler (and therefore any other manager method) is reached.
+	function appWithNoSessions() {
+		const sessions = {
+			get: vi.fn().mockResolvedValue(null),
+			delete: vi.fn().mockResolvedValue(undefined),
+			requestStop: vi.fn().mockResolvedValue(undefined),
+			removeQueuedMessage: vi.fn(),
+			getMessages: vi.fn().mockResolvedValue([]),
+		} as unknown as SessionManager;
+		return {
+			sessions,
+			app: new Hono().route(
+				"/",
+				createSessionsRoute({ sessions, repos: {} as never }),
+			),
+		};
+	}
+
+	it.each([
+		["/missing"],
+		["/missing/transcript"],
+		["/missing/changed-files"],
+		["/missing/commits"],
+		["/missing/queue"],
+		["/missing/artefacts"],
+	])("404s GET %s for an unknown session", async (path) => {
+		const { app } = appWithNoSessions();
+		const res = await app.request(path);
+		expect(res.status).toBe(404);
+		// A bare HTTPException renders as plain text here; the JSON error shape
+		// is applied by the app-level onError in index.ts, which this isolated
+		// route app doesn't mount.
+		await expect(res.text()).resolves.toBe("session not found");
+	});
+
+	it("404s POST /:id/attachments for an unknown session", async () => {
+		const { app } = appWithNoSessions();
+		const res = await app.request("/missing/attachments", { method: "POST" });
+		expect(res.status).toBe(404);
+	});
+
+	// The guard fails closed: a handler behind it never runs for a missing
+	// Session, so it cannot return a misleading empty result.
+	it("does not reach the handler when the session is missing", async () => {
+		const { app, sessions } = appWithNoSessions();
+		await app.request("/missing/messages");
+		expect(sessions.getMessages).toHaveBeenCalled();
+
+		await app.request("/missing/changed-files");
+		expect(sessions.getChangedFiles).toBeUndefined();
+	});
+
+	// These stay outside the middleware on purpose — an already-gone Session
+	// still satisfies the caller's intent, so they must not start 404ing.
+	it("keeps DELETE /:id idempotent for an unknown session", async () => {
+		const { app, sessions } = appWithNoSessions();
+		const res = await app.request("/missing", { method: "DELETE" });
+		expect(res.status).toBe(200);
+		expect(sessions.delete).toHaveBeenCalledWith("missing");
+	});
+
+	it("keeps POST /:id/stop idempotent for an unknown session", async () => {
+		const { app, sessions } = appWithNoSessions();
+		const res = await app.request("/missing/stop", { method: "POST" });
+		expect(res.status).toBe(200);
+		expect(sessions.requestStop).toHaveBeenCalledWith("missing");
+	});
+
+	it("keeps DELETE /:id/queue/:queuedId idempotent for an unknown session", async () => {
+		const { app, sessions } = appWithNoSessions();
+		const res = await app.request("/missing/queue/q1", { method: "DELETE" });
+		expect(res.status).toBe(200);
+		expect(sessions.removeQueuedMessage).toHaveBeenCalledWith("missing", "q1");
 	});
 });
