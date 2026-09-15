@@ -17,6 +17,7 @@ import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { logger } from "../logger";
+import { requireSession, type SessionEnv } from "../middleware/requireSession";
 import { type RepoManager, RepoNotFoundError } from "../repos/manager";
 import { getArtefact, listArtefacts } from "../sessions/artefacts";
 import {
@@ -31,6 +32,7 @@ import {
 	SessionNotFoundError,
 	TurnInProgressError,
 } from "../sessions/manager";
+import { toView } from "../sessions/sessionStore";
 import { renderTranscript } from "../sessions/transcript";
 import { runSseLoop } from "./sse";
 
@@ -88,6 +90,16 @@ export function createSessionsRoute(deps: {
 }): Hono {
 	const sessionsRoute = new Hono();
 
+	// Endpoints whose `:id` must name an existing Session. `requireSession`
+	// resolves it once and 404s otherwise, so every handler below reads it off
+	// the context as a non-nullable `Session` instead of re-deriving the rule
+	// (issue #204). Endpoints that must *not* inherit that 404 — the idempotent
+	// deletes/stop and the two turn-claiming POSTs — are mounted on
+	// `sessionsRoute` directly; `requireSession`'s doc comment says why.
+	const guarded = new Hono<SessionEnv>();
+	guarded.use("/:id/*", requireSession(deps.sessions));
+	guarded.use("/:id", requireSession(deps.sessions));
+
 	sessionsRoute.get("/", async (c) => {
 		const repoId = c.req.query("repoId");
 		if (!repoId) {
@@ -100,13 +112,60 @@ export function createSessionsRoute(deps: {
 		return c.json(body);
 	});
 
-	sessionsRoute.get("/:id", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.getView(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
-		const contextUsage = await deps.sessions.getContextUsageEstimate(id);
-		const body: OneResponse = { session, contextUsage };
+	guarded.get("/:id", async (c) => {
+		const session = c.get("session");
+		const contextUsage = await deps.sessions.getContextUsageEstimate(
+			session.id,
+		);
+		const body: OneResponse = { session: toView(session), contextUsage };
+		return c.json(body);
+	});
+
+	// Full durable transcript as plain text — for the "copy this link, hand it
+	// to another agent" export flow. Unauthenticated, like every other route
+	// here: dilna has no auth model to plug into (self-hosted, single user).
+	guarded.get("/:id/transcript", async (c) => {
+		const session = c.get("session");
+		const repo = await deps.repos.get(session.repoId);
+		if (!repo) throw new HTTPException(404, { message: "repo not found" });
+		const messages = await deps.sessions.getMessages(session.id);
+		const lastTurnFailed = deps.sessions.getLastTurnFailed(session.id);
+		const body = renderTranscript(session, repo, messages, lastTurnFailed);
+		return c.text(body, 200, {
+			"Content-Type": "text/markdown; charset=utf-8",
+		});
+	});
+
+	// Initial snapshot for the "Changed files" panel — mirrors GET
+	// /:id/messages: fetched once on mount so the panel has content before the
+	// first `changed_files` SSE event (e.g. resuming a session with prior
+	// turns), then kept live via the session's SSE stream thereafter.
+	guarded.get("/:id/changed-files", async (c) => {
+		const files = await deps.sessions.getChangedFiles(c.get("session").id);
+		const body: { files: ChangedFile[] } = { files };
+		return c.json(body);
+	});
+
+	// Recent commits reachable from the Session's Worktree HEAD, for the context
+	// panel. Fetched on mount and refetched by the client after each turn (keyed
+	// off the `changed_files` SSE event) rather than streamed.
+	guarded.get("/:id/commits", async (c) => {
+		const limit = parseCommitsLimit(c.req.query("limit"));
+		const commits = await deps.sessions.getRecentCommits(
+			c.get("session").id,
+			limit,
+		);
+		const body: { commits: CommitInfo[] } = { commits };
+		return c.json(body);
+	});
+
+	// The queue's initial snapshot — mirrors GET /:id/messages: fetched by the
+	// client's on-open resync routine (ADR-0016 §4), then kept live via
+	// `queue_update` events thereafter.
+	guarded.get("/:id/queue", (c) => {
+		const body: { queued: QueuedMessage[] } = {
+			queued: deps.sessions.listQueuedMessages(c.get("session").id),
+		};
 		return c.json(body);
 	});
 
@@ -156,52 +215,6 @@ export function createSessionsRoute(deps: {
 		const id = c.req.param("id");
 		const messages = await deps.sessions.getMessages(id);
 		const body: { messages: Message[] } = { messages };
-		return c.json(body);
-	});
-
-	// Full durable transcript as plain text — for the "copy this link, hand it
-	// to another agent" export flow. Unauthenticated, like every other route
-	// here: dilna has no auth model to plug into (self-hosted, single user).
-	sessionsRoute.get("/:id/transcript", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.get(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
-		const repo = await deps.repos.get(session.repoId);
-		if (!repo) throw new HTTPException(404, { message: "repo not found" });
-		const messages = await deps.sessions.getMessages(id);
-		const lastTurnFailed = deps.sessions.getLastTurnFailed(id);
-		const body = renderTranscript(session, repo, messages, lastTurnFailed);
-		return c.text(body, 200, {
-			"Content-Type": "text/markdown; charset=utf-8",
-		});
-	});
-
-	// Initial snapshot for the "Changed files" panel — mirrors GET
-	// /:id/messages: fetched once on mount so the panel has content before the
-	// first `changed_files` SSE event (e.g. resuming a session with prior
-	// turns), then kept live via the session's SSE stream thereafter.
-	sessionsRoute.get("/:id/changed-files", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.get(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
-		const files = await deps.sessions.getChangedFiles(id);
-		const body: { files: ChangedFile[] } = { files };
-		return c.json(body);
-	});
-
-	// Recent commits reachable from the Session's Worktree HEAD, for the context
-	// panel. Fetched on mount and refetched by the client after each turn (keyed
-	// off the `changed_files` SSE event) rather than streamed.
-	sessionsRoute.get("/:id/commits", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.get(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
-		const limit = parseCommitsLimit(c.req.query("limit"));
-		const commits = await deps.sessions.getRecentCommits(id, limit);
-		const body: { commits: CommitInfo[] } = { commits };
 		return c.json(body);
 	});
 
@@ -306,16 +319,6 @@ export function createSessionsRoute(deps: {
 	// The queue's initial snapshot — mirrors GET /:id/messages: fetched by the
 	// client's on-open resync routine (ADR-0016 §4), then kept live via
 	// `queue_update` events thereafter.
-	sessionsRoute.get("/:id/queue", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.getView(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
-		const body: { queued: QueuedMessage[] } = {
-			queued: deps.sessions.listQueuedMessages(id),
-		};
-		return c.json(body);
-	});
 
 	// Withdraw a queued entry before it dispatches. Idempotent: an entry that's
 	// already gone (removed elsewhere, or drained into a turn) is still `ok` —
@@ -337,11 +340,8 @@ export function createSessionsRoute(deps: {
 	 * concurrently, so batching here would only trade independent per-file
 	 * progress and failure for an all-or-nothing round trip.
 	 */
-	sessionsRoute.post("/:id/attachments", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.get(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
+	guarded.post("/:id/attachments", async (c) => {
+		const id = c.get("session").id;
 
 		let file: File;
 		try {
@@ -424,12 +424,10 @@ export function createSessionsRoute(deps: {
 	 * context panel's initial snapshot, before any `artefact_published` event
 	 * arrives on the stream.
 	 */
-	sessionsRoute.get("/:id/artefacts", async (c) => {
-		const id = c.req.param("id");
-		const session = await deps.sessions.get(id);
-		if (!session)
-			throw new HTTPException(404, { message: "session not found" });
-		const body: { artefacts: Artefact[] } = { artefacts: listArtefacts(id) };
+	guarded.get("/:id/artefacts", (c) => {
+		const body: { artefacts: Artefact[] } = {
+			artefacts: listArtefacts(c.get("session").id),
+		};
 		return c.json(body);
 	});
 
@@ -504,6 +502,11 @@ export function createSessionsRoute(deps: {
 			);
 		});
 	});
+
+	// Mounted last so the guarded sub-app's routes are matched after the
+	// explicitly-unguarded ones above — see `requireSession`'s doc comment for
+	// why those endpoints deliberately stay outside the middleware.
+	sessionsRoute.route("/", guarded);
 
 	return sessionsRoute;
 }
