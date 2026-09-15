@@ -44,6 +44,10 @@ vi.mock("@/api/client", () => ({
 			artefacts: vi.fn(),
 			get: vi.fn(),
 		},
+		// The composer reads the Repo's Skills for its slash-command menu.
+		skills: {
+			forRepo: vi.fn(async () => ({ skills: [] })),
+		},
 	},
 }));
 
