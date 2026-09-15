@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, attachmentUrl } from "@/api/client";
+import { SlashCommandMenu } from "@/components/SlashCommandMenu";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
@@ -48,6 +49,7 @@ import {
 	type PendingAttachment,
 	usePendingAttachments,
 } from "@/hooks/usePendingAttachments";
+import { useRepoSkills } from "@/hooks/useRepoSkills";
 import { useSessionDraft } from "@/hooks/useSessionDraft";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
@@ -58,6 +60,11 @@ import {
 	nowSeconds,
 } from "@/lib/live-messages";
 import { partsToMarkdown } from "@/lib/message-markdown";
+import {
+	applySlashCommand,
+	matchSkills,
+	slashQuery,
+} from "@/lib/slash-commands";
 import { getToolMeta } from "@/lib/tool-meta";
 import { cn } from "@/lib/utils";
 
@@ -161,6 +168,34 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const { pending, addFiles, removePending, clearPending } =
 		usePendingAttachments(sessionId);
+
+	// Slash-command autocomplete over this Repo's enabled Skills. `dismissed`
+	// is what Escape sets: the query can still be a valid `/ver`, so without it
+	// the menu would reopen on the very next keystroke.
+	const repoSkills = useRepoSkills(session.repoId);
+	const [slashDismissed, setSlashDismissed] = useState(false);
+	const [slashIndex, setSlashIndex] = useState(0);
+	const slashMatches = useMemo(() => {
+		if (slashDismissed) return [];
+		const query = slashQuery(input);
+		if (query === null) return [];
+		return matchSkills(repoSkills, query);
+	}, [input, repoSkills, slashDismissed]);
+	const slashOpen = slashMatches.length > 0;
+
+	// Re-filtering can shorten the list under a highlight that was further
+	// down; clamp rather than reset so typing doesn't keep yanking the
+	// selection back to the top row.
+	const clampedSlashIndex = Math.min(slashIndex, slashMatches.length - 1);
+
+	const acceptSlashCommand = useCallback(
+		(name: string) => {
+			setInput(applySlashCommand(name));
+			setSlashIndex(0);
+			textareaRef.current?.focus();
+		},
+		[setInput],
+	);
 	/** The Session's server-held send queue (ADR-0033) — a mirror of the
 	 * server's `queued_messages` rows, seeded by the on-open resync's GET and
 	 * kept live by `queue_update` events. The server owns enqueue, ordering
@@ -766,7 +801,9 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					onDragLeave={() => setDragDepth((d) => Math.max(0, d - 1))}
 					onDrop={handleDrop}
 					className={cn(
-						"mx-auto flex max-w-[max(48rem,80%)] flex-col gap-1 rounded-xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60",
+						// `relative` anchors the slash-command menu, which sits
+						// absolutely above this box.
+						"relative mx-auto flex max-w-[max(48rem,80%)] flex-col gap-1 rounded-xl border bg-card px-3 py-2 shadow-sm transition-colors focus-within:border-ring/60",
 						dragDepth > 0
 							? "border-primary border-dashed bg-accent/40"
 							: "border-border",
@@ -794,12 +831,50 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							))}
 						</div>
 					)}
+					{slashOpen && (
+						<SlashCommandMenu
+							commands={slashMatches}
+							activeIndex={clampedSlashIndex}
+							onHighlight={setSlashIndex}
+							onSelect={acceptSlashCommand}
+						/>
+					)}
 					<textarea
 						ref={textareaRef}
 						value={input}
-						onChange={(e) => setInput(e.target.value)}
+						onChange={(e) => {
+							setInput(e.target.value);
+							// Escape's dismissal lasts only as long as the command token
+							// it dismissed; clearing the box or starting a new `/` re-arms.
+							if (slashQuery(e.target.value) === null) setSlashDismissed(false);
+						}}
 						onPaste={handlePaste}
 						onKeyDown={(e) => {
+							// While the slash menu is open it owns the navigation keys —
+							// including Enter, which accepts the highlighted Skill instead
+							// of sending a half-typed command.
+							if (slashOpen) {
+								if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+									e.preventDefault();
+									const step = e.key === "ArrowDown" ? 1 : -1;
+									const next =
+										(clampedSlashIndex + step + slashMatches.length) %
+										slashMatches.length;
+									setSlashIndex(next);
+									return;
+								}
+								if (e.key === "Enter" || e.key === "Tab") {
+									e.preventDefault();
+									const picked = slashMatches[clampedSlashIndex];
+									if (picked) acceptSlashCommand(picked.name);
+									return;
+								}
+								if (e.key === "Escape") {
+									e.preventDefault();
+									setSlashDismissed(true);
+									return;
+								}
+							}
 							// On desktop, Enter sends and Shift+Enter inserts a newline.
 							// Mobile keyboards don't reliably expose Shift, so there
 							// Enter just inserts a newline and the Send button submits.
