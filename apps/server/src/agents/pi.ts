@@ -998,39 +998,35 @@ export function piMessagesToDilna(
 	turnId: string,
 ): Message[] {
 	const messages: Message[] = [];
-	for (const entry of entries) {
-		if (entry.role === "user") {
-			const text = contentBlocksToText(entry.content);
-			if (text) {
-				messages.push({
-					id: randomUUID(),
-					sessionId,
-					role: "user",
-					parts: [{ type: "text", text }],
-					// The turn's own user row is never grouped with the assistant
-					// rows `turnId` regroups.
-					turnId: null,
-					createdAt: Math.floor(entry.timestamp / 1000),
-				});
-			}
-		}
-		// assistant entries become rounds below; toolResult entries are folded
-		// into their owning round there, not persisted as their own row —
-		// mirrors how tool results merge back into their owning tool_call part
-		// rather than becoming a row.
-	}
 
-	// Rebuild each round from the flat slice and hand it to the *same*
-	// converter the incremental path uses, so there is exactly one place that
-	// decides what a round's row looks like.
+	// User-role entries are deliberately *not* converted into rows here.
+	//
+	// dilna already owns the user's message: `beginTurn` persists it as the
+	// `pending-user-<sessionId>` placeholder before the agent is even spawned,
+	// which is the only record of what the human actually typed. The agent
+	// transcript's user-role entries are a different thing — pi's own framing
+	// of the prompt, plus (on a cold start) every historical user entry
+	// `dilnaMessagesToInitialState` replayed to reseed context.
+	//
+	// Minting rows from them re-persisted messages dilna already had: both
+	// converters mint fresh UUIDs, so `persistConverted`'s id-based dedup
+	// cannot recognize a re-offered entry, and the duplicate lands carrying
+	// the *original* `entry.timestamp` — a stamp from a previous turn, or a
+	// previous day. That stale stamp then drives `persistConverted`'s
+	// monotonicity shift, reordering the whole transcript around it.
+	//
+	// The safety net's job is the rounds the incremental path missed; the
+	// user's row is the placeholder's job, and only ever the placeholder's.
+	// `toolResult` entries are likewise not rows — they fold into their
+	// owning round's `tool_call` part.
 	for (const round of piRounds(entries)) {
 		const message = piRoundToDilnaMessage(sessionId, round, turnId);
 		if (message) messages.push(message);
 	}
 
-	// The transcript is already chronological; re-sorting keeps the user row
-	// (collected in the first pass) ahead of the rounds that answer it without
-	// depending on which pass produced it.
+	// The transcript is already chronological, and `piRounds` preserves that
+	// order; sorting keeps rows monotonic even if a provider stamps a round
+	// out of order.
 	messages.sort((a, b) => a.createdAt - b.createdAt);
 	return messages;
 }

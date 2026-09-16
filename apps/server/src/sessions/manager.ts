@@ -1243,13 +1243,16 @@ export class SessionManager {
 				// The turn never dispatched to the agent, so the user's message
 				// exists only as the `pending-user-<id>` placeholder written by
 				// `beginTurn`. Promote it to a permanent row (same rule as the
-				// `spawn_failure` path and the normal-end `persistedUserMessage`
-				// fallback): dropping it here would violate ADR-0014's
-				// "never delete the user's message". Leaving the stable
-				// `pending-user-<id>` id in place is what makes the *next*
-				// turn's `beginTurn` INSERT collide on the messages primary key,
-				// rejecting the user's next send.
+				// `spawn_failure` path and the normal turn end): dropping it here
+				// would violate ADR-0014's "never delete the user's message".
+				// Leaving the stable `pending-user-<id>` id in place is what makes
+				// the *next* turn's `beginTurn` INSERT collide on the messages
+				// primary key, rejecting the user's next send.
 				messageStore.promotePendingUserMessage(id);
+				// This turn ends without reaching `commit`, so release the ledger's
+				// turn-start mark — otherwise the next turn's settle slice spans
+				// this dead turn and re-offers its entries.
+				active.ledger.abandon(active.handle.agent.state.messages);
 				await this.transitionStatus(id, "idle");
 				this.armIdleTimer(id, active);
 				return;
@@ -1405,31 +1408,33 @@ export class SessionManager {
 				unsubscribeRounds();
 
 				// Persist everything this turn produced that we don't already
-				// have. The placeholder is only dropped once the turn's real user
-				// row landed; a turn that produced nothing (e.g. an immediate
-				// adapter crash) promotes it instead — the user's message must
-				// survive every failure mode (ADR-0014).
-				let persistedUserMessage = false;
+				// have — assistant rounds only.
 				try {
-					const result = await this.persistMessagesFromAgent(
+					await this.persistMessagesFromAgent(
 						id,
 						handle,
 						active.ledger,
 						turnId,
 					);
-					persistedUserMessage = result.persistedUserMessage;
 				} catch (err) {
 					log.error({ sessionId: id, err }, "failed to persist turn messages");
+					// `persistMessagesFromAgent` throws before `commit`, so the
+					// ledger still points at this turn's start. Release it: the
+					// rounds are lost either way, and leaving the mark pinned would
+					// make every later turn re-offer this turn's entries forever.
+					active.ledger.abandon(handle.agent.state.messages);
 					this.failTurn(id, turn, {
 						class: "persistence_failure",
 						message: `failed to persist turn messages: ${err instanceof Error ? err.message : String(err)}`,
 					});
 				}
-				if (persistedUserMessage) {
-					messageStore.deleteMessage(id, messageStore.pendingUserMessageId(id));
-				} else {
-					messageStore.promotePendingUserMessage(id);
-				}
+				// The placeholder *is* the user's row — the only record of what the
+				// human typed (ADR-0014: never delete the user's message). It is
+				// always promoted to a permanent id, never dropped: the agent
+				// transcript no longer supplies a competing user row that could
+				// replace it. Promoting also frees the stable `pending-user-<id>`
+				// id for the next turn's `beginTurn` INSERT.
+				messageStore.promotePendingUserMessage(id);
 				// The turn's rows are now in the DB (or promoted) — the in-memory
 				// snapshot has served its purpose. Cleared only after persisting so
 				// a subscriber connecting in between never sees neither.
@@ -1719,14 +1724,13 @@ export class SessionManager {
 		handle: PiHandle,
 		ledger: TurnLedger,
 		turnId: string,
-	): Promise<{ persistedUserMessage: boolean }> {
+	): Promise<void> {
 		const messages = handle.agent.state.messages;
-		const { persistedUserMessage } = messageStore.persistConverted(
+		messageStore.persistConverted(
 			sessionId,
 			piMessagesToDilna(sessionId, ledger.settle(messages), turnId),
 		);
 		ledger.commit(messages);
-		return { persistedUserMessage };
 	}
 
 	/**

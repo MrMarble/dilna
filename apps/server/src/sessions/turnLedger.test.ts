@@ -112,6 +112,44 @@ describe("TurnLedger", () => {
 		expect(ledger.settle(second)).toEqual(second);
 	});
 
+	// A turn that ends without reaching `commit` (a spawn failure, a stall
+	// timeout, an adapter crash) leaves `turnStart` pinned where that turn
+	// began. The *next* turn's settle then spans both turns, re-offering the
+	// previous turn's entries — including its leading user-role entry, which
+	// `piMessagesToDilna` re-mints with a fresh uuid, so `persistConverted`'s
+	// id-based dedup cannot recognize it and writes the user's message a
+	// second time carrying its original (now stale) timestamp.
+	it("does not re-offer a prior turn's entries after a turn that was abandoned", () => {
+		const ledger = new TurnLedger(0);
+
+		// Turn 1: a user entry plus one round, examined but never committed —
+		// the turn died before `persistMessagesFromAgent` ran.
+		const turn1 = transcript(2);
+		ledger.examine(2);
+		ledger.abandon(turn1);
+
+		// Turn 2 appends its own user entry and round.
+		const turn2 = [{ id: 10 }, { id: 11 }];
+		const messages = [...turn1, ...turn2];
+		ledger.examine(2);
+
+		// Only turn 2's entries are this turn's work. Turn 1's were already
+		// handled by the placeholder-promotion path and must not come back.
+		expect(ledger.settle(messages)).toEqual(turn2);
+	});
+
+	it("abandon makes no durability claim about the dead turn's rounds", () => {
+		const ledger = new TurnLedger(0);
+		const messages = transcript(2);
+		ledger.examine(2);
+		ledger.abandon(messages);
+
+		// Position moved, but nothing was marked durable — abandon only says
+		// "the next turn does not own these", not "these were written".
+		expect(ledger.position).toBe(2);
+		expect(ledger.settle(messages)).toEqual([]);
+	});
+
 	describe("rebase", () => {
 		it("treats a compacted transcript as wholly durable", () => {
 			const ledger = new TurnLedger(0);
