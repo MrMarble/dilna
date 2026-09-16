@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/MrMarble/dilna/compare/v0.28.0...v0.29.0) (2026-09-16)
+
+
+### Features
+
+* **web:** slash-command autocomplete for Skills in the composer ([#215](https://github.com/MrMarble/dilna/issues/215)) ([e475d79](https://github.com/MrMarble/dilna/commit/e475d79e0bd1d8bedacb326cb7621e32e882e923))
+
+
+### Bug Fixes
+
+* **server:** order messages by a monotonic seq, not the wall clock ([#218](https://github.com/MrMarble/dilna/issues/218)) ([40e057f](https://github.com/MrMarble/dilna/commit/40e057f62ef557f2ae268574ab17651f3ad21794))
+* **server:** stop re-persisting user rows from the agent transcript ([#217](https://github.com/MrMarble/dilna/issues/217)) ([2be17e8](https://github.com/MrMarble/dilna/commit/2be17e8dab8051f65bbf8be3d57dcb0adc150515))
+
 ## [0.28.0](https://github.com/MrMarble/dilna/compare/v0.27.0...v0.28.0) (2026-09-14)
 
 
