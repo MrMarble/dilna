@@ -69,9 +69,32 @@ describe("piMessagesToDilna", () => {
 		const messages = piMessagesToDilna("s1", entries, "turn-9");
 
 		expect(messages.find((m) => m.role === "assistant")?.turnId).toBe("turn-9");
-		// The user's own row is never grouped with the reply that answers it —
-		// stated explicitly, not left `undefined`.
-		expect(messages.find((m) => m.role === "user")?.turnId).toBeNull();
+	});
+
+	// The safety net converts *rounds*, never the transcript's user-role
+	// entries: dilna already owns the user's message as the
+	// `pending-user-<id>` placeholder `beginTurn` wrote. Minting rows from
+	// them re-persisted messages dilna already had (fresh UUIDs defeat
+	// `persistConverted`'s id-based dedup) stamped with the *entry's* original
+	// timestamp — which on a cold start is every historical user entry
+	// `dilnaMessagesToInitialState` replayed, dragging the monotonicity shift
+	// and reordering the rendered transcript.
+	it("never converts a transcript user entry into a row", () => {
+		const entries: AgentMessage[] = [
+			// A cold start replays the whole history before this turn's prompt.
+			userMessage("an older message from yesterday", 1_000),
+			assistantMessage([{ type: "text", text: "Done." }], 1_100),
+			userMessage("create a pr", 2_000),
+			assistantMessage([{ type: "text", text: "Opened." }], 2_100),
+		];
+
+		const messages = piMessagesToDilna("s1", entries, "turn-1");
+
+		expect(messages.every((m) => m.role === "assistant")).toBe(true);
+		expect(messages.map((m) => m.parts)).toEqual([
+			[{ type: "text", text: "Done." }],
+			[{ type: "text", text: "Opened." }],
+		]);
 	});
 
 	// Issue #190: this used to merge the whole turn into one row, which is
@@ -95,12 +118,8 @@ describe("piMessagesToDilna", () => {
 
 		const messages = piMessagesToDilna("s1", entries, "turn-1");
 
-		expect(messages).toHaveLength(3);
+		expect(messages).toHaveLength(2);
 		expect(messages[0]).toMatchObject({
-			role: "user",
-			parts: [{ type: "text", text: "run the tests" }],
-		});
-		expect(messages[1]).toMatchObject({
 			role: "assistant",
 			parts: [
 				{ type: "text", text: "Running tests…" },
@@ -114,18 +133,15 @@ describe("piMessagesToDilna", () => {
 				},
 			],
 		});
-		expect(messages[2]).toMatchObject({
+		expect(messages[1]).toMatchObject({
 			role: "assistant",
 			parts: [{ type: "text", text: "All green." }],
 		});
 		// Every round of the turn carries the turn's id, so the web client
 		// regroups them into the single message the live view showed.
-		expect(messages.slice(1).map((m) => m.turnId)).toEqual([
-			"turn-1",
-			"turn-1",
-		]);
+		expect(messages.map((m) => m.turnId)).toEqual(["turn-1", "turn-1"]);
 		// Distinct primary keys — grouping is `turnId`'s job, not the id's.
-		expect(new Set(messages.map((m) => m.id)).size).toBe(3);
+		expect(new Set(messages.map((m) => m.id)).size).toBe(2);
 	});
 
 	// The granularity now matches `piRoundToDilnaMessage` exactly, which is
@@ -200,13 +216,24 @@ describe("piMessagesToDilna", () => {
 		];
 
 		const messages = piMessagesToDilna("s1", entries, "turn-1");
-		expect(messages.map((m) => m.createdAt)).toEqual([5, 6, 100, 101]);
+		expect(messages.map((m) => m.createdAt)).toEqual([6, 101]);
 	});
 
 	it("synthesizes a fresh id per message (pi gives nothing to key on)", () => {
-		const entries: AgentMessage[] = [userMessage("hi", 1_000)];
+		const entries: AgentMessage[] = [
+			assistantMessage([{ type: "text", text: "hi" }], 1_000),
+		];
 		const messages = piMessagesToDilna("s1", entries, "turn-1");
 		expect(messages[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
+	});
+
+	// An entries slice with no assistant round (a turn aborted before the
+	// model replied) has nothing to persist — the user's row is the
+	// placeholder's job, so this is legitimately empty rather than a lost
+	// message.
+	it("returns no rows for a slice containing only user entries", () => {
+		const entries: AgentMessage[] = [userMessage("hi", 1_000)];
+		expect(piMessagesToDilna("s1", entries, "turn-1")).toEqual([]);
 	});
 });
 

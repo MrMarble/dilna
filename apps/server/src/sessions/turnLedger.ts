@@ -139,6 +139,28 @@ export class TurnLedger {
 	}
 
 	/**
+	 * This turn is over without having reached {@link commit} — a spawn
+	 * failure, a stall timeout, an adapter crash, or a persist that threw.
+	 * Start the next turn at the current position rather than leaving
+	 * `turnStart` pinned where the dead turn began.
+	 *
+	 * Without this, the next turn's {@link settle} spans *both* turns and
+	 * re-offers the dead one's entries. That used to resurrect its user-role
+	 * entry as a duplicate row stamped with the older turn's timestamp, which
+	 * reordered the rendered transcript around it.
+	 *
+	 * Deliberately not {@link commit}: the dead turn's rounds may genuinely
+	 * never have been written, and this makes no claim that they were. It only
+	 * says the *next* turn does not own them — recovering an unwritten round
+	 * from an abandoned turn is the incremental path's job while the turn is
+	 * live, not a later turn's.
+	 */
+	abandon(messages: readonly unknown[]): void {
+		this.examined = Math.max(this.examined, messages.length);
+		this.turnStart = this.examined;
+	}
+
+	/**
 	 * Compaction replaced the transcript wholesale (ADR-0023). The new array
 	 * is a reconstruction of already-persisted rows plus a synthetic summary —
 	 * none of it is new data to persist, so the position tracks the

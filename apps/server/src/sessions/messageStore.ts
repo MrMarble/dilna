@@ -113,10 +113,16 @@ export function promotePendingUserMessage(sessionId: string): void {
 }
 
 /**
- * Persist every converted turn row dilna doesn't already have, reconciling
- * timestamps against what's already stored. Returns whether a user-role row
- * was among the freshly persisted ones — `runTurn` uses that to decide the
- * pending-user placeholder's fate (drop vs promote).
+ * Persist every converted turn row dilna doesn't already have, keeping this
+ * batch ordered after what's already stored.
+ *
+ * Only ever receives *assistant* rows: `piMessagesToDilna` no longer mints
+ * user rows from the agent transcript, because dilna already owns the user's
+ * message as the `pending-user-<sessionId>` placeholder `beginTurn` wrote.
+ * Converting them here re-persisted messages dilna already had (fresh UUIDs
+ * defeat the dedup below) carrying timestamps from a previous turn — which
+ * then dragged the shift and reordered the transcript. The user's row now
+ * has exactly one writer.
  *
  * The id-based dedup here only catches rows dilna itself has seen before by
  * id; it cannot recognize re-converted content, because both pi→dilna
@@ -127,16 +133,20 @@ export function promotePendingUserMessage(sessionId: string): void {
 export function persistConverted(
 	sessionId: string,
 	converted: Message[],
-): { persistedUserMessage: boolean } {
+): void {
 	const persisted = getMessages(sessionId);
 	const existing = new Set(persisted.map((m) => m.id));
 	const fresh = converted.filter((msg) => !existing.has(msg.id));
-	if (fresh.length === 0) return { persistedUserMessage: false };
+	if (fresh.length === 0) return;
 
 	// Rows persisted before the past-stamping fix (a legacy claude.ts-era
 	// artifact) can carry timestamps minutes in the future; shift this
 	// batch above them so createdAt ordering stays monotonic for legacy
 	// sessions (drift then shrinks to nothing as wall clock catches up).
+	//
+	// The placeholder is excluded from `maxExisting` deliberately: it is the
+	// user's row for the turn these rounds answer, so shifting this batch
+	// above it is right, but it must not be *dragged* by it.
 	const pendingId = pendingUserMessageId(sessionId);
 	const maxExisting = Math.max(
 		0,
@@ -148,25 +158,9 @@ export function persistConverted(
 		for (const msg of fresh) msg.createdAt += shift;
 	}
 
-	// The pending placeholder row (written at send time) still wins for
-	// its exact createdAt when it doesn't break monotonic ordering, so a
-	// client that already rendered the placeholder doesn't see it jump
-	// position on reload — its *id* is always dropped below regardless
-	// (a fresh id from piMessagesToDilna takes its place).
-	const pending = persisted.find((m) => m.id === pendingId);
-	const turnUserRow = fresh.filter((m) => m.role === "user").at(-1);
-	if (pending && turnUserRow) {
-		const idx = fresh.indexOf(turnUserRow);
-		const prevStamp = idx > 0 ? (fresh[idx - 1]?.createdAt ?? 0) : maxExisting;
-		if (pending.createdAt >= prevStamp) {
-			turnUserRow.createdAt = pending.createdAt;
-		}
-	}
-
 	getDb().transaction(() => {
 		for (const msg of fresh) {
 			persistMessage(sessionId, msg);
 		}
 	});
-	return { persistedUserMessage: fresh.some((m) => m.role === "user") };
 }

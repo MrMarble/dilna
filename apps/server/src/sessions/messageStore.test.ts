@@ -139,33 +139,20 @@ describe("messageStore", () => {
 			const sessionId = "dedup";
 			persistMessage(sessionId, msg({ id: "k1", sessionId, createdAt: 10 }));
 
-			const result = persistConverted(sessionId, [
+			persistConverted(sessionId, [
 				msg({ id: "k1", sessionId, createdAt: 10 }),
 				msg({ id: "k2", sessionId, createdAt: 20 }),
 			]);
 
-			expect(result.persistedUserMessage).toBe(false);
 			expect(getMessages(sessionId).map((m) => m.id)).toEqual(["k1", "k2"]);
 		});
 
-		it("reports a freshly persisted user row (drives the placeholder's fate)", () => {
-			const sessionId = "userrow";
-			const result = persistConverted(sessionId, [
-				msg({ id: "u1", sessionId, role: "user", createdAt: 10 }),
-			]);
-			expect(result.persistedUserMessage).toBe(true);
-		});
-
-		it("does nothing and reports no user row when every row is already known", () => {
+		it("does nothing when every row is already known", () => {
 			const sessionId = "allknown";
-			persistMessage(
-				sessionId,
-				msg({ id: "z1", sessionId, role: "user", createdAt: 10 }),
-			);
-			const result = persistConverted(sessionId, [
-				msg({ id: "z1", sessionId, role: "user", createdAt: 10 }),
+			persistMessage(sessionId, msg({ id: "z1", sessionId, createdAt: 10 }));
+			persistConverted(sessionId, [
+				msg({ id: "z1", sessionId, createdAt: 10 }),
 			]);
-			expect(result.persistedUserMessage).toBe(false);
 			expect(getMessages(sessionId)).toHaveLength(1);
 		});
 
@@ -192,26 +179,38 @@ describe("messageStore", () => {
 			expect(n2?.createdAt).toBe(9_051);
 		});
 
-		// So a client that already rendered the optimistic placeholder doesn't
-		// see the user's own message jump position after a reload.
-		it("keeps the placeholder's timestamp for the turn's real user row", () => {
-			const sessionId = "keepstamp";
+		// The reported bug: the user's message rendered *after* the reply it
+		// prompted. The turn's rounds are already persisted by the incremental
+		// path before the safety net runs, so `maxExisting` is the final
+		// round's stamp — and the batch gets shifted above it. The placeholder
+		// holding the user's row must not be dragged along by that shift.
+		it("leaves the placeholder's timestamp alone when shifting a batch", () => {
+			const sessionId = "ordering";
 			const pendingId = pendingUserMessageId(sessionId);
 			persistMessage(sessionId, {
 				id: pendingId,
 				sessionId,
 				role: "user",
-				parts: [{ type: "text", text: "hello" }],
+				parts: [{ type: "text", text: "create a pr" }],
 				turnId: null,
-				createdAt: 777,
+				createdAt: 1_000,
 			});
+			// The incremental path wrote this turn's first round while it ran.
+			persistMessage(
+				sessionId,
+				msg({ id: "round-1", sessionId, turnId: "t1", createdAt: 1_005 }),
+			);
 
+			// The safety net writes the round the incremental path missed.
 			persistConverted(sessionId, [
-				msg({ id: "real-user", sessionId, role: "user", createdAt: 5 }),
+				msg({ id: "round-2", sessionId, turnId: "t1", createdAt: 1_009 }),
 			]);
 
-			const real = getMessages(sessionId).find((m) => m.id === "real-user");
-			expect(real?.createdAt).toBe(777);
+			const order = getMessages(sessionId).map((m) => m.id);
+			expect(order).toEqual([pendingId, "round-1", "round-2"]);
+			expect(
+				getMessages(sessionId).find((m) => m.id === pendingId)?.createdAt,
+			).toBe(1_000);
 		});
 	});
 });
