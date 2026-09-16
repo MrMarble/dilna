@@ -155,7 +155,19 @@ export const messages = sqliteTable("messages", {
 	 * consumers treat null as "never grouped". See
 	 * `packages/shared`'s `Message.turnId`. */
 	turnId: text("turn_id"),
+	/** Display timestamp, epoch **seconds** — deliberately not the sort key.
+	 * At one-second resolution rows tie constantly (sub-agents writing in
+	 * parallel land several rows in the same second), and a tie has no defined
+	 * order in SQL. Order by {@link seq}; render this. */
 	createdAt: integer("created_at").notNull().$defaultFn(now),
+	/** Monotonic write order within a Session — the column every read orders
+	 * by. Assigned by `messageStore.persistMessage` as `max(seq) + 1` for the
+	 * Session, inside the caller's transaction, so concurrent turns can't mint
+	 * the same value. Backfilled from `rowid` for pre-migration rows, which
+	 * preserves the insertion order SQLite happened to be returning before.
+	 * Nullable only so the backfill migration can run; every row written since
+	 * has one. */
+	seq: integer("seq"),
 });
 
 /**
