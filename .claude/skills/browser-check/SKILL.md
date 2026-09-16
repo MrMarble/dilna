@@ -21,12 +21,29 @@ For local dev, start the server first (`pnpm dev` from repo root, or the isolate
 
 ## Inside the dilna container
 
-Chromium and its shared libraries are baked into the runtime image, and
-`PLAYWRIGHT_BROWSERS_PATH` points at the pre-installed copy under
-`/usr/local/share/ms-playwright` (ADR-0037). You still need the Playwright
-*driver* in the worktree you're working in — that comes from that repo's own
-`pnpm install`; don't run `playwright install`, which would re-download a
-browser onto the `/data` volume for no reason.
+Chromium's shared libraries and fonts are in the runtime image, but the
+browser binary is **not** — it's fetched on demand (ADR-0037).
+
+Check before downloading anything; it's shared across sessions on the
+persistent `/data` volume, so it's usually already there:
+
+```bash
+ls "$XDG_CACHE_HOME/ms-playwright"
+```
+
+If `chromium.launch()` reports a missing executable, install it once:
+
+```bash
+pnpm --filter @dilna/web exec playwright install chromium --only-shell
+```
+
+`--only-shell` gets the headless shell (~267MB) instead of the full browser
+(~656MB) — and headless `chromium.launch()` uses the shell anyway, so it's
+the right default here. Drop the flag only if you need a headed browser.
+
+Never use `--with-deps`: it shells out to apt, which needs root you don't
+have. Never use a bare `install` either — it adds Firefox and WebKit, whose
+system libraries aren't in the image.
 
 If `chromium.launch()` fails to spawn its zygote process, the deployment's
 seccomp profile is blocking the nested user namespace Chromium's own sandbox

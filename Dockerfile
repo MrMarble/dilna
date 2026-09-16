@@ -144,6 +144,16 @@ FROM node:24-bookworm-slim AS runtime
 # apt-get them itself. The first failure sessions actually hit is
 # `libglib-2.0.so.0`, but that's only the first of ~21.
 #
+# Only the *libraries* are installed here, deliberately — NOT the browser
+# binary, which a session fetches at runtime via `playwright install chromium`
+# if and when it actually needs one. The libraries are the part that genuinely
+# cannot be done without root; the browser is a plain userspace download into
+# a `node`-owned directory, so it does not need to sit in the image. Splitting
+# it that way keeps ~650MB of browser out of every pull of this image,
+# including the deployments that never run one. See ADR-0037 for the
+# measurements behind that split and for why the download lands on a shared,
+# persistent path rather than being re-fetched per session.
+#
 # This list is NOT hand-guessed: it is Playwright's own `debian12-x64.chromium`
 # set, read verbatim out of the pinned `playwright-core@1.62.1`'s bundled
 # dependency map (`lib/coreBundle.js`) — i.e. exactly what
@@ -217,50 +227,6 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # graph is derived from each Worktree's own checked-out branch, not from the
 # image.
 RUN npm install -g @colbymchenry/codegraph@1.6.0
-
-# Chromium itself, baked into the image at a fixed, root-owned path
-# (ADR-0037). The libraries above are only half the fix: the browser binary
-# has to come from somewhere too, and every "fetch it later" option is worse
-# here.
-#
-# PLAYWRIGHT_BROWSERS_PATH is what makes this work for a non-root session.
-# Playwright resolves its registry directory once at module init: an absolute
-# value of this var is used verbatim, otherwise it falls back to
-# `${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright` (confirmed by reading
-# `coreBundle.js`'s `registryDirectory` resolution directly). That default is
-# actively harmful in dilna: `toolchainEnv()` redirects every session's
-# `XDG_CACHE_HOME` onto the `/data` volume (ADR-0012/#83), so an un-pinned
-# `playwright install` would download ~170MB of browser onto the volume that
-# has already hit ENOSPC — once per deployment, and again after anything
-# clears it. Pinning it under /usr/local puts one copy in the image layer,
-# shared by every session, on the read-only root that bwrap already binds in.
-#
-# `install chromium` — not a bare `install`, which would also pull Firefox and
-# WebKit (neither of which the `browser-check` skill nor `check-page.mjs` ever
-# launches, and whose own apt dep sets are NOT installed above). `--with-deps`
-# is deliberately not used: it would re-run the apt step with the full
-# `tools` group, re-adding the 247MB of xvfb the block above rejects.
-# `--no-shell` is likewise avoided; the headless shell is the smaller binary
-# `chromium.launch()` uses for headless runs.
-#
-# chmod -R a+rX: `npx playwright install` writes the registry as root with a
-# umask that can leave directories unreadable to others. Sessions run as the
-# unprivileged `node` user and only ever need to *read* and execute this tree,
-# so it is made world-readable rather than chowned to `node` — keeping it
-# root-owned means a session cannot corrupt the shared browser install for
-# every other session.
-# Version pin: this MUST stay in step with the `@playwright/test` version the
-# lockfile resolves for `apps/web` (1.62.1 at the time of writing; the
-# package.json range is a caret, so `pnpm update` can move it without anyone
-# touching this file). Each Playwright release pins its own Chromium revision,
-# so a mismatch means a session's driver asks for a revision this image does
-# not carry and silently re-downloads ~170MB onto the /data volume — the exact
-# failure the pinned path above exists to prevent. When bumping it, also
-# re-read the apt list above out of the newly-pinned version's own dependency
-# map rather than from Playwright's `main` branch.
-ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/ms-playwright
-RUN npx --yes playwright@1.62.1 install chromium \
-	&& chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH"
 
 # mise (ADR-0012): the static binary built in the build stage, copied rather
 # than re-running the installer here. Runtime has a full compile toolchain

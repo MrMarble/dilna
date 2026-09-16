@@ -1,4 +1,4 @@
-# Bake headless Chromium and its shared libraries into the runtime image
+# Install headless Chromium's shared libraries in the image, fetch the browser at runtime
 
 ## Context
 
@@ -30,9 +30,16 @@ separately-reported failure of a Cairo-backed image-generation library.
 ## Decision
 
 Install Chromium's Debian 12 shared-library set, fontconfig, and fonts into
-the runtime stage's existing `apt-get` layer, and bake the Chromium binary
-itself into the image at a fixed, root-owned path pinned via
-`PLAYWRIGHT_BROWSERS_PATH`.
+the runtime stage's existing `apt-get` layer — and **only** those. The browser
+binary is not baked in; a session fetches it at runtime with
+`playwright install chromium` if and when it actually needs one.
+
+The split follows the privilege boundary exactly. The shared libraries are the
+part that genuinely *cannot* be obtained without root, so they have to be in
+the image. The browser is a plain userspace download into a `node`-owned
+directory — nothing about it requires root, so nothing about it requires being
+in the image. Putting it there would charge every pull of this image ~650MB,
+including the many deployments that never launch a browser at all.
 
 ### The library list comes from Playwright, not from guesswork
 
@@ -100,43 +107,48 @@ reported for node-canvas on slim images are **not** fixable with
 not exist in Debian. Those errors mean the vendored `.so`s were lost, which
 under pnpm usually means a blocked postinstall, not a missing apt package.
 
-### The browser binary is baked in, at a root-owned path
+### The browser is fetched at runtime, onto a shared persistent path
 
-The libraries are only half the fix; the browser has to come from somewhere.
-It is installed at build time with `npx playwright@1.62.1 install chromium`
-into `/usr/local/share/ms-playwright`, pinned by
-`ENV PLAYWRIGHT_BROWSERS_PATH`.
+No `PLAYWRIGHT_BROWSERS_PATH` is set, and that is deliberate rather than an
+omission. Playwright resolves its registry directory once at module init:
+an absolute `PLAYWRIGHT_BROWSERS_PATH` wins if set, otherwise it falls back
+to `${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright` (read directly from
+`coreBundle.js`'s `registryDirectory`). In dilna that default lands exactly
+where it should:
 
-Pinning the path is what makes this work for a non-root session. Playwright
-resolves its registry directory once at module init: an absolute
-`PLAYWRIGHT_BROWSERS_PATH` is used verbatim, otherwise it falls back to
-`${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright` (read directly from
-`coreBundle.js`'s `registryDirectory`). **That default is actively harmful
-here**: `toolchainEnv()` redirects every session's `XDG_CACHE_HOME` onto the
-`/data` volume (ADR-0012 / #83), so an unpinned install would download
-~170 MB of browser onto the volume that has already filled up — once per
-deployment, and again after anything clears it.
+- `toolchainEnv()` points every session's `XDG_CACHE_HOME` at
+  `DILNA_DATA_DIR/toolchain-home/cache` (ADR-0012 / #83), which is on the
+  **persistent `/data` volume** — so a downloaded browser survives pod
+  restarts, unlike anything under plain `$HOME`.
+- That path is **shared across sessions**, not per-worktree, so the download
+  is a one-time cost for the whole deployment rather than per session.
+- It is already in the bwrap writable grant (`toolchainWritablePaths()`
+  includes `xdgCacheHome`), so the unprivileged `node` user can actually
+  write it.
 
-Under `/usr/local` instead, there is one copy in an image layer, shared by
-every session, on the read-only root that bwrap already binds into every
-sandboxed command (`--ro-bind / /`). Sessions only ever read and execute it,
-so it stays **root-owned** with `chmod -R a+rX` rather than being chowned to
-`node`: a session cannot corrupt the shared browser for every other session.
-The env var reaches sessions because `pi.ts` merges rather than replaces the
-environment (`env: { ...options.env, ...grant.env }`).
+All three were confirmed against a live deployment, which already had a
+session-created `ms-playwright` registry at that path, owned by `node`.
 
-`install chromium` is scoped deliberately — a bare `install` would also fetch
-Firefox and WebKit, whose apt dependency sets are *not* installed here and
-which nothing in this repo launches. `--with-deps` is avoided because it
-would re-run apt with the full `tools` group, re-adding the 247 MB of xvfb
-rejected above.
+A session that needs a browser therefore runs `playwright install chromium`
+and it works, persists, and is reused. Scope matters twice over:
 
-Note the Playwright **driver** is not in the runtime image: the build stage's
-`pnpm install --prod` drops devDependencies, and `apps/web`'s `node_modules`
-is never copied. That is correct and intentional — the image ships the
-browser, and a session working on a repo brings its own driver via that
-repo's own `pnpm install`, which then finds the pre-baked browser through
-`PLAYWRIGHT_BROWSERS_PATH` instead of downloading one.
+- `install chromium`, not a bare `install` — the latter also fetches Firefox
+  and WebKit, whose apt dependency sets are *not* installed here and which
+  nothing in this repo launches.
+- `--only-shell` where a headed browser isn't needed: it fetches just the
+  Chrome Headless Shell (**267 MB** with ffmpeg) rather than the full browser
+  as well (**656 MB**), and headless `chromium.launch()` — which is all
+  `check-page.mjs` and the `browser-check` skill ever do — uses the shell
+  regardless. Both figures measured from the real registry.
+- `--with-deps` must **not** be used: it shells out to apt, which a session
+  cannot run, and would try to add the 247 MB of xvfb rejected above.
+
+Note the Playwright **driver** is not in the runtime image either: the build
+stage's `pnpm install --prod` drops devDependencies and `apps/web`'s
+`node_modules` is never copied. A session brings its own driver via its
+repo's `pnpm install`, which is also what provides the `playwright` CLI used
+to fetch the browser — so driver and browser stay version-matched by
+construction, with no pin in the Dockerfile to drift out of step.
 
 ## Why not the alternatives
 
@@ -152,9 +164,18 @@ repo's own `pnpm install`, which then finds the pre-baked browser through
   skill to verify UI work. A second image no session ever runs would leave
   the reported problem exactly as it is. Revisit if a browser-based CI job
   ever appears.
-- **Let Playwright download the browser on first use.** This is what happens
-  today by default, and it is the ENOSPC hazard described above: ~170 MB onto
-  `/data`, per deployment, at the mercy of network availability mid-session.
+- **Bake the browser into the image too.** This was the first version of this
+  ADR, on the reasoning that a `/data` download risks ENOSPC. Reversed after
+  measuring what it actually costs: a full `playwright install chromium`
+  registry is **656 MB** (389 MB `chromium`, 262 MB `chromium_headless_shell`,
+  5 MB `ffmpeg`), measured from a real session-created registry. Adding that
+  to the image would have more than doubled it, and charged it to *every*
+  deployment on *every* pull — including the majority that never launch a
+  browser — to save a one-time download for the minority that do. The image
+  is the wrong place to amortise a cost only some users incur. It also
+  needed a Dockerfile-side version pin kept in lockstep with `apps/web`'s
+  caret-ranged `@playwright/test`; letting the session's own driver fetch its
+  own matching browser removes that failure mode entirely.
 - **A distro `chromium` package instead of Playwright's build.** Bookworm's
   `chromium` pulls a much larger dependency tree, and its version floats
   independently of what `playwright-core` expects, reintroducing the
@@ -171,10 +192,19 @@ repo's own `pnpm install`, which then finds the pre-baked browser through
 - Sessions can launch headless Chromium, screenshot pages, and run the
   `browser-check` / `verify` skills as those skills already document. UI work
   no longer has to be verified "by reasoning + vitest/jsdom only".
-- The runtime image grows by ~89 MB installed (~35 MB download) plus the
-  Chromium binary. Real, but a quarter of what the reflexive
-  `playwright install-deps` would have cost, and it buys a capability two
-  separate sessions have now been blocked on.
+- The runtime image grows by ~89 MB installed (~35 MB download), and by
+  nothing else — a quarter of what the reflexive `playwright install-deps`
+  would have cost, and no browser weight at all.
+- A session that wants a browser pays a one-time download onto `/data` —
+  267 MB with `--only-shell`, 656 MB without — shared across sessions and
+  surviving restarts. On the reference deployment (9.8 GB volume, 5.4 GB
+  used) that fits, but it is not free: it is among the largest things a
+  session can put on that volume, and the volume has hit ENOSPC before. If
+  ENOSPC recurs, the levers are `--only-shell` and pruning old browser
+  revisions from that registry (they accumulate one directory per Playwright
+  bump), not moving the browser back into the image.
+- Sessions need network access on first browser use. Already true of
+  `mise install`/`pnpm install`, so no new dependency in practice.
 - The Cairo-backed image-generation path is unblocked by the font packages.
   No Cairo *library* change was needed, contrary to the initial assumption.
 - **Chromium's own sandbox is not guaranteed.** A session's browser launch
@@ -187,12 +217,12 @@ repo's own `pnpm install`, which then finds the pre-baked browser through
   fail to spawn its zygote. Such a deployment should pass `--no-sandbox` to
   `chromium.launch()`. This is acceptable because the outer bwrap sandbox,
   not Chromium's, is dilna's actual isolation boundary.
-- Playwright's version now appears in two places that must move together:
-  `apps/web`'s `@playwright/test` and the Dockerfile's pinned
-  `playwright@…  install chromium`. A mismatch means the driver wants a
-  browser revision the image does not carry, and re-downloads it to `/data` —
-  the exact failure this ADR avoids. Bump both together, and re-read the
-  distro dependency list from the newly-pinned version.
+- The apt list is the one thing still tied to a Playwright version, and it is
+  tied loosely: it changes only when Playwright changes its *distro*
+  requirements, not on every release. When bumping `@playwright/test`, re-read
+  `debian12-x64.chromium` out of the newly-installed `playwright-core` and
+  reconcile. There is no Dockerfile-side version pin to drift, because the
+  browser is fetched by the session's own driver.
 
 ## Verification status
 
@@ -201,10 +231,23 @@ model, `PLAYWRIGHT_BROWSERS_PATH` resolution, and the env-merge path were all
 verified directly against the running image and the bookworm package index,
 as cited throughout.
 
+The runtime-install half is verified more strongly than the rest, because a
+live deployment already had a session-created registry to inspect:
+
+- `playwright install chromium --dry-run` resolves its install location to
+  `/data/toolchain-home/cache/ms-playwright/...` — the shared, persistent,
+  bwrap-writable path, with no `PLAYWRIGHT_BROWSERS_PATH` set.
+- That registry already exists on the reference deployment, owned by `node`,
+  proving an unprivileged session can create and reuse it.
+- The 656 MB / 267 MB figures are `du` of that real registry, not estimates.
+
 **The built image itself was not run.** The environment this change was
 authored in has no Docker daemon and no root, so building the modified image
 and launching Chromium inside it as the `node` user was not possible here.
 The `docker-publish.yml` workflow builds the Dockerfile on every pull request,
-which will catch a package-name or install-step error; an actual
-launch-and-screenshot check as the unprivileged user still needs to be run
-against the built image before this is relied on.
+which will catch a package-name error; an actual launch-and-screenshot as the
+unprivileged user still needs running against the built image before this is
+relied on. That check is now cheaper to perform than it was under the
+baked-in design, since it needs no image rebuild — only a
+`playwright install chromium --only-shell` inside any session on the new
+image.
