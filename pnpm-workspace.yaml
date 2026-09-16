@@ -12,11 +12,17 @@ allowBuilds:
   better-sqlite3: true
   esbuild: true
   lefthook: true
+  # node-canvas fetches a prebuilt binary in its `install` script; without
+  # this it stays unbuilt and `require("canvas")` fails with
+  # "Cannot find module '../build/Release/canvas.node'" — which looks like a
+  # missing system Cairo but isn't (the prebuild bundles its own). ADR-0037.
+  canvas: true
 
 onlyBuiltDependencies:
   - better-sqlite3
   - esbuild
   - lefthook
+  - canvas
 # Force every transitive esbuild onto a patched release: tsup and
 # drizzle-kit's @esbuild-kit chain otherwise resolve versions flagged by
 # GHSA-67mh-4wv8-2f99 / GHSA-g7r4-m6w7-qqqr.

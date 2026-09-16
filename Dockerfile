@@ -135,10 +135,37 @@ FROM node:24-bookworm-slim AS runtime
 # build-essential/libssl/zlib headers. This single addition fixes both: a
 # session pointed at such a repo can now `pnpm install`/`mise install`, not
 # just fetch runtimes.
+#
+# fontconfig + fonts-dejavu-core + fonts-liberation: make rasterised text
+# actually legible. The `canvas` npm package (node-canvas) needs NO system
+# Cairo/Pango/librsvg here — its node-pre-gyp prebuild for linux-x64 ships
+# every one of those .so files *inside* the package and links them via
+# RPATH (verified with `ldd` on the installed `canvas.node`: libcairo,
+# libpango, librsvg, libjpeg, libgif all resolve into node_modules, not
+# /usr/lib). So no `libcairo2`/`libpango-1.0-0`/`-dev` packages are added
+# below — they would be ~100MB of dead weight the addon never loads.
+#
+# What the prebuild canNOT bundle is fonts: node:*-bookworm-slim ships zero
+# text fonts and no fontconfig config, so Cairo falls back to a glyph-less
+# default and every `fillText`/`measureText` renders as tofu boxes (□□□)
+# while *graphics* — gradients, paths, SVG rasterisation — come out
+# perfectly. Worse, it fails silently: pixels are written, the PNG is valid,
+# and only looking at the image reveals the text is unreadable. The
+# giveaway when debugging: every font measures identically
+# (`measureText` returns the same width for sans-serif/serif/monospace)
+# because no real font is loaded at all. A session can't fix this itself —
+# fonts need root to install, and npm font packages (@fontsource/*) ship
+# only woff/woff2, which node-canvas's `registerFont` rejects outright
+# ("Could not parse font file") since it needs TTF/OTF.
+# DejaVu is the wide-coverage default Cairo/fontconfig expect; Liberation
+# adds metric-compatible Arial/Times/Courier substitutes so documents
+# asking for those common families don't fall back. Both are small
+# (~4MB total) and are the same fonts a headless Chromium would need.
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
 		curl unzip xz-utils jq ripgrep fd-find procps lsof libatomic1 \
 		build-essential python3 pkg-config libssl-dev zlib1g-dev \
+		fontconfig fonts-dejavu-core fonts-liberation \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
