@@ -87,6 +87,10 @@ vi.mock("@/api/client", () => ({
 				usage: { usedTokens: 0, maxTokens: 100_000 },
 			}),
 		},
+		// The composer reads the Repo's Skills for its slash-command menu.
+		skills: {
+			forRepo: async () => ({ skills: [] }),
+		},
 		sessionList: {
 			stream: (onEvent: (ev: SessionListEvent) => void) => {
 				for (const session of state.sessions) {
