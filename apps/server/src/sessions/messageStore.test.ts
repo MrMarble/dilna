@@ -82,12 +82,15 @@ describe("messageStore", () => {
 		]);
 	});
 
-	it("returns a session's messages oldest-first and scoped to that session", () => {
+	// Write order, not timestamp order: `createdAt` is a display value and
+	// ties constantly at one-second resolution (see the `ordering` block).
+	// A row stamped earlier but written later still comes second.
+	it("returns a session's messages in write order and scoped to that session", () => {
 		persistMessage("ord", msg({ id: "b", sessionId: "ord", createdAt: 200 }));
 		persistMessage("ord", msg({ id: "a", sessionId: "ord", createdAt: 100 }));
 		persistMessage("other", msg({ id: "x", sessionId: "other" }));
 
-		expect(getMessages("ord").map((m) => m.id)).toEqual(["a", "b"]);
+		expect(getMessages("ord").map((m) => m.id)).toEqual(["b", "a"]);
 	});
 
 	it("deletes a single message and a whole session's history", () => {
@@ -156,10 +159,10 @@ describe("messageStore", () => {
 			expect(getMessages(sessionId)).toHaveLength(1);
 		});
 
-		// Legacy claude.ts-era rows can carry timestamps in the future; a new
-		// batch must still sort after them rather than interleaving into the
-		// middle of the rendered transcript.
-		it("shifts a batch above existing future-stamped rows to keep ordering monotonic", () => {
+		// Legacy claude.ts-era rows can carry timestamps in the future. A new
+		// batch still sorts after them — but by write order now, not by having
+		// its displayed timestamps rewritten to clear the future row.
+		it("sorts a new batch after a future-stamped row without altering timestamps", () => {
 			const sessionId = "shift";
 			persistMessage(
 				sessionId,
@@ -173,10 +176,11 @@ describe("messageStore", () => {
 
 			const stored = getMessages(sessionId);
 			expect(stored.map((m) => m.id)).toEqual(["future", "n1", "n2"]);
-			// Relative spacing inside the batch is preserved by the shift.
+			// Displayed times are written through verbatim — ordering is `seq`'s
+			// job, so there is no reason to fabricate timestamps.
 			const [, n1, n2] = stored;
-			expect(n1?.createdAt).toBe(9_001);
-			expect(n2?.createdAt).toBe(9_051);
+			expect(n1?.createdAt).toBe(100);
+			expect(n2?.createdAt).toBe(150);
 		});
 
 		// The reported bug: the user's message rendered *after* the reply it
@@ -211,6 +215,110 @@ describe("messageStore", () => {
 			expect(
 				getMessages(sessionId).find((m) => m.id === pendingId)?.createdAt,
 			).toBe(1_000);
+		});
+
+		// The reported symptom, stated as an invariant: whatever the clock did,
+		// the user's row precedes the rounds that answer it.
+		it("keeps the user's row ahead of a round stamped in the same second", () => {
+			const sessionId = "tie";
+			const pendingId = pendingUserMessageId(sessionId);
+			persistMessage(sessionId, {
+				id: pendingId,
+				sessionId,
+				role: "user",
+				parts: [{ type: "text", text: "create a pr" }],
+				turnId: null,
+				createdAt: 4_000,
+			});
+
+			persistConverted(sessionId, [
+				msg({ id: "answer", sessionId, turnId: "t1", createdAt: 4_000 }),
+			]);
+
+			expect(getMessages(sessionId).map((m) => m.id)).toEqual([
+				pendingId,
+				"answer",
+			]);
+		});
+	});
+
+	/**
+	 * `created_at` is epoch *seconds*, so rows written inside the same second
+	 * tie — and a tie has no defined order in SQL. Sub-agents running in
+	 * parallel make that the normal case rather than a rarity: ~14% of rows in
+	 * real Sessions already share a second with another row. Ordering is now
+	 * carried by a monotonic `seq` instead, with `created_at` kept purely for
+	 * display.
+	 */
+	describe("ordering", () => {
+		it("returns rows written in the same second in write order", () => {
+			const sessionId = "sameclock";
+			for (const id of ["first", "second", "third", "fourth"]) {
+				persistMessage(sessionId, msg({ id, sessionId, createdAt: 1_700 }));
+			}
+
+			expect(getMessages(sessionId).map((m) => m.id)).toEqual([
+				"first",
+				"second",
+				"third",
+				"fourth",
+			]);
+		});
+
+		// Ordering must not depend on the wall clock at all: a row stamped in
+		// the past (clock skew, a legacy future-stamped row's neighbours) still
+		// belongs where it was written.
+		it("keeps write order even when a later row carries an earlier timestamp", () => {
+			const sessionId = "skew";
+			persistMessage(
+				sessionId,
+				msg({ id: "early-write", sessionId, createdAt: 9_000 }),
+			);
+			persistMessage(
+				sessionId,
+				msg({ id: "late-write", sessionId, createdAt: 100 }),
+			);
+
+			expect(getMessages(sessionId).map((m) => m.id)).toEqual([
+				"early-write",
+				"late-write",
+			]);
+		});
+
+		// `seq` is per-table, not per-session: interleaved writes across
+		// Sessions must not affect either Session's own relative order.
+		it("orders each session independently when writes interleave", () => {
+			persistMessage("sx", msg({ id: "x1", sessionId: "sx", createdAt: 5 }));
+			persistMessage("sy", msg({ id: "y1", sessionId: "sy", createdAt: 5 }));
+			persistMessage("sx", msg({ id: "x2", sessionId: "sx", createdAt: 5 }));
+			persistMessage("sy", msg({ id: "y2", sessionId: "sy", createdAt: 5 }));
+
+			expect(getMessages("sx").map((m) => m.id)).toEqual(["x1", "x2"]);
+			expect(getMessages("sy").map((m) => m.id)).toEqual(["y1", "y2"]);
+		});
+
+		// The placeholder is promoted (its id changes) after the rounds that
+		// answer it are already written. Promotion must not move it.
+		it("keeps the user's row in place when the placeholder is promoted", () => {
+			const sessionId = "promoteorder";
+			persistMessage(sessionId, {
+				id: pendingUserMessageId(sessionId),
+				sessionId,
+				role: "user",
+				parts: [{ type: "text", text: "go" }],
+				turnId: null,
+				createdAt: 2_000,
+			});
+			persistMessage(
+				sessionId,
+				msg({ id: "reply", sessionId, createdAt: 2_000 }),
+			);
+
+			promotePendingUserMessage(sessionId);
+
+			const rows = getMessages(sessionId);
+			expect(rows.map((m) => m.role)).toEqual(["user", "assistant"]);
+			expect(rows[1]?.id).toBe("reply");
 		});
 	});
 });

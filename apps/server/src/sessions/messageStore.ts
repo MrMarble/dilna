@@ -1,5 +1,5 @@
 import type { Message, MessagePart } from "@dilna/shared";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, max } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getDb } from "../db";
 import { messages as messagesTable } from "../db/schema";
@@ -26,7 +26,13 @@ import { messages as messagesTable } from "../db/schema";
 
 /** Persist one message row verbatim. Throws on a primary-key collision —
  * callers that may legitimately re-persist known content go through
- * {@link persistConverted}, which dedups by id first. */
+ * {@link persistConverted}, which dedups by id first.
+ *
+ * Assigns the row's `seq` (this Session's next write-order slot) as part of
+ * the insert. Read-then-insert is safe against concurrent turns because
+ * better-sqlite3 is synchronous and every multi-row caller already wraps
+ * this in a transaction — there is no `await` between the max and the
+ * insert for another turn to interleave into. */
 export function persistMessage(sessionId: string, message: Message): void {
 	getDb()
 		.insert(messagesTable)
@@ -37,19 +43,37 @@ export function persistMessage(sessionId: string, message: Message): void {
 			partsJson: JSON.stringify(message.parts),
 			turnId: message.turnId ?? null,
 			createdAt: message.createdAt,
+			seq: nextSeq(sessionId),
 		})
 		.run();
 }
 
+/** The next write-order slot for a Session. `max(seq) + 1`, starting at 1. */
+function nextSeq(sessionId: string): number {
+	const row = getDb()
+		.select({ max: max(messagesTable.seq) })
+		.from(messagesTable)
+		.where(eq(messagesTable.sessionId, sessionId))
+		.get();
+	return (row?.max ?? 0) + 1;
+}
+
 /** A Session's full durable history, oldest first. The DB is the source of
  * truth for history (ADR-0004/0014) — this is what every render, export and
- * agent re-seed reads from. */
+ * agent re-seed reads from.
+ *
+ * Ordered by `seq` (write order), not `createdAt`. `createdAt` is epoch
+ * *seconds*, so rows written in the same second tie — and a tie has no
+ * defined order in SQL, which made the rendered transcript's order an
+ * accident of SQLite's query plan. Sub-agents working in parallel make
+ * same-second writes routine rather than rare. `createdAt` is still what
+ * gets rendered; it just no longer decides position. */
 export function getMessages(sessionId: string): Message[] {
 	const rows = getDb()
 		.select()
 		.from(messagesTable)
 		.where(eq(messagesTable.sessionId, sessionId))
-		.orderBy(asc(messagesTable.createdAt))
+		.orderBy(asc(messagesTable.seq))
 		.all();
 	return rows.map((row) => ({
 		id: row.id,
@@ -113,16 +137,22 @@ export function promotePendingUserMessage(sessionId: string): void {
 }
 
 /**
- * Persist every converted turn row dilna doesn't already have, keeping this
- * batch ordered after what's already stored.
+ * Persist every converted turn row dilna doesn't already have.
  *
  * Only ever receives *assistant* rows: `piMessagesToDilna` no longer mints
  * user rows from the agent transcript, because dilna already owns the user's
  * message as the `pending-user-<sessionId>` placeholder `beginTurn` wrote.
  * Converting them here re-persisted messages dilna already had (fresh UUIDs
- * defeat the dedup below) carrying timestamps from a previous turn — which
- * then dragged the shift and reordered the transcript. The user's row now
- * has exactly one writer.
+ * defeat the dedup below) carrying timestamps from a previous turn. The
+ * user's row now has exactly one writer.
+ *
+ * Timestamps are written through untouched. This used to shift the whole
+ * batch above the newest stored row's `createdAt` to keep it sorting last,
+ * because `createdAt` *was* the sort key — a repair that mutated displayed
+ * times to express ordering, and that a stale re-offered row could hijack
+ * into reordering the transcript. Ordering is now carried by `seq`, assigned
+ * in write order by {@link persistMessage}, so a row sorts where it was
+ * written regardless of what clock stamped it and there is nothing to repair.
  *
  * The id-based dedup here only catches rows dilna itself has seen before by
  * id; it cannot recognize re-converted content, because both pi→dilna
@@ -134,29 +164,9 @@ export function persistConverted(
 	sessionId: string,
 	converted: Message[],
 ): void {
-	const persisted = getMessages(sessionId);
-	const existing = new Set(persisted.map((m) => m.id));
+	const existing = new Set(getMessages(sessionId).map((m) => m.id));
 	const fresh = converted.filter((msg) => !existing.has(msg.id));
 	if (fresh.length === 0) return;
-
-	// Rows persisted before the past-stamping fix (a legacy claude.ts-era
-	// artifact) can carry timestamps minutes in the future; shift this
-	// batch above them so createdAt ordering stays monotonic for legacy
-	// sessions (drift then shrinks to nothing as wall clock catches up).
-	//
-	// The placeholder is excluded from `maxExisting` deliberately: it is the
-	// user's row for the turn these rounds answer, so shifting this batch
-	// above it is right, but it must not be *dragged* by it.
-	const pendingId = pendingUserMessageId(sessionId);
-	const maxExisting = Math.max(
-		0,
-		...persisted.filter((m) => m.id !== pendingId).map((m) => m.createdAt),
-	);
-	const minFresh = Math.min(...fresh.map((m) => m.createdAt));
-	if (minFresh <= maxExisting) {
-		const shift = maxExisting + 1 - minFresh;
-		for (const msg of fresh) msg.createdAt += shift;
-	}
 
 	getDb().transaction(() => {
 		for (const msg of fresh) {
