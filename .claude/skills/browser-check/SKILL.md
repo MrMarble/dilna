@@ -18,3 +18,23 @@ Exits non-zero on navigation failure, a console error, a page error, or a failed
 For anything beyond a single-page load/screenshot (multi-step interaction, asserting specific DOM state), write a throwaway script using the same `chromium.launch()` pattern and run it with `node` — don't grow `check-page.mjs` into a general-purpose framework.
 
 For local dev, start the server first (`pnpm dev` from repo root, or the isolated-instance pattern in the `verify` skill if you need a clean DB).
+
+## Inside the dilna container
+
+Chromium and its shared libraries are baked into the runtime image, and
+`PLAYWRIGHT_BROWSERS_PATH` points at the pre-installed copy under
+`/usr/local/share/ms-playwright` (ADR-0037). You still need the Playwright
+*driver* in the worktree you're working in — that comes from that repo's own
+`pnpm install`; don't run `playwright install`, which would re-download a
+browser onto the `/data` volume for no reason.
+
+If `chromium.launch()` fails to spawn its zygote process, the deployment's
+seccomp profile is blocking the nested user namespace Chromium's own sandbox
+needs. Pass `--no-sandbox`:
+
+```js
+chromium.launch({ args: ["--no-sandbox"] })
+```
+
+That's safe here — the outer bwrap sandbox, not Chromium's, is the real
+isolation boundary (ADR-0010).

@@ -135,10 +135,50 @@ FROM node:24-bookworm-slim AS runtime
 # build-essential/libssl/zlib headers. This single addition fixes both: a
 # session pointed at such a repo can now `pnpm install`/`mise install`, not
 # just fetch runtimes.
+#
+# The headless-Chromium shared libraries + fonts (ADR-0037): `@playwright/test`
+# is already a devDependency of `apps/web`, with a `check-page.mjs` script and
+# a `browser-check` skill built around it, but no session could ever launch it
+# — `node:*-bookworm-slim` ships none of Chromium's runtime libs, and a
+# session (unprivileged `node` user, no root/sudo per ADR-0010/0012) can never
+# apt-get them itself. The first failure sessions actually hit is
+# `libglib-2.0.so.0`, but that's only the first of ~21.
+#
+# This list is NOT hand-guessed: it is Playwright's own `debian12-x64.chromium`
+# set, read verbatim out of the pinned `playwright-core@1.62.1`'s bundled
+# dependency map (`lib/coreBundle.js`) — i.e. exactly what
+# `playwright install-deps` would install for this distro, for the version
+# this repo actually pins. Re-read it from there (not from Playwright's `main`
+# branch, which already carries Debian 13's `t64` renames — `libasound2t64`
+# etc. — that do NOT exist in bookworm) when bumping Playwright.
+#
+# Deliberately NOT the whole of `install-deps`: that also installs its `tools`
+# group, which is `xvfb` plus CJK/exotic font packages. Measured against the
+# bookworm package index, the full set is 364MB installed where this one is
+# 89MB — and `xvfb` alone accounts for 247MB of that, buying nothing, since a
+# headless browser needs no X server. Image size is not a free variable here:
+# the `/data` volume has filled up (ENOSPC) in real deployments.
+#
+# fontconfig + fonts: Chromium's libs alone render text as blank boxes,
+# because a slim image has no font files and no fontconfig config at all
+# (confirmed: `/usr/share/fonts` does not exist and `fc-list` is absent).
+# `fonts-dejavu-core`/`fonts-liberation` cover Latin/metric-compatible text,
+# `fonts-noto-color-emoji` keeps emoji from rendering as tofu. This is also
+# the half of the Cairo-backed image-generation case that actually needed
+# fixing — see ADR-0037: prebuilt `canvas`/`@napi-rs/canvas` vendor their own
+# cairo/pango/pixman `.so`s next to the `.node` file and do NOT link the
+# system `libcairo2`, so what blocked them was never the library but the
+# missing fonts (their other system deps — libuuid1/libblkid1/libmount1/zlib1g
+# — are already in the base image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
 		curl unzip xz-utils jq ripgrep fd-find procps lsof libatomic1 \
 		build-essential python3 pkg-config libssl-dev zlib1g-dev \
+		libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+		libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
+		libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+		libxfixes3 libxkbcommon0 libxrandr2 \
+		fontconfig fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
@@ -177,6 +217,50 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 # graph is derived from each Worktree's own checked-out branch, not from the
 # image.
 RUN npm install -g @colbymchenry/codegraph@1.6.0
+
+# Chromium itself, baked into the image at a fixed, root-owned path
+# (ADR-0037). The libraries above are only half the fix: the browser binary
+# has to come from somewhere too, and every "fetch it later" option is worse
+# here.
+#
+# PLAYWRIGHT_BROWSERS_PATH is what makes this work for a non-root session.
+# Playwright resolves its registry directory once at module init: an absolute
+# value of this var is used verbatim, otherwise it falls back to
+# `${XDG_CACHE_HOME:-$HOME/.cache}/ms-playwright` (confirmed by reading
+# `coreBundle.js`'s `registryDirectory` resolution directly). That default is
+# actively harmful in dilna: `toolchainEnv()` redirects every session's
+# `XDG_CACHE_HOME` onto the `/data` volume (ADR-0012/#83), so an un-pinned
+# `playwright install` would download ~170MB of browser onto the volume that
+# has already hit ENOSPC — once per deployment, and again after anything
+# clears it. Pinning it under /usr/local puts one copy in the image layer,
+# shared by every session, on the read-only root that bwrap already binds in.
+#
+# `install chromium` — not a bare `install`, which would also pull Firefox and
+# WebKit (neither of which the `browser-check` skill nor `check-page.mjs` ever
+# launches, and whose own apt dep sets are NOT installed above). `--with-deps`
+# is deliberately not used: it would re-run the apt step with the full
+# `tools` group, re-adding the 247MB of xvfb the block above rejects.
+# `--no-shell` is likewise avoided; the headless shell is the smaller binary
+# `chromium.launch()` uses for headless runs.
+#
+# chmod -R a+rX: `npx playwright install` writes the registry as root with a
+# umask that can leave directories unreadable to others. Sessions run as the
+# unprivileged `node` user and only ever need to *read* and execute this tree,
+# so it is made world-readable rather than chowned to `node` — keeping it
+# root-owned means a session cannot corrupt the shared browser install for
+# every other session.
+# Version pin: this MUST stay in step with the `@playwright/test` version the
+# lockfile resolves for `apps/web` (1.62.1 at the time of writing; the
+# package.json range is a caret, so `pnpm update` can move it without anyone
+# touching this file). Each Playwright release pins its own Chromium revision,
+# so a mismatch means a session's driver asks for a revision this image does
+# not carry and silently re-downloads ~170MB onto the /data volume — the exact
+# failure the pinned path above exists to prevent. When bumping it, also
+# re-read the apt list above out of the newly-pinned version's own dependency
+# map rather than from Playwright's `main` branch.
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/local/share/ms-playwright
+RUN npx --yes playwright@1.62.1 install chromium \
+	&& chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH"
 
 # mise (ADR-0012): the static binary built in the build stage, copied rather
 # than re-running the installer here. Runtime has a full compile toolchain
