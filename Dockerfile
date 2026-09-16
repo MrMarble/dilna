@@ -135,10 +135,60 @@ FROM node:24-bookworm-slim AS runtime
 # build-essential/libssl/zlib headers. This single addition fixes both: a
 # session pointed at such a repo can now `pnpm install`/`mise install`, not
 # just fetch runtimes.
+#
+# The headless-Chromium shared libraries + fonts (ADR-0037): `@playwright/test`
+# is already a devDependency of `apps/web`, with a `check-page.mjs` script and
+# a `browser-check` skill built around it, but no session could ever launch it
+# — `node:*-bookworm-slim` ships none of Chromium's runtime libs, and a
+# session (unprivileged `node` user, no root/sudo per ADR-0010/0012) can never
+# apt-get them itself. The first failure sessions actually hit is
+# `libglib-2.0.so.0`, but that's only the first of ~21.
+#
+# Only the *libraries* are installed here, deliberately — NOT the browser
+# binary, which a session fetches at runtime via `playwright install chromium`
+# if and when it actually needs one. The libraries are the part that genuinely
+# cannot be done without root; the browser is a plain userspace download into
+# a `node`-owned directory, so it does not need to sit in the image. Splitting
+# it that way keeps ~650MB of browser out of every pull of this image,
+# including the deployments that never run one. See ADR-0037 for the
+# measurements behind that split and for why the download lands on a shared,
+# persistent path rather than being re-fetched per session.
+#
+# This list is NOT hand-guessed: it is Playwright's own `debian12-x64.chromium`
+# set, read verbatim out of the pinned `playwright-core@1.62.1`'s bundled
+# dependency map (`lib/coreBundle.js`) — i.e. exactly what
+# `playwright install-deps` would install for this distro, for the version
+# this repo actually pins. Re-read it from there (not from Playwright's `main`
+# branch, which already carries Debian 13's `t64` renames — `libasound2t64`
+# etc. — that do NOT exist in bookworm) when bumping Playwright.
+#
+# Deliberately NOT the whole of `install-deps`: that also installs its `tools`
+# group, which is `xvfb` plus CJK/exotic font packages. Measured against the
+# bookworm package index, the full set is 364MB installed where this one is
+# 89MB — and `xvfb` alone accounts for 247MB of that, buying nothing, since a
+# headless browser needs no X server. Image size is not a free variable here:
+# the `/data` volume has filled up (ENOSPC) in real deployments.
+#
+# fontconfig + fonts: Chromium's libs alone render text as blank boxes,
+# because a slim image has no font files and no fontconfig config at all
+# (confirmed: `/usr/share/fonts` does not exist and `fc-list` is absent).
+# `fonts-dejavu-core`/`fonts-liberation` cover Latin/metric-compatible text,
+# `fonts-noto-color-emoji` keeps emoji from rendering as tofu. This is also
+# the half of the Cairo-backed image-generation case that actually needed
+# fixing — see ADR-0037: prebuilt `canvas`/`@napi-rs/canvas` vendor their own
+# cairo/pango/pixman `.so`s next to the `.node` file and do NOT link the
+# system `libcairo2`, so what blocked them was never the library but the
+# missing fonts (their other system deps — libuuid1/libblkid1/libmount1/zlib1g
+# — are already in the base image).
 RUN apt-get update && apt-get install -y --no-install-recommends \
 		git openssh-client ca-certificates bubblewrap socat gosu \
 		curl unzip xz-utils jq ripgrep fd-find procps lsof libatomic1 \
 		build-essential python3 pkg-config libssl-dev zlib1g-dev \
+		libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+		libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
+		libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+		libxfixes3 libxkbcommon0 libxrandr2 \
+		fontconfig fonts-dejavu-core fonts-liberation fonts-noto-color-emoji \
 	&& rm -rf /var/lib/apt/lists/* \
 	&& mkdir -p /etc/ssh \
 	&& ssh-keyscan -t rsa,ecdsa,ed25519 github.com gitlab.com bitbucket.org \
