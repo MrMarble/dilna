@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.30.0](https://github.com/MrMarble/dilna/compare/v0.29.0...v0.30.0) (2026-09-16)
+
+
+### Features
+
+* **docker:** install headless-browser system libraries in the runtime image ([#219](https://github.com/MrMarble/dilna/issues/219)) ([6e26450](https://github.com/MrMarble/dilna/commit/6e26450842615b9c8490805b58ac43dd64948be2))
+
 ## [0.29.0](https://github.com/MrMarble/dilna/compare/v0.28.0...v0.29.0) (2026-09-16)
 
 
