@@ -7,11 +7,14 @@ import { primeCustomProviders } from "../agents/customProviders";
 import { primeOverrideFromDb } from "../agents/providerConfigStore";
 import { primeProviderCredentials } from "../agents/providerCredentials";
 import { closeDb } from "../db";
+import { errorHandler } from "../middleware/errors";
 import { configRoute } from "./config";
 
 let dataDir: string;
 let oldEnv: Record<string, string | undefined>;
-const app = new Hono().route("/api/config", configRoute);
+// `onError` mirrors index.ts so these see the same error envelope a real
+// client does, rather than Hono's plain-text HTTPException default.
+const app = new Hono().onError(errorHandler).route("/api/config", configRoute);
 
 beforeEach(() => {
 	dataDir = mkdtempSync(path.join(tmpdir(), "dilna-test-config-route-"));
@@ -115,8 +118,8 @@ describe("PUT /api/config", () => {
 			body: JSON.stringify({ provider: "kimi-coding", model: "k3" }),
 		});
 		expect(res.status).toBe(400);
-		// hono's HTTPException renders the message as plain text, not JSON.
-		expect(await res.text()).toContain("not a supported provider");
+		const body = (await res.json()) as { error: { message: string } };
+		expect(body.error.message).toContain("not a supported provider");
 	});
 });
 

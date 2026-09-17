@@ -28,7 +28,7 @@ describe("skillsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({}),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST / with an empty url", async () => {
@@ -37,7 +37,7 @@ describe("skillsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ url: "" }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects an enable toggle with no repoId", async () => {
@@ -49,7 +49,7 @@ describe("skillsRoute validation", () => {
 				body: JSON.stringify({ enabled: true }),
 			},
 		);
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects an enable toggle with a non-boolean enabled", async () => {
@@ -61,7 +61,7 @@ describe("skillsRoute validation", () => {
 				body: JSON.stringify({ repoId: "r1", enabled: "yes" }),
 			},
 		);
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("returns an empty result set for a too-short search query", async () => {

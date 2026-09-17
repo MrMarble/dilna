@@ -1,3 +1,7 @@
+import {
+	customProviderApiSchema,
+	type CustomProviderApi as SharedCustomProviderApi,
+} from "@dilna/shared";
 import { getEnvApiKey } from "@earendil-works/pi-ai/compat";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 
@@ -31,16 +35,14 @@ export function isDilnaProvider(value: string): value is DilnaProvider {
  * apiKey string), not a `pi-ai` `Provider`/auth-registry entry — see that
  * module's doc comment for why no further abstraction is needed.
  */
-export const CUSTOM_PROVIDER_APIS = [
-	"openai-completions",
-	"openai-responses",
-	"anthropic-messages",
-	"google-generative-ai",
-] as const;
-export type CustomProviderApi = (typeof CUSTOM_PROVIDER_APIS)[number];
+// Sourced from `@dilna/shared`'s schema rather than re-declared, so the
+// server's validation and the web client's type can't drift — they did
+// before, with the client typing `api` as a bare `string`.
+export const CUSTOM_PROVIDER_APIS = customProviderApiSchema.options;
+export type CustomProviderApi = SharedCustomProviderApi;
 
 export function isCustomProviderApi(value: string): value is CustomProviderApi {
-	return (CUSTOM_PROVIDER_APIS as readonly string[]).includes(value);
+	return customProviderApiSchema.safeParse(value).success;
 }
 
 /**

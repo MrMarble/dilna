@@ -1,4 +1,5 @@
 import type { MiddlewareHandler } from "hono";
+import { toApiErrorBody } from "./errors";
 
 // Rejects requests whose Host header isn't in the allowlist. Guards against
 // DNS rebinding / CSRF-style requests from a browser tab that CORS alone
@@ -10,7 +11,7 @@ export function hostAllowlistMiddleware(
 	return async (c, next) => {
 		const host = c.req.header("host");
 		if (!host || !allowedHosts.includes(host)) {
-			return c.text("Forbidden", 403);
+			return c.json(toApiErrorBody("forbidden", 403), 403);
 		}
 		return next();
 	};
@@ -26,7 +27,7 @@ export function bearerAuthMiddleware(
 	return async (c, next) => {
 		if (c.req.path === skipPath) return next();
 		if (c.req.header("authorization") !== `Bearer ${token}`) {
-			return c.json({ error: "unauthorized" }, 401);
+			return c.json(toApiErrorBody("unauthorized", 401), 401);
 		}
 		return next();
 	};

@@ -1,23 +1,32 @@
+import { commitsQuerySchema } from "@dilna/shared";
 import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/errors";
 import type { SessionManager } from "../sessions/manager";
-import { createSessionsRoute, parseCommitsLimit } from "./sessions";
+import { createSessionsRoute } from "./sessions";
 
-describe("parseCommitsLimit", () => {
+// Was `parseCommitsLimit`, a hand-rolled parser; the bound now lives on
+// `commitsQuerySchema` in @dilna/shared. Same contract: a junk or
+// out-of-range `?limit=` degrades to undefined (so getRecentCommits applies
+// its own default of 5) rather than erroring the request.
+describe("commitsQuerySchema", () => {
+	const limitOf = (limit?: string) =>
+		commitsQuerySchema.parse(limit === undefined ? {} : { limit }).limit;
+
 	it("passes through a valid limit", () => {
-		expect(parseCommitsLimit("10")).toBe(10);
-		expect(parseCommitsLimit("1")).toBe(1);
-		expect(parseCommitsLimit("50")).toBe(50);
+		expect(limitOf("10")).toBe(10);
+		expect(limitOf("1")).toBe(1);
+		expect(limitOf("50")).toBe(50);
 	});
 
 	it("falls back to undefined for missing, non-numeric, or out-of-range input", () => {
-		expect(parseCommitsLimit(undefined)).toBeUndefined();
-		expect(parseCommitsLimit("")).toBeUndefined();
-		expect(parseCommitsLimit("abc")).toBeUndefined();
-		expect(parseCommitsLimit("0")).toBeUndefined();
-		expect(parseCommitsLimit("-5")).toBeUndefined();
-		expect(parseCommitsLimit("51")).toBeUndefined();
-		expect(parseCommitsLimit("3.5")).toBeUndefined();
+		expect(limitOf(undefined)).toBeUndefined();
+		expect(limitOf("")).toBeUndefined();
+		expect(limitOf("abc")).toBeUndefined();
+		expect(limitOf("0")).toBeUndefined();
+		expect(limitOf("-5")).toBeUndefined();
+		expect(limitOf("51")).toBeUndefined();
+		expect(limitOf("3.5")).toBeUndefined();
 	});
 });
 
@@ -41,7 +50,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({}),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST / with an unrecognized agentType", async () => {
@@ -50,7 +59,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ repoId: "abc", agentType: "claude" }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST /:id/messages with no text", async () => {
@@ -59,7 +68,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({}),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST /:id/messages with an empty text string", async () => {
@@ -68,7 +77,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ text: "" }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST /:id/messages with whitespace-only text and no attachments", async () => {
@@ -77,7 +86,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ text: "   ", attachmentIds: [] }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	// An attachment-only message ("look at this") is a real send, so empty text
@@ -102,7 +111,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ text: "hi", attachmentIds: [""] }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	// The queue endpoint shares the send's body schema (ADR-0033) — an
@@ -114,7 +123,7 @@ describe("sessionsRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ text: "   " }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 });
 
@@ -137,12 +146,14 @@ describe("requireSession on sessions routes", () => {
 			removeQueuedMessage: vi.fn(),
 			getMessages: vi.fn().mockResolvedValue([]),
 		} as unknown as SessionManager;
+		// Mounts the same `onError` as index.ts, so these assert the error shape
+		// a real client actually receives rather than Hono's bare-HTTPException
+		// default — which is text/plain and unreadable by `api/client.ts`.
 		return {
 			sessions,
-			app: new Hono().route(
-				"/",
-				createSessionsRoute({ sessions, repos: {} as never }),
-			),
+			app: new Hono()
+				.onError(errorHandler)
+				.route("/", createSessionsRoute({ sessions, repos: {} as never })),
 		};
 	}
 
@@ -157,10 +168,9 @@ describe("requireSession on sessions routes", () => {
 		const { app } = appWithNoSessions();
 		const res = await app.request(path);
 		expect(res.status).toBe(404);
-		// A bare HTTPException renders as plain text here; the JSON error shape
-		// is applied by the app-level onError in index.ts, which this isolated
-		// route app doesn't mount.
-		await expect(res.text()).resolves.toBe("session not found");
+		await expect(res.json()).resolves.toEqual({
+			error: { message: "session not found", status: 404 },
+		});
 	});
 
 	it("404s POST /:id/attachments for an unknown session", async () => {

@@ -1,5 +1,8 @@
+import {
+	pushSubscribeBodySchema,
+	pushUnsubscribeBodySchema,
+} from "@dilna/shared";
 import { Hono } from "hono";
-import { HTTPException } from "hono/http-exception";
 import {
 	deleteSubscription,
 	deliveryStatus,
@@ -7,6 +10,7 @@ import {
 	subscriptionCount,
 	vapidPublicKey,
 } from "../sessions/pushSender";
+import { validate } from "./factory";
 
 /**
  * Web Push subscription management (ADR-0029).
@@ -18,47 +22,12 @@ import {
  * These sit behind the same bearer auth as the rest of `/api/*` — which is
  * *opt-in* (`DILNA_AUTH_TOKEN`; see index.ts), so on a default deployment
  * they are unauthenticated. That matters more here than for a typical read
- * route, because `/subscribe` persists a URL the server later POSTs to: see
- * the scheme check in `isSubscribeBody`.
+ * route, because `/subscribe` persists a URL the server later POSTs to: the
+ * https-only SSRF check that guards it now lives on
+ * `pushSubscribeBodySchema` in `@dilna/shared`, which carries the full
+ * rationale for where that line is drawn.
  */
 export const pushRoute = new Hono();
-
-type SubscribeBody = {
-	endpoint: string;
-	keys: { p256dh: string; auth: string };
-};
-
-function isSubscribeBody(body: unknown): body is SubscribeBody {
-	if (typeof body !== "object" || body === null) return false;
-	const b = body as Record<string, unknown>;
-	if (typeof b.endpoint !== "string" || b.endpoint.length === 0) return false;
-	// This value becomes a server-side `fetch` target, so a hostile one is an
-	// SSRF vector rather than just a malformed row. Requiring HTTPS is the
-	// cheap 90%: it rejects `file://`, and it rules out the plaintext
-	// `http://localhost:6379`-style probes at internal services. Real push
-	// endpoints (FCM, Mozilla, WNS) are always HTTPS, so this costs nothing.
-	//
-	// It does not stop an `https://` URL pointing at a private address; a full
-	// fix would be an allowlist of known push origins, which would also break
-	// self-hosted push services. Given a single-user app whose other routes
-	// already run arbitrary agent code, this is the proportionate line.
-	let parsed: URL;
-	try {
-		parsed = new URL(b.endpoint);
-	} catch {
-		return false;
-	}
-	if (parsed.protocol !== "https:") return false;
-	const keys = b.keys as Record<string, unknown> | undefined;
-	return (
-		typeof keys === "object" &&
-		keys !== null &&
-		typeof keys.p256dh === "string" &&
-		keys.p256dh.length > 0 &&
-		typeof keys.auth === "string" &&
-		keys.auth.length > 0
-	);
-}
 
 /**
  * The instance's VAPID public key, which the client needs before it can call
@@ -82,14 +51,8 @@ pushRoute.get("/key", (c) => {
 	});
 });
 
-pushRoute.post("/subscribe", async (c) => {
-	const body = await c.req.json().catch(() => null);
-	if (!isSubscribeBody(body)) {
-		throw new HTTPException(400, {
-			message:
-				"Expected { endpoint, keys: { p256dh, auth } } from PushSubscription.toJSON().",
-		});
-	}
+pushRoute.post("/subscribe", validate("json", pushSubscribeBodySchema), (c) => {
+	const body = c.req.valid("json");
 	saveSubscription({
 		endpoint: body.endpoint,
 		p256dh: body.keys.p256dh,
@@ -104,15 +67,11 @@ pushRoute.post("/subscribe", async (c) => {
  * changed — the sender also prunes dead endpoints on 404/410, so a missed
  * call here is self-healing rather than a leak.
  */
-pushRoute.post("/unsubscribe", async (c) => {
-	const body = await c.req.json().catch(() => null);
-	const endpoint =
-		typeof body === "object" && body !== null
-			? (body as Record<string, unknown>).endpoint
-			: undefined;
-	if (typeof endpoint !== "string" || endpoint.length === 0) {
-		throw new HTTPException(400, { message: "Expected { endpoint }." });
-	}
-	deleteSubscription(endpoint);
-	return c.json({ ok: true, subscriptions: subscriptionCount() });
-});
+pushRoute.post(
+	"/unsubscribe",
+	validate("json", pushUnsubscribeBodySchema),
+	(c) => {
+		deleteSubscription(c.req.valid("json").endpoint);
+		return c.json({ ok: true, subscriptions: subscriptionCount() });
+	},
+);

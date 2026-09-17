@@ -72,6 +72,7 @@ describe("POST /subscribe", () => {
 	it("stores a subscription", async () => {
 		const res = await pushRoute.request("/subscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(SUBSCRIPTION),
 		});
 		expect(res.status).toBe(200);
@@ -85,6 +86,7 @@ describe("POST /subscribe", () => {
 		for (let i = 0; i < 3; i += 1) {
 			await pushRoute.request("/subscribe", {
 				method: "POST",
+				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(SUBSCRIPTION),
 			});
 		}
@@ -94,10 +96,12 @@ describe("POST /subscribe", () => {
 	it("updates the keys when a browser re-subscribes on the same endpoint", async () => {
 		await pushRoute.request("/subscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(SUBSCRIPTION),
 		});
 		await pushRoute.request("/subscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				...SUBSCRIPTION,
 				keys: { p256dh: "RotatedKey", auth: "RotatedAuth" },
@@ -109,9 +113,10 @@ describe("POST /subscribe", () => {
 	it("rejects a malformed body", async () => {
 		const res = await pushRoute.request("/subscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ endpoint: "https://x.example" }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 		expect(sender.subscriptionCount()).toBe(0);
 	});
 
@@ -125,9 +130,10 @@ describe("POST /subscribe", () => {
 	])("rejects a non-HTTPS endpoint (%s)", async (endpoint) => {
 		const res = await pushRoute.request("/subscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ ...SUBSCRIPTION, endpoint }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 		expect(sender.subscriptionCount()).toBe(0);
 	});
 });
@@ -136,10 +142,12 @@ describe("POST /unsubscribe", () => {
 	it("removes a stored subscription", async () => {
 		await pushRoute.request("/subscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(SUBSCRIPTION),
 		});
 		const res = await pushRoute.request("/unsubscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ endpoint: SUBSCRIPTION.endpoint }),
 		});
 		expect(res.status).toBe(200);
@@ -149,9 +157,10 @@ describe("POST /unsubscribe", () => {
 	it("rejects a body with no endpoint", async () => {
 		const res = await pushRoute.request("/unsubscribe", {
 			method: "POST",
+			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({}),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 });
 

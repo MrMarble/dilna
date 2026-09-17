@@ -1,17 +1,16 @@
-import type { Repo, RepoStats, RepoSyncStatus } from "@dilna/shared";
-import { zValidator } from "@hono/zod-validator";
+import {
+	cloneRepoBodySchema,
+	type Repo,
+	type RepoStats,
+	type RepoSyncStatus,
+} from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { z } from "zod";
 import type { RepoManager } from "../repos/manager";
+import { validate } from "./factory";
 
 type ListResponse = { repos: Repo[] };
 type OneResponse = { repo: Repo };
-
-const cloneBodySchema = z.object({
-	url: z.string().min(1),
-	slug: z.string().min(1).optional(),
-});
 
 export function createReposRoute(deps: { repos: RepoManager }): Hono {
 	const reposRoute = new Hono();
@@ -44,7 +43,7 @@ export function createReposRoute(deps: { repos: RepoManager }): Hono {
 		}
 	});
 
-	reposRoute.post("/", zValidator("json", cloneBodySchema), async (c) => {
+	reposRoute.post("/", validate("json", cloneRepoBodySchema), async (c) => {
 		const body = c.req.valid("json");
 		try {
 			const repo = await deps.repos.clone(body.url, body.slug);
