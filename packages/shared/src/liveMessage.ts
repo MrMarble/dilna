@@ -48,6 +48,12 @@ export function applyEventToParts(
 				? [...parts.slice(0, -1), { type: "text", text: last.text + ev.chunk }]
 				: [...parts, { type: "text", text: ev.chunk }];
 		}
+		case "image_sent":
+			// Appended in arrival order rather than hoisted, so an image the Agent
+			// sent mid-sentence stays between the prose that introduced it and the
+			// prose that follows (issue #222, ADR-0038). A later `token` opens a
+			// fresh text part for the same reason it does after a tool call.
+			return [...parts, { type: "attachment", attachment: ev.attachment }];
 		case "tool_call_start":
 			return [
 				...parts,
@@ -93,11 +99,12 @@ export function isMessageContentEvent(
 	ev: AgentStreamEvent,
 ): ev is Extract<
 	AgentStreamEvent,
-	{ type: "token" | "tool_call_start" | "tool_call_end" }
+	{ type: "token" | "tool_call_start" | "tool_call_end" | "image_sent" }
 > {
 	return (
 		ev.type === "token" ||
 		ev.type === "tool_call_start" ||
-		ev.type === "tool_call_end"
+		ev.type === "tool_call_end" ||
+		ev.type === "image_sent"
 	);
 }

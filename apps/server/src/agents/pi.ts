@@ -5,6 +5,7 @@ import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import type {
 	AgentStreamEvent,
 	Artefact,
+	Attachment,
 	Message,
 	MessagePart,
 	UsageTotals,
@@ -61,6 +62,7 @@ import {
 } from "../skills/loader";
 import { createPublishArtefactTool } from "./artefactTools";
 import { createConfinementHook } from "./confinement";
+import { createSendImageTool } from "./imageTools";
 import {
 	createOrchestratorTools,
 	ORCHESTRATOR_SYSTEM_PROMPT,
@@ -117,6 +119,15 @@ export type PiStartOptions = {
 	 * has no publish tool, which is what the orchestrator (no Worktree of its
 	 * own to publish from) wants. */
 	onArtefactPublished?: (artefact: Artefact) => void;
+	/** Called when the Agent sends an image into the chat (issue #222,
+	 * ADR-0038), so `SessionManager` can fold it into the in-flight assistant
+	 * message and broadcast `image_sent`. Optional on the same terms as
+	 * {@link onArtefactPublished}: no sink, no tool — an image nobody is
+	 * listening for would store bytes that never reach the transcript. */
+	onImageSent?: (
+		attachment: Attachment,
+		ctx: { toolCallId: string; caption?: string },
+	) => void;
 	/** Called when the set of running subagents changes (issue #206,
 	 * ADR-0034), so `SessionManager` can broadcast a fresh `turn_activity`.
 	 * Level-based: receives the whole current list, never a delta. Optional:
@@ -542,6 +553,20 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 				sessionId: opts.sessionId,
 				worktreePath: opts.worktreePath,
 				onPublished,
+			}),
+		);
+	}
+
+	// Same conditional-registration reasoning as the publish tool above
+	// (issue #222, ADR-0038): an image sent with no sink listening would copy
+	// bytes into a row the transcript never shows.
+	if (opts.onImageSent) {
+		const onImageSent = opts.onImageSent;
+		tools.push(
+			createSendImageTool({
+				sessionId: opts.sessionId,
+				worktreePath: opts.worktreePath,
+				onImageSent,
 			}),
 		);
 	}
@@ -996,6 +1021,11 @@ export function piMessagesToDilna(
 	 * same turn. Required — every caller knows which turn it is persisting
 	 * (see the same parameter on {@link piRoundToDilnaMessage}). */
 	turnId: string,
+	/** See {@link piRoundToDilnaMessage}'s identical parameter. Threaded here
+	 * too because both converters must produce the same row content for the
+	 * same round — otherwise an image would survive the incremental path but
+	 * vanish whenever the safety net wrote the round instead. */
+	sentImages?: ReadonlyMap<string, Attachment>,
 ): Message[] {
 	const messages: Message[] = [];
 
@@ -1020,7 +1050,7 @@ export function piMessagesToDilna(
 	// `toolResult` entries are likewise not rows — they fold into their
 	// owning round's `tool_call` part.
 	for (const round of piRounds(entries)) {
-		const message = piRoundToDilnaMessage(sessionId, round, turnId);
+		const message = piRoundToDilnaMessage(sessionId, round, turnId, sentImages);
 		if (message) messages.push(message);
 	}
 
@@ -1113,6 +1143,16 @@ export function piRoundToDilnaMessage(
 	round: { message: AgentMessage; toolResults: ToolResultMessage[] },
 	/** See `piMessagesToDilna`'s identical parameter. */
 	turnId: string,
+	/** Images sent by `dilna_send_image` during this turn, keyed by the tool
+	 * call that sent each one (issue #222, ADR-0038).
+	 *
+	 * Threaded in rather than read from a module-level store because this
+	 * function is pure over its inputs everywhere else, and because the
+	 * position matters: an image is spliced in directly after its own tool
+	 * call's part, so the persisted row interleaves prose and pictures the
+	 * same way the live view did. pi has no assistant content block that
+	 * could carry one, so there is nothing in `round` itself to convert. */
+	sentImages?: ReadonlyMap<string, Attachment>,
 ): Message | null {
 	if (round.message.role !== "assistant") return null;
 
@@ -1139,6 +1179,8 @@ export function piRoundToDilnaMessage(
 				output: result?.output ?? "",
 				error: result?.error,
 			});
+			const sent = sentImages?.get(block.id);
+			if (sent) parts.push({ type: "attachment", attachment: sent });
 		}
 		// ThinkingContent dropped, same as piMessagesToDilna.
 	}
@@ -1213,11 +1255,21 @@ export function dilnaMessagesToInitialState(
 					name: part.tool,
 					arguments: (part.input as Record<string, unknown>) ?? {},
 				});
+			} else if (part.type === "attachment") {
+				// An image the Agent sent with `dilna_send_image` (issue #222,
+				// ADR-0038). Replayed as a text marker naming the file and its
+				// path, never as re-inlined base64 — exactly what the user branch
+				// above does with uploads, and for the same reason (ADR-0031): a
+				// cold start reconstructs the *whole* history, so re-encoding every
+				// image a Session ever sent would grow the seeded context without
+				// bound and re-charge the user for pictures the turn already acted
+				// on. Without this the Agent would forget it ever sent the image
+				// and re-send it on the next cold start.
+				content.push({
+					type: "text",
+					text: `[sent image: ${part.attachment.filename} — ${part.attachment.path}]`,
+				});
 			}
-			// `attachment` parts only ever appear on user rows (see MessagePart)
-			// — handled in the user branch above; an assistant row carrying one
-			// would be a bug elsewhere, and silently minting a malformed toolCall
-			// from it (which the old `else` did) would corrupt the seeded context.
 		}
 		out.push({
 			role: "assistant",

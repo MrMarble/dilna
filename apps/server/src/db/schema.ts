@@ -197,9 +197,15 @@ export const queuedMessages = sqliteTable("queued_messages", {
 });
 
 /**
- * A file the user uploaded to a Session (issue #53, ADR-0031) — one row per
- * upload, minted by `POST /api/sessions/:id/attachments` before the message
- * that references it is ever sent.
+ * A file in a Session's chat (issue #53, ADR-0031; issue #222, ADR-0038) —
+ * one row per file, travelling in either direction.
+ *
+ * A user upload is minted by `POST /api/sessions/:id/attachments` before the
+ * message that references it is ever sent. An Agent-sent image is minted by
+ * the `dilna_send_image` tool, which copies the bytes out of the Worktree at
+ * send time. `source` says which, and is the only difference between the two:
+ * storage, serving and rendering are shared deliberately (ADR-0038 explains
+ * why this reuses the table rather than mirroring `artefacts`' separate one).
  *
  * Metadata only: the bytes live on disk at `path`, under
  * `<data>/attachments/<sessionId>/`, deliberately outside every Worktree so
@@ -233,6 +239,12 @@ export const attachments = sqliteTable("attachments", {
 	 * reads), so changing the derivation rule can't retroactively rewrite what
 	 * an already-sent turn claims to have sent. */
 	kind: text("kind").notNull(),
+	/** `packages/shared`'s `AttachmentSource` — `"user"` or `"agent"` (issue
+	 * #222, ADR-0038). Defaulted to `"user"` so rows written before the column
+	 * existed read back as what they were. Stored rather than derived from the
+	 * referencing message's role: the row is minted before any message exists,
+	 * and an orphaned upload has no role to derive from. */
+	source: text("source").notNull().default("user"),
 	/** Absolute on-disk path. Stored rather than recomputed from
 	 * `<data>/attachments/<sessionId>/<filename>` so a row keeps pointing at
 	 * its real file even if the derivation (or `DILNA_DATA_DIR`) changes. */

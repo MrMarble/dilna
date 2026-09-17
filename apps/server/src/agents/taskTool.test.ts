@@ -134,6 +134,9 @@ describe("createTaskTool", () => {
 			"bash",
 			"task",
 			"dilna_publish_artefact",
+			// Issue #222/ADR-0038: same reasoning as the publish tool — a subagent
+			// reports to its parent, not to the user's transcript.
+			"dilna_send_image",
 			"update_repo_memory",
 		]) {
 			expect(names).not.toContain(forbidden);

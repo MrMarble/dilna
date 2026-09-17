@@ -59,6 +59,19 @@ const toolCall = (id: string, name: string, args: Record<string, unknown>) => ({
 	arguments: args,
 });
 
+/** An image the Agent sent with `dilna_send_image` (issue #222, ADR-0038). */
+const sentAttachment = {
+	id: "img-1",
+	sessionId: "s1",
+	filename: "shot.png",
+	mimeType: "image/png",
+	size: 128,
+	kind: "image" as const,
+	source: "agent" as const,
+	path: "/data/attachments/s1/aa-shot.png",
+	createdAt: 41,
+};
+
 describe("piMessagesToDilna", () => {
 	it("stamps every assistant row it writes with the caller's turnId", () => {
 		const entries: AgentMessage[] = [
@@ -317,6 +330,59 @@ describe("piRoundToDilnaMessage", () => {
 		).toBeNull();
 	});
 
+	// Issue #222/ADR-0038: pi has no assistant content block that carries an
+	// image, so the part is spliced in from the tool's own record — directly
+	// after the call that sent it, so the row interleaves prose and pictures
+	// the same way the live view did.
+	it("splices an Agent-sent image in directly after the tool call that sent it", () => {
+		const message = assistantMessage(
+			[
+				{ type: "text", text: "Here's the homepage:" },
+				toolCall("c-img", "dilna_send_image", { path: "shot.png" }),
+				{ type: "text", text: "The header is fixed." },
+			],
+			1_100,
+		);
+		const toolResults = [
+			toolResultMessage("c-img", "Sent shot.png", false, 1_150),
+		];
+
+		const result = piRoundToDilnaMessage(
+			"s1",
+			// biome-ignore lint/suspicious/noExplicitAny: same structural shape as the other piRoundToDilnaMessage tests here.
+			{ message, toolResults } as any,
+			"turn-1",
+			new Map([["c-img", sentAttachment]]),
+		);
+
+		expect(result?.parts.map((p) => p.type)).toEqual([
+			"text",
+			"tool_call",
+			"attachment",
+			"text",
+		]);
+		expect(result?.parts[2]).toEqual({
+			type: "attachment",
+			attachment: sentAttachment,
+		});
+	});
+
+	it("ignores images from other tool calls", () => {
+		const message = assistantMessage(
+			[toolCall("c1", "bash", { command: "ls" })],
+			1_100,
+		);
+
+		const result = piRoundToDilnaMessage(
+			"s1",
+			{ message, toolResults: [] },
+			"turn-1",
+			new Map([["some-other-call", sentAttachment]]),
+		);
+
+		expect(result?.parts.some((p) => p.type === "attachment")).toBe(false);
+	});
+
 	it("drops ThinkingContent, same as piMessagesToDilna", () => {
 		const message = assistantMessage(
 			[
@@ -390,6 +456,38 @@ describe("dilnaMessagesToInitialState", () => {
 		expect(content).toContain("/data/attachments/s1/abc-shot.png");
 		expect(content).toContain("shot.png");
 		expect(content).toContain("look at this");
+	});
+
+	// Issue #222/ADR-0038: this comment used to assert an assistant row could
+	// never carry an attachment, and the part was silently dropped — so the
+	// Agent forgot it had sent the image and would send it again on the next
+	// cold start. Replayed as a marker, for the same reason a user's upload is:
+	// re-inlining the bytes would grow the seeded context without bound.
+	it("replays an Agent-sent image as a marker naming the file and its path", () => {
+		const messages: Message[] = [
+			{
+				id: "m1",
+				sessionId: "s1",
+				role: "assistant",
+				parts: [
+					{ type: "text", text: "Here it is:" },
+					{ type: "attachment", attachment: sentAttachment },
+				],
+				turnId: "turn-1",
+				createdAt: 42,
+			},
+		];
+
+		const out = dilnaMessagesToInitialState(messages);
+
+		expect(out).toHaveLength(1);
+		const content = (out[0] as { content: { type: string; text: string }[] })
+			.content;
+		const text = content.map((c) => c.text).join("\n");
+		expect(text).toContain("shot.png");
+		expect(text).toContain("/data/attachments/s1/aa-shot.png");
+		// Never re-inlined as pixels — every replayed block stays text.
+		expect(content.every((c) => c.type === "text")).toBe(true);
 	});
 
 	it("splits an assistant row with a tool_call part into an AssistantMessage plus a trailing ToolResultMessage", () => {

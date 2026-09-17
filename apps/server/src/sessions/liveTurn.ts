@@ -85,12 +85,18 @@ export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
 					error: part.error,
 				});
 			}
+		} else if (part.type === "attachment") {
+			// An image the Agent sent mid-turn (issue #222, ADR-0038). Replayed in
+			// position like every other part, so a subscriber that connected after
+			// the send still sees the picture where it was sent — without this the
+			// image would silently vanish from a reloaded tab until the turn's row
+			// was persisted and refetched.
+			events.push({
+				type: "image_sent",
+				messageId: turn.messageId,
+				attachment: part.attachment,
+			});
 		}
-		// `attachment` parts are skipped: this replays an *assistant* turn's
-		// accumulated parts, and only a user row ever carries one (see
-		// `MessagePart`). There is also no event in the stream contract that
-		// would express one — a subscriber gets the user's attachments from the
-		// `user_message` broadcast and the REST history, not from turn replay.
 	}
 	return events;
 }

@@ -11,8 +11,25 @@
  * rewrite what an already-sent turn claims to have sent. */
 export type AttachmentKind = "image" | "document";
 
-/** A file the user uploaded to a Session, stored outside every Worktree (see
- * ADR-0031) and referenced from the message that sent it.
+/** Who put an {@link Attachment} into the chat (issue #222, ADR-0038).
+ *
+ * `"user"` is an upload from the composer; `"agent"` is an image the Agent
+ * sent with `dilna_send_image`. The two are otherwise identical — same
+ * storage, same serve route, same renderer — so this exists to keep them
+ * *distinguishable* for audit and debugging, and to let the serve route reason
+ * about which bytes were chosen by a model.
+ *
+ * Stored rather than inferred from the owning row's role, for the same reason
+ * {@link AttachmentKind} is: it records what actually happened, so a later
+ * change to the rules can't retroactively rewrite an already-sent turn. */
+export type AttachmentSource = "user" | "agent";
+
+/** A file in a Session's chat, stored outside every Worktree (see ADR-0031)
+ * and referenced from the message that sent it.
+ *
+ * Travels in both directions (ADR-0038): the user uploads one from the
+ * composer, and the Agent sends one with `dilna_send_image`. {@link source}
+ * says which.
  *
  * Deliberately carries no bytes: this shape travels in every `Message` the
  * chat renders, the transcript export serializes, and the Agent re-seeds
@@ -32,6 +49,10 @@ export type Attachment = {
 	 * is enforced against. */
 	size: number;
 	kind: AttachmentKind;
+	/** Which direction this file travelled (issue #222, ADR-0038). Optional in
+	 * the type because rows predating the column replay without it; the server
+	 * backfills `"user"` on read, so treat an absent value as `"user"`. */
+	source?: AttachmentSource;
 	/** Absolute path on the server, inside the Session's attachment
 	 * directory. Present so the *Agent* can be told where to find the file —
 	 * it is the whole point of storing outside the Worktree (the user asks
@@ -51,9 +72,17 @@ export type MessagePart =
 			output: unknown;
 			error?: string;
 	  }
-	/** A file the user sent with this message. Only ever appears on a
-	 * `"user"` row — an Agent has no way to produce one (it writes files into
-	 * the Worktree instead), so nothing in the normalization path mints these.
+	/** A file sent with this message, in either direction (issue #222,
+	 * ADR-0038). On a `"user"` row it's an upload from the composer; on an
+	 * `"assistant"` row it's an image the Agent sent with `dilna_send_image`,
+	 * and `attachment.source` distinguishes them.
+	 *
+	 * An assistant row's part is minted by the tool, not by
+	 * `piRoundToDilnaMessage` — pi-agent-core's assistant content blocks are
+	 * text/toolCall/thinking, so no round-to-row conversion can produce one.
+	 * It reaches the live message through the `image_sent` event and
+	 * {@link applyEventToParts}, which is what keeps it positioned between the
+	 * prose before and after it rather than appended at the end of the turn.
 	 *
 	 * The part embeds the full {@link Attachment} record rather than just an
 	 * id so a message renders, exports and re-seeds from the row alone, with

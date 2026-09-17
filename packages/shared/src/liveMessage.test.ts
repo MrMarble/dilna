@@ -24,6 +24,85 @@ const token = (chunk: string): AgentStreamEvent => ({
 	chunk,
 });
 
+/** An image the Agent sent mid-turn (issue #222, ADR-0038). */
+const sentImage = {
+	id: "img-1",
+	sessionId: "s1",
+	filename: "shot.png",
+	mimeType: "image/png",
+	size: 128,
+	kind: "image" as const,
+	source: "agent" as const,
+	path: "/data/attachments/s1/aa-shot.png",
+	createdAt: 41,
+};
+
+const imageSent = (): AgentStreamEvent => ({
+	type: "image_sent",
+	messageId: "m1",
+	attachment: sentImage,
+});
+
+describe("applyEventToParts (image_sent)", () => {
+	// Issue #222/ADR-0038: the picture has to land *between* the prose that
+	// introduces it and the prose that interprets it. Appending at the end of
+	// the turn (or hoisting to the top) would put every image next to the wrong
+	// sentence.
+	it("keeps an Agent-sent image in the position it was sent", () => {
+		const parts = fold([
+			token("Here's the homepage:"),
+			imageSent(),
+			token("The header is fixed."),
+		]);
+
+		expect(parts).toEqual([
+			{ type: "text", text: "Here's the homepage:" },
+			{ type: "attachment", attachment: sentImage },
+			{ type: "text", text: "The header is fixed." },
+		]);
+	});
+
+	it("opens a fresh text part for a token that follows an image", () => {
+		const parts = fold([token("before"), imageSent(), token("after")]);
+		expect(parts.filter((p) => p.type === "text")).toEqual([
+			{ type: "text", text: "before" },
+			{ type: "text", text: "after" },
+		]);
+	});
+
+	it("interleaves images with tool calls in stream order", () => {
+		const parts = fold([
+			toolStart("c1", "Bash", { command: "screenshot" }),
+			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
+			imageSent(),
+			token("done"),
+		]);
+
+		expect(parts.map((p) => p.type)).toEqual([
+			"tool_call",
+			"attachment",
+			"text",
+		]);
+	});
+
+	it("appends each of several images separately", () => {
+		const second = {
+			...sentImage,
+			id: "img-2",
+			filename: "after.png",
+		};
+		const parts = fold([
+			imageSent(),
+			{ type: "image_sent", messageId: "m1", attachment: second },
+		]);
+
+		expect(parts).toEqual([
+			{ type: "attachment", attachment: sentImage },
+			{ type: "attachment", attachment: second },
+		]);
+	});
+});
+
 describe("applyEventToParts", () => {
 	it("joins consecutive token chunks into one trailing text part", () => {
 		expect(fold([token("Hel"), token("lo "), token("world")])).toEqual([
@@ -141,6 +220,10 @@ describe("isMessageContentEvent", () => {
 		);
 	});
 
+	it("accepts image_sent", () => {
+		expect(isMessageContentEvent(imageSent())).toBe(true);
+	});
+
 	it.each([
 		"session_status",
 		"message_start",
@@ -166,6 +249,7 @@ describe("isMessageContentEvent", () => {
 		const samples: AgentStreamEvent[] = [
 			token("x"),
 			toolStart("c1"),
+			imageSent(),
 			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "y" },
 			{ type: "session_status", status: "idle" },
 			{ type: "message_start", messageId: "m1", role: "assistant" },
