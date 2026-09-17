@@ -13,7 +13,8 @@ dilna is a self-hosted, web-based workspace for running AI coding agents against
 
 > ⚠️ **Fully vibecoded.** This project is built almost entirely by AI agents (fittingly, using dilna itself). Expect rough edges, and review before running it against anything you care about.
 
-![dilna demo](docs/media/demo.mp4)
+[![dilna demo](docs/media/demo-poster.jpg)](docs/media/demo.mp4)
+<p><sub>(GitHub won't play video inline in a README — click the image to watch it on the file's own page.)</sub></p>
 
 <table>
   <tr>
