@@ -1,0 +1,92 @@
+name: E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    # Browser download on a cache miss dominates a cold run; the suite itself
+    # is well under a minute.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Keyed on the resolved playwright version, not the caret range in
+      # package.json: a browser build is tied to the driver revision, so a
+      # stale cache would pair a new driver with an old binary.
+      - name: Resolve Playwright version
+        id: pw
+        # Run from apps/web: @playwright/test is that workspace's dependency,
+        # and pnpm's strict linking means it is not resolvable from the root.
+        working-directory: apps/web
+        run: |
+          version="$(node -p "require('@playwright/test/package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      # The cache restores the browser binary but not the apt-installed system
+      # libraries, which are not part of the runner image — so the deps step
+      # runs either way, and only the download is skipped on a hit.
+      - name: Install system dependencies
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: pnpm --filter @dilna/web exec playwright install-deps chromium
+
+      # `--only-shell` fetches the headless shell (~267MB) rather than the full
+      # browser (~656MB); headless `chromium.launch()` uses the shell anyway.
+      - name: Install Chromium and system dependencies
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: pnpm --filter @dilna/web exec playwright install --with-deps --only-shell chromium
+
+      # The suite runs the real server against the real built SPA, so both
+      # builds must exist before Playwright starts (e2e/server.mjs fails fast
+      # with a clear message if they don't).
+      - name: Build
+        run: pnpm build
+
+      - name: Run E2E tests
+        run: pnpm --filter @dilna/web run test:e2e
+
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7
+
+      # Traces, screenshots and videos are only written for failures
+      # (see playwright.config.ts), so this is empty on a green run.
+      - name: Upload failure artefacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: apps/web/test-results/
+          retention-days: 7
