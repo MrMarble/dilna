@@ -22,7 +22,9 @@ import { type RepoManager, RepoNotFoundError } from "../repos/manager";
 import { getArtefact, listArtefacts } from "../sessions/artefacts";
 import {
 	AttachmentRejectedError,
+	bareMimeType,
 	getAttachment,
+	IMAGE_MIME_TYPES,
 	resolveAttachments,
 	storeAttachment,
 } from "../sessions/attachments";
@@ -391,6 +393,18 @@ export function createSessionsRoute(deps: {
 	 * `Content-Disposition: inline` because the overwhelmingly common case is an
 	 * image the page renders; the filename is still supplied so an explicit
 	 * download saves it under the name the user uploaded.
+	 *
+	 * **The headers below are load-bearing, not hygiene** (issue #222,
+	 * ADR-0038). Since an Agent can mint attachment rows with
+	 * `dilna_send_image`, some of these bytes are chosen by a *model* and served
+	 * inline from dilna's own origin, alongside an unauthenticated `/api/*`
+	 * surface — the same reasoning that locked down the artefact route below.
+	 * The declared `Content-Type` is re-validated against the image allowlist
+	 * rather than trusted from the row, `nosniff` stops a browser second-
+	 * guessing it, and the CSP neuters anything that does get interpreted as a
+	 * document. Applied to user uploads too: it costs an image nothing, and a
+	 * route whose safety depends on which column a row carries is one refactor
+	 * away from not having it.
 	 */
 	sessionsRoute.get("/:id/attachments/:attachmentId", async (c) => {
 		const id = c.req.param("id");
@@ -407,7 +421,23 @@ export function createSessionsRoute(deps: {
 			// metadata.
 			throw new HTTPException(404, { message: "attachment file is missing" });
 		}
-		c.header("Content-Type", attachment.mimeType);
+		// An image is served as an image only if the stored MIME is still one of
+		// the four in `IMAGE_MIME_TYPES`; anything else — including a document,
+		// and including an image type later dropped from the allowlist — is
+		// served as opaque binary. Never `text/html`, which is the one type that
+		// would make this route an XSS vector.
+		const bare = bareMimeType(attachment.mimeType);
+		const safeType =
+			attachment.kind === "image" && IMAGE_MIME_TYPES.has(bare)
+				? bare
+				: "application/octet-stream";
+		c.header("Content-Type", safeType);
+		c.header(
+			"Content-Security-Policy",
+			"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+		);
+		c.header("X-Content-Type-Options", "nosniff");
+		c.header("Referrer-Policy", "no-referrer");
 		c.header(
 			"Content-Disposition",
 			`inline; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`,

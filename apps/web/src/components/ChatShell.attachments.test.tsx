@@ -328,6 +328,68 @@ describe("rendering a sent attachment", () => {
 		expect(await screen.findByText("what's wrong here?")).toBeTruthy();
 	});
 
+	// Issue #222/ADR-0038: the Agent sends an image at a point in its
+	// reasoning, so the picture has to stay between the prose that introduces
+	// it and the prose that interprets it. User attachments are still hoisted
+	// above the text (matching the composer's file tray); an assistant's are
+	// not, and this asserts the document order rather than mere presence.
+	it("keeps an Agent-sent image between the prose before and after it", async () => {
+		const attachment = makeAttachment({
+			id: "att-img",
+			filename: "homepage.png",
+			source: "agent",
+		});
+		vi.mocked(api.sessions.messages).mockResolvedValue({
+			messages: [
+				{
+					id: "m1",
+					sessionId: "sess-1",
+					role: "assistant",
+					parts: [
+						{ type: "text", text: "Here is the homepage:" },
+						{ type: "attachment", attachment },
+						{ type: "text", text: "The header is fixed." },
+					],
+					turnId: null,
+					createdAt: 1,
+				},
+			],
+		});
+		renderShell();
+
+		const img = await screen.findByAltText("homepage.png");
+		const before = await screen.findByText("Here is the homepage:");
+		const after = await screen.findByText("The header is fixed.");
+
+		// DOCUMENT_POSITION_FOLLOWING === 4: each node precedes the next.
+		expect(before.compareDocumentPosition(img) & 4).toBeTruthy();
+		expect(img.compareDocumentPosition(after) & 4).toBeTruthy();
+	});
+
+	it("still hoists a user's attachments above the message text", async () => {
+		vi.mocked(api.sessions.messages).mockResolvedValue({
+			messages: [
+				{
+					id: "m1",
+					sessionId: "sess-1",
+					role: "user",
+					parts: [
+						{ type: "text", text: "what's wrong here?" },
+						{ type: "attachment", attachment: makeAttachment() },
+					],
+					turnId: null,
+					createdAt: 1,
+				},
+			],
+		});
+		renderShell();
+
+		const img = await screen.findByAltText("diagram.png");
+		const text = await screen.findByText("what's wrong here?");
+		// Hoisted despite the text part coming first in `parts`.
+		expect(img.compareDocumentPosition(text) & 4).toBeTruthy();
+	});
+
 	// Rich previews are a separate task; a name-and-icon card is the honest
 	// placeholder until then.
 	it("renders a document attachment as a card with its name and size", async () => {

@@ -1,25 +1,45 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	copyFileSync,
+	existsSync,
+	mkdirSync,
+	openSync,
+	readSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import {
 	type Attachment,
 	type AttachmentKind,
+	type AttachmentSource,
 	formatAttachmentSize,
 	MAX_ATTACHMENTS_PER_MESSAGE,
 } from "@dilna/shared";
 import { and, eq, inArray } from "drizzle-orm";
+import { isContained } from "../agents/confinement";
 import { getDataDir, getDb } from "../db";
 import { attachments as attachmentsTable } from "../db/schema";
 
 /**
- * Everything dilna does with an uploaded file (issue #53, ADR-0031): where
- * the bytes land, what a filename is allowed to be, which files a Provider
- * can see as pixels, and how a Session's uploads are handed to its Agent.
+ * Everything dilna does with a file in a Session's chat (issue #53, ADR-0031;
+ * issue #222, ADR-0038): where the bytes land, what a filename is allowed to
+ * be, which files a Provider can see as pixels, and how a Session's files are
+ * handed to its Agent.
  *
- * The module boundary is "a file the user sent", start to finish — accepting
+ * The module boundary is "a file in the chat", start to finish — accepting
  * bytes, storing them, and describing them — so no caller ever assembles an
  * attachment path itself. The route validates nothing about files; the
  * Agent adapter derives nothing about kinds. Both call in here.
+ *
+ * Files travel in **both directions**. {@link storeAttachment} accepts a user
+ * upload; {@link sendImage} copies an image out of the Worktree for the
+ * Agent's `dilna_send_image` tool. They share this module rather than
+ * mirroring `artefacts`' separate one because the two differ only in
+ * authorship — recorded as `source` — and not in shape, storage or lifecycle
+ * (ADR-0038).
  *
  * **Storage is deliberately outside every Worktree** (ADR-0031):
  * `<DILNA_DATA_DIR>/attachments/<sessionId>/`. An upload is a chat artifact,
@@ -60,12 +80,19 @@ export { MAX_ATTACHMENTS_PER_MESSAGE };
  * error, whereas classifying it as a document degrades to "the Agent can
  * read the file off disk", which still works.
  */
-const IMAGE_MIME_TYPES = new Set([
+export const IMAGE_MIME_TYPES = new Set([
 	"image/png",
 	"image/jpeg",
 	"image/gif",
 	"image/webp",
 ]);
+
+/** Normalize a stored MIME for comparison against {@link IMAGE_MIME_TYPES} —
+ * lowercased and stripped of any `; charset=…` parameter, the same way
+ * {@link attachmentKindFor} reads one. */
+export function bareMimeType(mimeType: string): string {
+	return mimeType.toLowerCase().split(";")[0]?.trim() ?? "";
+}
 
 /**
  * Which channel a file takes to the Agent, decided once at upload time from
@@ -151,7 +178,14 @@ export class AttachmentRejectedError extends Error {
  */
 export function storeAttachment(
 	sessionId: string,
-	file: { filename: string; mimeType: string; bytes: Uint8Array },
+	file: {
+		filename: string;
+		mimeType: string;
+		bytes: Uint8Array;
+		/** Defaults to `"user"`: this is the upload route's function, and an
+		 * Agent-sent image goes through {@link sendImage} instead. */
+		source?: AttachmentSource;
+	},
 ): Attachment {
 	if (file.bytes.byteLength === 0) {
 		throw new AttachmentRejectedError("file is empty");
@@ -177,6 +211,149 @@ export function storeAttachment(
 		mimeType: file.mimeType,
 		size: file.bytes.byteLength,
 		kind: attachmentKindFor(file.mimeType),
+		source: file.source ?? "user",
+		path: diskPath,
+		createdAt: Math.floor(Date.now() / 1000),
+	};
+	getDb().insert(attachmentsTable).values(attachment).run();
+	return attachment;
+}
+
+/**
+ * Image formats an Agent may send, keyed by their magic bytes.
+ *
+ * Sniffed from content rather than trusted from the extension: the path is
+ * the *model's* claim about a file it chose, and `Content-Type` is the one
+ * header the browser acts on, so `screenshot.png` containing something else
+ * must not be served as an image (ADR-0038). The four formats here are
+ * exactly {@link IMAGE_MIME_TYPES} — the set every vision-capable Provider in
+ * dilna's catalog accepts.
+ */
+const IMAGE_MAGIC: { mimeType: string; match: (b: Buffer) => boolean }[] = [
+	{
+		mimeType: "image/png",
+		match: (b) =>
+			b.length >= 8 &&
+			b
+				.subarray(0, 8)
+				.equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+	},
+	{
+		mimeType: "image/jpeg",
+		match: (b) =>
+			b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+	},
+	{
+		mimeType: "image/gif",
+		match: (b) =>
+			b.length >= 6 &&
+			(b.subarray(0, 6).toString("latin1") === "GIF87a" ||
+				b.subarray(0, 6).toString("latin1") === "GIF89a"),
+	},
+	{
+		mimeType: "image/webp",
+		match: (b) =>
+			b.length >= 12 &&
+			b.subarray(0, 4).toString("latin1") === "RIFF" &&
+			b.subarray(8, 12).toString("latin1") === "WEBP",
+	},
+];
+
+/** Read a file's leading bytes and name the image format they actually are,
+ * or `null` for anything else. Reads 12 bytes, not the whole file: a
+ * rejection shouldn't cost a full read of something large. */
+export function sniffImageMimeType(absolutePath: string): string | null {
+	const header = Buffer.alloc(12);
+	let fd: number | undefined;
+	try {
+		fd = openSync(absolutePath, "r");
+		readSync(fd, header, 0, 12, 0);
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+	return IMAGE_MAGIC.find((m) => m.match(header))?.mimeType ?? null;
+}
+
+/**
+ * Send one image out of a Session's Worktree into its chat (issue #222,
+ * ADR-0038) — the Agent→user counterpart of {@link storeAttachment}.
+ *
+ * `sourcePath` is interpreted relative to the Worktree root (an absolute path
+ * inside it is accepted too, since that's what the Agent's own tools hand
+ * back). Containment is checked with the same symlink-resolving
+ * {@link isContained} the tool-confinement hook uses, not a lexical prefix
+ * comparison a planted symlink would defeat — without it, `dilna_send_image`
+ * would be an arbitrary file-read primitive that copies any host file onto a
+ * URL the browser can fetch.
+ *
+ * The bytes are **copied**, for ADR-0032's reason: a Worktree file is mutable
+ * and deletable by the next `git checkout` or cleanup script, so a referenced
+ * image would silently start 404ing after the user was handed it.
+ */
+export function sendImage(args: {
+	sessionId: string;
+	worktreePath: string;
+	sourcePath: string;
+}): Attachment {
+	const { sessionId, worktreePath } = args;
+
+	const trimmed = args.sourcePath.trim();
+	if (!trimmed) throw new AttachmentRejectedError("path is required");
+
+	const absolute = path.isAbsolute(trimmed)
+		? trimmed
+		: path.resolve(worktreePath, trimmed);
+
+	if (!isContained(absolute, worktreePath)) {
+		throw new AttachmentRejectedError(
+			"path must be inside this session's worktree",
+		);
+	}
+
+	let stat: ReturnType<typeof statSync>;
+	try {
+		stat = statSync(absolute);
+	} catch {
+		throw new AttachmentRejectedError(`no such file: ${trimmed}`);
+	}
+	if (!stat.isFile())
+		throw new AttachmentRejectedError(`not a file: ${trimmed}`);
+	if (stat.size === 0) {
+		throw new AttachmentRejectedError(`file is empty: ${trimmed}`);
+	}
+	if (stat.size > ATTACHMENT_MAX_BYTES) {
+		throw new AttachmentRejectedError(
+			`file exceeds the ${Math.floor(ATTACHMENT_MAX_BYTES / (1024 * 1024))}MB limit`,
+		);
+	}
+
+	const mimeType = sniffImageMimeType(absolute);
+	if (!mimeType) {
+		throw new AttachmentRejectedError(
+			`not a supported image: ${trimmed} (expected ${[...IMAGE_MIME_TYPES].join(", ")})`,
+		);
+	}
+
+	const id = randomUUID();
+	const filename = sanitizeFilename(path.basename(absolute));
+	const dir = attachmentDir(sessionId);
+	mkdirSync(dir, { recursive: true });
+	const prefix = createHash("sha256").update(id).digest("hex").slice(0, 8);
+	const diskPath = path.join(dir, `${prefix}-${filename}`);
+	copyFileSync(absolute, diskPath);
+
+	const attachment: Attachment = {
+		id,
+		sessionId,
+		filename,
+		mimeType,
+		// Read back from the copy rather than reused from the source's stat, so
+		// the row always describes the bytes actually served.
+		size: statSync(diskPath).size,
+		kind: "image",
+		source: "agent",
 		path: diskPath,
 		createdAt: Math.floor(Date.now() / 1000),
 	};
@@ -320,6 +497,9 @@ function rowToAttachment(
 		mimeType: row.mimeType,
 		size: row.size,
 		kind: row.kind as AttachmentKind,
+		// Backfilled on read as well as by the migration's column default, so a
+		// row from any era answers the question rather than returning undefined.
+		source: (row.source as AttachmentSource | null) ?? "user",
 		path: row.path,
 		createdAt: row.createdAt,
 	};

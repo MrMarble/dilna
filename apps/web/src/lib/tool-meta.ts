@@ -6,6 +6,7 @@ import {
 	FileText,
 	FolderSearch,
 	Globe,
+	Image,
 	ListTodo,
 	SearchCode,
 	SquareTerminal,
@@ -113,6 +114,15 @@ export function getToolMeta(tool: string, input: unknown): ToolMeta {
 				icon: FileOutput,
 				label: "Publish",
 				detail: str(obj, "title") ?? shortDetail(obj, "path"),
+			};
+		// dilna's own image tool (issue #222). Detailed by the path rather than
+		// the caption: the caption is already rendered as prose next to the
+		// picture, so repeating it on the collapsed card says nothing new.
+		case "dilna_send_image":
+			return {
+				icon: Image,
+				label: "Send image",
+				detail: shortDetail(obj, "path"),
 			};
 		default:
 			return { icon: Wrench, label: tool };

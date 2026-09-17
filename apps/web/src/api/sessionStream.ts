@@ -17,6 +17,7 @@ const SESSION_EVENT_TYPE_MAP: Record<AgentStreamEvent["type"], true> = {
 	session_status: true,
 	changed_files: true,
 	artefact_published: true,
+	image_sent: true,
 	user_message: true,
 	queue_update: true,
 	message_start: true,

@@ -1203,14 +1203,32 @@ function ChatMessageRow({
 			toolBuffer = [];
 		}
 	}
-	// Attachments render above the message's text as one row of cards/images,
-	// regardless of where they sit among the parts — matching how the composer
-	// stacks its file tray over the input, so a sent message looks like what
-	// was composed.
-	const attached = parts.filter((p) => p.type === "attachment");
+	// A *user* message's attachments render above its text as one row of
+	// cards/images, regardless of where they sit among the parts — matching how
+	// the composer stacks its file tray over the input, so a sent message looks
+	// like what was composed.
+	//
+	// An *assistant* message's are left in place instead (issue #222,
+	// ADR-0038): the Agent sends an image at a point in its reasoning — after
+	// the prose that introduces it, before the prose that interprets it — and
+	// hoisting would put every picture above the sentence that says what it
+	// shows.
+	const hoistAttachments = role === "user";
+	const attached = hoistAttachments
+		? parts.filter((p) => p.type === "attachment")
+		: [];
 
 	parts.forEach((p, i) => {
-		if (p.type === "attachment") return;
+		if (p.type === "attachment") {
+			if (hoistAttachments) return;
+			flushTools();
+			rows.push(
+				<div key={`a-${p.attachment.id}`} className="flex flex-wrap gap-2">
+					<SentAttachment attachment={p.attachment} />
+				</div>,
+			);
+			return;
+		}
 		if (p.type === "text") {
 			flushTools();
 			rows.push(

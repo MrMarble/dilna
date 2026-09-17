@@ -81,6 +81,44 @@ async function upload(
 	};
 }
 
+describe("attachment serving hardening (issue #222, ADR-0038)", () => {
+	/** The tripwire: `text/html` is the one Content-Type that would turn this
+	 * route into an XSS vector on dilna's own origin. A document is served as
+	 * opaque binary no matter what MIME the row records. */
+	it("never echoes a document's MIME back as an active content type", async () => {
+		const repo = await repoManager.clone(
+			fixtureRepo,
+			`attach-mime-${Date.now()}`,
+		);
+		const session = await sessionManager.create(repo.id);
+
+		const uploaded = await upload(
+			session.id,
+			new File(["<script>alert(1)</script>"], "evil.html", {
+				type: "text/html",
+			}),
+		);
+		const attachment = uploaded.attachment;
+		if (!attachment) throw new Error(`upload failed: ${uploaded.body}`);
+		// Classified as a document, since text/html isn't in IMAGE_MIME_TYPES.
+		expect(attachment.kind).toBe("document");
+
+		const fetched = await app.request(
+			`/${session.id}/attachments/${attachment.id}`,
+		);
+		expect(fetched.status).toBe(200);
+		expect(fetched.headers.get("Content-Type")).toBe(
+			"application/octet-stream",
+		);
+		expect(fetched.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		// Still downloadable under its own name — hardening, not removal.
+		expect(fetched.headers.get("Content-Disposition")).toContain("evil.html");
+
+		await sessionManager.delete(session.id);
+		await repoManager.delete(repo.id);
+	}, 60_000);
+});
+
 describe("attachment routes end to end", () => {
 	it("uploads a file, serves its bytes back, and sends a message referencing it", async () => {
 		const repo = await repoManager.clone(
@@ -110,6 +148,18 @@ describe("attachment routes end to end", () => {
 		expect(new Uint8Array(await fetched.arrayBuffer())).toEqual(
 			new Uint8Array([1, 2, 3, 4]),
 		);
+
+		// Issue #222/ADR-0038: an Agent can mint attachment rows now, so these
+		// bytes may be model-chosen and are served inline from dilna's own
+		// origin. The hardening applies to user uploads too — a route whose
+		// safety depends on which column a row carries is one refactor away from
+		// not having it.
+		expect(fetched.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(fetched.headers.get("Content-Security-Policy")).toContain(
+			"default-src 'none'",
+		);
+		expect(fetched.headers.get("Content-Security-Policy")).toContain("sandbox");
+		expect(fetched.headers.get("Referrer-Policy")).toBe("no-referrer");
 
 		// The send accepts the id and persists it onto the user's row. (The
 		// turn itself then fails to reach a Provider in this environment, which

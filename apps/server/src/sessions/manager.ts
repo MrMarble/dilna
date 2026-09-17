@@ -162,6 +162,20 @@ type ActiveAgent = {
 	 * turns — cleared after the turn's rows are persisted. */
 	liveTurn: LiveTurn | null;
 	/**
+	 * Images sent this turn by `dilna_send_image`, keyed by the tool call that
+	 * sent each (issue #222, ADR-0038).
+	 *
+	 * In memory for the same reason {@link liveTurn} is: the row it feeds is
+	 * the durable record, and this only bridges the gap between the tool
+	 * returning and the round being converted. pi has no assistant content
+	 * block that carries an image, so without this the picture would reach the
+	 * live view and then vanish from the persisted transcript.
+	 *
+	 * Cleared with `liveTurn` at end of turn — an entry that outlived its turn
+	 * would splice a stale image into a later round that reused the call id.
+	 */
+	sentImages: Map<string, Attachment>;
+	/**
 	 * What of this session's transcript is already durable — the transcript
 	 * position and the durable-round identity set that together make turn
 	 * persistence exactly-once. See {@link TurnLedger}, which owns both and is
@@ -1415,6 +1429,7 @@ export class SessionManager {
 						handle,
 						active.ledger,
 						turnId,
+						active.sentImages,
 					);
 				} catch (err) {
 					log.error({ sessionId: id, err }, "failed to persist turn messages");
@@ -1439,6 +1454,10 @@ export class SessionManager {
 				// snapshot has served its purpose. Cleared only after persisting so
 				// a subscriber connecting in between never sees neither.
 				active.liveTurn = null;
+				// Same lifetime, same reason (issue #222): the images are spliced
+				// into rows above, and an entry outliving its turn would re-splice a
+				// stale image into any later round that reused the tool call id.
+				active.sentImages.clear();
 				// turn_activity/notice are valid only inside a turn (ADR-0016 §5).
 				this.events.clearInTurnSnapshot(id);
 
@@ -1668,6 +1687,40 @@ export class SessionManager {
 	 * The position advances on *every* entry this sees, success or failure;
 	 * `TurnLedger`'s doc comment has the issue #190 history behind that rule.
 	 */
+	/**
+	 * Put an Agent-sent image into the in-flight turn (issue #222, ADR-0038).
+	 *
+	 * Goes through the live-turn snapshot as well as the broadcast, rather than
+	 * calling `this.events.broadcast` alone: `runTurn`'s `onEvent` — the usual
+	 * place that mirroring happens — is a closure over the agent's own event
+	 * stream, and this event originates from a *tool*, outside it. Skipping the
+	 * fold would leave a tab that reloads mid-turn replaying a snapshot with no
+	 * image in it.
+	 *
+	 * A caption rides as an ordinary `token`, so it joins the assistant's prose
+	 * and persists with it through the normal round conversion instead of
+	 * becoming a second kind of text only the live view knows how to render.
+	 */
+	private emitImageSent(
+		id: string,
+		attachment: Attachment,
+		caption?: string,
+	): void {
+		const active = this.active.get(id);
+		const messageId = active?.liveTurn?.messageId;
+		// No open snapshot means no assistant message to attach to yet; the
+		// persisted row still gets the part when the round is converted.
+		if (!active || !messageId) return;
+		const emit = (ev: AgentStreamEvent) => {
+			active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
+			this.events.broadcast(id, ev);
+		};
+		if (caption) {
+			emit({ type: "token", messageId, chunk: `\n\n${caption}\n\n` });
+		}
+		emit({ type: "image_sent", messageId, attachment });
+	}
+
 	private persistRoundEvent(
 		sessionId: string,
 		active: ActiveAgent,
@@ -1680,7 +1733,12 @@ export class SessionManager {
 		}
 		if (event.type === "turn_end") {
 			try {
-				const message = piRoundToDilnaMessage(sessionId, event, turnId);
+				const message = piRoundToDilnaMessage(
+					sessionId,
+					event,
+					turnId,
+					active.sentImages,
+				);
 				if (message) messageStore.persistMessage(sessionId, message);
 				// Recorded only *after* the write succeeded, so a throw above
 				// leaves the round for the safety net. An empty round (null
@@ -1724,11 +1782,14 @@ export class SessionManager {
 		handle: PiHandle,
 		ledger: TurnLedger,
 		turnId: string,
+		/** This turn's Agent-sent images (issue #222), so a round the safety net
+		 * writes carries the same parts the incremental path would have. */
+		sentImages?: ReadonlyMap<string, Attachment>,
 	): Promise<void> {
 		const messages = handle.agent.state.messages;
 		messageStore.persistConverted(
 			sessionId,
-			piMessagesToDilna(sessionId, ledger.settle(messages), turnId),
+			piMessagesToDilna(sessionId, ledger.settle(messages), turnId, sentImages),
 		);
 		ledger.commit(messages);
 	}
@@ -1802,6 +1863,11 @@ export class SessionManager {
 			sessionCompactionOf(session),
 		);
 
+		// Created before `startPi` because the tool's callback closes over it,
+		// and the `ActiveAgent` that owns it can only be built once `startPi`
+		// has returned a handle (issue #222, ADR-0038).
+		const sentImages = new Map<string, Attachment>();
+
 		const handle: PiHandle =
 			session.kind === "orchestrator"
 				? await startOrchestrator({
@@ -1843,12 +1909,23 @@ export class SessionManager {
 								serverTime: Date.now(),
 							});
 						},
+						// Issue #222/ADR-0038: an image reaches the user two ways, and
+						// needs both. The broadcast folds it into the in-flight
+						// assistant message so it appears mid-turn in the position it
+						// was sent; the map feeds `piRoundToDilnaMessage` so the same
+						// part survives into the persisted row. pi's own round carries
+						// no image block, so neither path can derive it from the other.
+						onImageSent: (attachment, { toolCallId, caption }) => {
+							sentImages.set(toolCallId, attachment);
+							this.emitImageSent(id, attachment, caption);
+						},
 					} satisfies PiStartOptions);
 
 		const active: ActiveAgent = {
 			handle,
 			idleTimer: null,
 			liveTurn: null,
+			sentImages,
 			ledger: new TurnLedger(initialMessages.length),
 		};
 		this.active.set(id, active);

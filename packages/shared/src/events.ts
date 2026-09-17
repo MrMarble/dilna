@@ -1,6 +1,6 @@
 import type { Artefact } from "./artefact";
 import type { ChangedFile } from "./diff";
-import type { Message, QueuedMessage } from "./messages";
+import type { Attachment, Message, QueuedMessage } from "./messages";
 
 export type AgentStreamEvent =
 	| { type: "session_status"; status: SessionStatus }
@@ -33,6 +33,24 @@ export type AgentStreamEvent =
 			 * by the next (or by the REST refetch its resync already does). */
 			type: "queue_update";
 			queued: QueuedMessage[];
+	  }
+	| {
+			/** The Agent sent an image into the chat (issue #222, ADR-0038).
+			 *
+			 * Unlike `artefact_published`, which updates a side panel, this is a
+			 * *message content* event: {@link applyEventToParts} folds it into the
+			 * in-flight assistant message's parts, so the picture lands between the
+			 * prose before it and the prose after it. It exists because
+			 * pi-agent-core has no content block that carries an image out of an
+			 * assistant turn — the tool mints the part out-of-band.
+			 *
+			 * Carries the whole record for the same reason the others do: the
+			 * renderer needs `sessionId`/`id` to build the bytes URL and
+			 * `filename`/`kind` to render, and a refetch mid-turn would be a
+			 * round trip for data the server already has in hand. */
+			type: "image_sent";
+			messageId: string;
+			attachment: Attachment;
 	  }
 	| { type: "message_start"; messageId: string; role: "user" | "assistant" }
 	| { type: "token"; messageId: string; chunk: string }

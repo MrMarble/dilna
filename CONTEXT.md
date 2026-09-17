@@ -29,7 +29,7 @@ The specific LLM a **Provider** serves — e.g. Claude Opus, DeepSeek-V3, Kimi K
 _Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
 
 **Artefact**:
-A file an **Agent** produced and explicitly *published* for the user to open — an HTML report today. An Artefact belongs to exactly one **Session** and is stored outside every **Worktree**, the mirror image of an **Attachment** (Agent→user rather than user→Agent); see ADR-0032. An Artefact is an immutable *copy* taken at publish time, not a pointer at a Worktree file: republishing a regenerated report mints a second Artefact so the two versions can be compared. A file the Agent merely wrote into its Worktree is not an Artefact until it publishes it.
+A file an **Agent** produced and explicitly *published* for the user to **open** — an HTML report today. An Artefact belongs to exactly one **Session** and is stored outside every **Worktree**; see ADR-0032. Distinct from an Agent-sent **Attachment**, which the user *sees inline in the conversation* rather than opens from a panel: an Agent that wants to show a picture sends an image, an Agent that wants to hand over a document publishes an Artefact. An Artefact is an immutable *copy* taken at publish time, not a pointer at a Worktree file: republishing a regenerated report mints a second Artefact so the two versions can be compared. A file the Agent merely wrote into its Worktree is not an Artefact until it publishes it.
 _Avoid_: output, export, report (a report is one *kind* of Artefact), asset
 
 **Queued Message**:
@@ -37,5 +37,6 @@ A message the user submitted to a **Session** while its **Agent** was still busy
 _Avoid_: draft (a draft is unsubmitted composer text), scheduled message, pending message (ambiguous with a pending **Attachment** upload)
 
 **Attachment**:
-A file the user uploaded to a **Session** and sent with a message. An Attachment belongs to exactly one Session and is stored outside every **Worktree**, so it is never part of a **Repo**'s git history unless the user asks the **Agent** to copy it in; see ADR-0031. An Attachment is either an *image* (one the Provider can see as pixels) or a *document* (one the Agent reads from disk).
+A file carried by a message in a **Session**, in either direction: one the user uploaded and sent, or an image the **Agent** sent into the chat (see ADR-0031 and ADR-0038). Its *source* says which. An Attachment belongs to exactly one Session and is stored outside every **Worktree**, so it is never part of a **Repo**'s git history unless the user asks the Agent to copy it in. An Attachment is either an *image* (one the Provider can see as pixels, and the only kind an Agent may send) or a *document* (one the Agent reads from disk). An Agent-sent Attachment is an immutable *copy* taken out of the Worktree, for the same reason an **Artefact** is.
+_Avoid_: upload (an upload is only the user→Agent direction)
 _Avoid_: upload, file (unqualified — "file" means a file in the Worktree), asset, media
