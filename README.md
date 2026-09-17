@@ -13,14 +13,38 @@ dilna is a self-hosted, web-based workspace for running AI coding agents against
 
 > ⚠️ **Fully vibecoded.** This project is built almost entirely by AI agents (fittingly, using dilna itself). Expect rough edges, and review before running it against anything you care about.
 
+<video src="docs/media/demo.mp4" controls muted playsinline width="100%">
+  Your browser doesn't support inline video — <a href="docs/media/demo.mp4">download the clip</a> instead.
+</video>
+
+<table>
+  <tr>
+    <td><img src="docs/media/screenshot-chat.png" alt="A dilna chat session: the agent reads README.md and answers in one sentence" width="100%" /></td>
+    <td><img src="docs/media/screenshot-metrics.png" alt="The Metrics dashboard: token usage and cost, broken down by model, repo, and session" width="100%" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A real session — the agent reading a file and answering from it</sub></td>
+    <td align="center"><sub>Metrics — token usage and cost, per model, repo, and session</sub></td>
+  </tr>
+</table>
+
 ## Why
 
-Coding agents are great until you close the lid. dilna moves the agent, the worktree, and the chat onto a server you control, so work continues whether or not your machine is on.
+Claude Code, Codex, Copilot — they're all great, until you close the laptop. A long or autonomous run means the machine has to stay open and awake. The cloud versions of those same tools fix "stay awake" by taking the code away from you instead: they edit files on someone else's servers, and even where they can run code, it isn't running on anything you control. The other option has always been SSH into a box you own — which works, but the ergonomics are bad, and worse on a phone.
 
-- 🖥️ **Server-side agents** — powered by pi-ai/pi-agent-core, running against real git worktrees
-- 🌿 **One worktree per session** — parallel sessions, parallel branches, zero collisions
-- 💬 **Resumable chat** — pick up any session from any browser, any time
-- 🔒 **Self-hosted** — your repos, your data, your infra
+dilna is the missing middle: a real chat UI, like the cloud agents, but the repo and the execution stay on hardware you control. A session survives you closing the laptop, and you can pick the exact same conversation back up from your phone — check a PR from the couch, kick off a fix from the checkout line, keep going wherever you are.
+
+## Features
+
+- 🖥️ **Server-side agents, your hardware** — powered by pi-ai/pi-agent-core, running real commands against a real git worktree, not just proposing diffs from someone else's sandbox
+- 🌿 **One worktree per session** — every chat gets its own sandboxed git worktree, so parallel sessions mean parallel branches and zero collisions
+- 📱 **Resumable, cross-device chat** — start a session on your laptop, close the lid, pick the same conversation back up from your phone
+- 🔔 **Background Agents + push notifications** — sessions keep working unattended, and you get notified — even on mobile, via web push — the moment a turn finishes
+- 🧭 **Orchestrator** — a global meta-chat that fans work out across repos on its own ("work on issues 79, 80, and 81 in dilna, one session each") instead of you opening every session by hand
+- 🧩 **Skills** — install `SKILL.md`-style reusable procedures once, then enable them per repo
+- 📊 **Metrics** — a cost and token-usage dashboard, broken down by model, repo, and session
+- 🌍 **Provider-agnostic** — Anthropic, DeepSeek, Moonshot (Kimi), or Zhipu (GLM); switch models anytime from Settings, same UI throughout
+- 🔒 **Self-hosted** — your repos, your data, your infra; every session sandboxed to its own worktree
 
 ## Quick start
 

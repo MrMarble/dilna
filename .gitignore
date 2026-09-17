@@ -12,6 +12,7 @@ coverage/
 .turbo/
 .vitest/
 /data/
+/brag-output/
 .playwright-mcp/
 /apps/web/test-results/
 /apps/web/playwright-report/
