@@ -2,6 +2,8 @@ import type { AgentStreamEvent, UsageTotals } from "@dilna/shared";
 import { act, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageBadge } from "@/components/UsageBadge";
+import type { PartialApi } from "@/test/api-mock";
+import { makeSession } from "@/test/factories";
 
 type StreamListener = (ev: AgentStreamEvent) => void;
 
@@ -14,19 +16,21 @@ vi.mock("@/api/client", () => ({
 	api: {
 		sessions: {
 			get: async (sessionId: string) => ({
-				session: {
+				session: makeSession({
+					id: sessionId,
 					usage: persistedUsageBySession.get(sessionId) ?? {
 						inputTokens: 0,
 						outputTokens: 0,
 					},
-				},
+				}),
+				contextUsage: null,
 			}),
 			stream: (sessionId: string, onEvent: StreamListener) => {
 				listenersBySession.set(sessionId, onEvent);
 				return () => listenersBySession.delete(sessionId);
 			},
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 // emit() drives the mocked SSE listener directly, outside any React event

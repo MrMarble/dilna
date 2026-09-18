@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CustomProviderView, LlmConfig } from "@/api/client";
 import { SettingsPage } from "@/components/SettingsPage";
+import type { PartialApi } from "@/test/api-mock";
 
 // Mutable fixture state lives inside vi.hoisted so the vi.mock factory (also
 // hoisted) can reach it — vi.mock factories are evaluated before ordinary
@@ -107,7 +108,7 @@ vi.mock("@/api/client", () => ({
 				state.api.deleteCustomProvider(id),
 			),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 describe("SettingsPage", () => {

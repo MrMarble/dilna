@@ -7,8 +7,10 @@ import type {
 	CloneRepoBody,
 	CommitInfo,
 	ContextUsageEstimate,
+	CreateCustomProviderBody,
 	CustomModelDef,
 	CustomProviderApi,
+	CustomProviderFields,
 	CustomProviderView,
 	DiskUsage,
 	LlmConfig,
@@ -489,30 +491,14 @@ export const api = {
 			}),
 		/** Create a custom provider (Ollama, LM Studio, vLLM, ...), plus its API
 		 * key when one is given. */
-		createCustomProvider: (input: {
-			id: string;
-			name: string;
-			baseUrl: string;
-			api: string;
-			apiKey?: string;
-			models: CustomModelInput[];
-		}) =>
+		createCustomProvider: (input: CreateCustomProviderBody) =>
 			request<{ ok: boolean }>("/api/config/custom-providers", {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
 		/** Update a custom provider's definition; the id is immutable. Replaces
 		 * the stored key only when a non-empty `apiKey` is sent. */
-		updateCustomProvider: (
-			id: string,
-			input: {
-				name: string;
-				baseUrl: string;
-				api: string;
-				apiKey?: string;
-				models: CustomModelInput[];
-			},
-		) =>
+		updateCustomProvider: (id: string, input: CustomProviderFields) =>
 			request<{ ok: boolean }>(
 				`/api/config/custom-providers/${encodeURIComponent(id)}`,
 				{ method: "PUT", body: JSON.stringify(input) },

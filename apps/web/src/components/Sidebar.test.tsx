@@ -1,36 +1,16 @@
-import type { RateLimitWindow, Repo, SessionView } from "@dilna/shared";
+import type { RateLimitWindow, SessionView } from "@dilna/shared";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/Sidebar";
+import { makeRepo, makeSession as sharedMakeSession } from "@/test/factories";
 
 const noop = () => {};
 
-function makeRepo(overrides: Partial<Repo> = {}): Repo {
-	return {
-		id: "repo-1",
-		slug: "dilna",
-		path: "/tmp/dilna",
-		defaultBranch: "main",
-		remoteUrl: "git@github.com:owner/dilna.git",
-		createdAt: 1,
-		...overrides,
-	};
-}
-
 function makeSession(overrides: Partial<SessionView> = {}): SessionView {
-	return {
-		id: "sess-1",
-		repoId: "repo-1",
-		title: "New session",
-		agentType: "pi",
-		kind: "session",
-		status: "working",
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-		...overrides,
-	};
+	// Sidebar's fixtures are mid-turn by default: most of its assertions are
+	// about what a *working* Session renders.
+	return sharedMakeSession({ status: "working", ...overrides });
 }
 
 function makeRateLimitWindow(

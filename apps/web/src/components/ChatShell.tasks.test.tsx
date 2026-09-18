@@ -3,6 +3,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
+import type { PartialApi } from "@/test/api-mock";
+import { makeSession as sharedMakeSession } from "@/test/factories";
 
 /**
  * The "N active tasks" hint (issue #206, ADR-0034): while an Agent has
@@ -45,21 +47,11 @@ vi.mock("@/api/client", () => ({
 		skills: {
 			forRepo: vi.fn(async () => ({ skills: [] })),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 function makeSession(): SessionView {
-	return {
-		id: "sess-1",
-		repoId: "repo-1",
-		title: "Test session",
-		agentType: "pi",
-		kind: "session",
-		status: "working",
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-	};
+	return sharedMakeSession({ status: "working", title: "Test session" });
 }
 
 function task(taskId: string, description: string) {

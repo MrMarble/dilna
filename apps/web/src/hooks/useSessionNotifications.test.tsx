@@ -2,19 +2,12 @@ import type { SessionView } from "@dilna/shared";
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionNotifications } from "@/hooks/useSessionNotifications";
+import { makeSession as sharedMakeSession } from "@/test/factories";
 
 function makeSession(id: string, status: SessionView["status"]): SessionView {
-	return {
-		id,
-		repoId: "repo-1",
-		title: `Session ${id}`,
-		agentType: "pi",
-		kind: "session",
-		status,
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-	};
+	// Title carries the id: the notification body is built from it, so the
+	// assertions need them to differ per Session.
+	return sharedMakeSession({ id, status, title: `Session ${id}` });
 }
 
 const NotificationMock = vi.fn();
