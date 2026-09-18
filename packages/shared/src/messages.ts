@@ -1,3 +1,5 @@
+import type { WireToolName } from "./tools";
+
 /** How an {@link Attachment} is presented to the user and handed to the
  * Agent. `"image"` is the only kind a Provider can see *as pixels* — it
  * travels inline in the prompt as base64 (`pi-agent-core`'s
@@ -10,6 +12,47 @@
  * took, so a later change to the derivation rule must not retroactively
  * rewrite what an already-sent turn claims to have sent. */
 export type AttachmentKind = "image" | "document";
+
+/**
+ * MIME types dilna sends to a Provider as actual image content. Restricted
+ * to the four every vision-capable Provider in dilna's catalog accepts —
+ * deliberately *not* "anything `image/*`", because an unsupported image type
+ * (`image/tiff`, `image/heic`) reaching the Provider is a turn-level API
+ * error, whereas classifying it as a document degrades to "the Agent can
+ * read the file off disk", which still works.
+ *
+ * Lives here rather than on the server because the web has to classify the
+ * same file: it decides whether the composer shows a thumbnail. The web used
+ * a looser `startsWith("image/")` test, so a `.heic` previewed in the tray
+ * and then rendered as a file card once sent. */
+export const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
+	"image/png",
+	"image/jpeg",
+	"image/gif",
+	"image/webp",
+]);
+
+/** Normalize a stored MIME for comparison against {@link IMAGE_MIME_TYPES} —
+ * lowercased and stripped of any `; charset=…` parameter. */
+export function bareMimeType(mimeType: string): string {
+	return mimeType.toLowerCase().split(";")[0]?.trim() ?? "";
+}
+
+/**
+ * Which channel a file takes to the Agent, decided once at upload time from
+ * the MIME type the browser reported.
+ *
+ * `"image"` means the bytes travel inline in the prompt as base64 and the
+ * Provider sees the picture. `"document"` means the Agent is told the path
+ * and reads it with its own tools. The fallback is `"document"` precisely
+ * because it's the one that can't fail at the Provider: every file is
+ * readable off disk, only some are viewable.
+ *
+ * Shared so the server (which stores the kind) and the web (which previews
+ * from the same MIME type) can't disagree about one file. */
+export function attachmentKindFor(mimeType: string): AttachmentKind {
+	return IMAGE_MIME_TYPES.has(bareMimeType(mimeType)) ? "image" : "document";
+}
 
 /** Who put an {@link Attachment} into the chat (issue #222, ADR-0038).
  *
@@ -67,7 +110,10 @@ export type MessagePart =
 	| {
 			type: "tool_call";
 			callId: string;
-			tool: string;
+			/** dilna's tool vocabulary ({@link WireToolName}), not the provider's — the
+			 * web picks its icon and detail off this, so it is a narrowed union
+			 * rather than an open string. */
+			tool: WireToolName;
 			input: unknown;
 			output: unknown;
 			error?: string;

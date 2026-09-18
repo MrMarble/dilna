@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import type { AgentStreamEvent } from "./events";
-import { applyEventToParts, isMessageContentEvent } from "./liveMessage";
+import {
+	applyEventToParts,
+	isMessageContentEvent,
+	type MessageContentEvent,
+} from "./liveMessage";
 import type { MessagePart } from "./messages";
 
 const fold = (events: AgentStreamEvent[]): MessagePart[] =>
@@ -8,7 +12,7 @@ const fold = (events: AgentStreamEvent[]): MessagePart[] =>
 
 const toolStart = (
 	callId: string,
-	tool = "Bash",
+	tool = "bash",
 	input: unknown = {},
 ): AgentStreamEvent => ({
 	type: "tool_call_start",
@@ -72,7 +76,7 @@ describe("applyEventToParts (image_sent)", () => {
 
 	it("interleaves images with tool calls in stream order", () => {
 		const parts = fold([
-			toolStart("c1", "Bash", { command: "screenshot" }),
+			toolStart("c1", "bash", { command: "screenshot" }),
 			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
 			imageSent(),
 			token("done"),
@@ -113,7 +117,7 @@ describe("applyEventToParts", () => {
 	it("opens a new text part for a token that follows a tool call, preserving interleaving order", () => {
 		const parts = fold([
 			token("checking"),
-			toolStart("c1", "Bash", { command: "ls" }),
+			toolStart("c1", "bash", { command: "ls" }),
 			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
 			token("done"),
 		]);
@@ -123,7 +127,7 @@ describe("applyEventToParts", () => {
 			{
 				type: "tool_call",
 				callId: "c1",
-				tool: "Bash",
+				tool: "bash",
 				input: { command: "ls" },
 				output: "ok",
 				error: undefined,
@@ -138,7 +142,7 @@ describe("applyEventToParts", () => {
 			{
 				type: "tool_call",
 				callId: "c1",
-				tool: "Bash",
+				tool: "bash",
 				input: {},
 				output: null,
 			},
@@ -210,6 +214,16 @@ describe("applyEventToParts", () => {
 });
 
 describe("isMessageContentEvent", () => {
+	/** The exported `MessageContentEvent` type must be exactly what the guard
+	 * narrows to. A consumer that names the type (the web's `applyEventToLive`)
+	 * was silently narrower than the guard once — it omitted `image_sent` and
+	 * dropped the event — so the two are pinned together here. */
+	it("exports a type matching exactly what the guard narrows to", () => {
+		expectTypeOf<
+			ReturnType<typeof narrowOne>
+		>().toEqualTypeOf<MessageContentEvent>();
+	});
+
 	it.each([
 		"token",
 		"tool_call_start",
@@ -263,7 +277,7 @@ describe("isMessageContentEvent", () => {
 				{
 					type: "tool_call",
 					callId: "c1",
-					tool: "Bash",
+					tool: "bash",
 					input: {},
 					output: null,
 				},
@@ -273,3 +287,12 @@ describe("isMessageContentEvent", () => {
 		}
 	});
 });
+
+/** Helper for the type-level assertion above: the guard's narrowed return.
+ * The non-content branch throws rather than returning `null`, so the return
+ * type is exactly `MessageContentEvent` and the `toEqualTypeOf` above is an
+ * honest equality check. */
+function narrowOne(ev: AgentStreamEvent): MessageContentEvent {
+	if (!isMessageContentEvent(ev)) throw new Error("not a content event");
+	return ev;
+}

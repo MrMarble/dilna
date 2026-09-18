@@ -4,19 +4,23 @@ import type {
 	ArtefactsResponse,
 	Attachment,
 	AttachmentResponse,
+	CancelOAuthBody,
 	ChangedFile,
 	ChangedFilesResponse,
 	ClearOverrideResponse,
 	CloneRepoBody,
 	CommitInfo,
 	CommitsResponse,
+	CompleteOAuthBody,
 	CreateCustomProviderBody,
+	CreateSessionBody,
 	CustomModelDef,
 	CustomProviderApi,
 	CustomProviderFields,
 	CustomProviderView,
 	DiskUsage,
 	DiskUsageResponse,
+	InstallSkillBody,
 	InstallSkillResponse,
 	ListQueuedResponse,
 	ListRepoSkillsResponse,
@@ -30,7 +34,9 @@ import type {
 	OkResponse,
 	ProviderModelOption,
 	PushKeyResponse,
+	PushSubscribeBody,
 	PushSubscriptionsResponse,
+	PushUnsubscribeBody,
 	QueuedMessage,
 	QueueMessageResponse,
 	RateLimitWindow,
@@ -42,18 +48,22 @@ import type {
 	RepoSyncResponse,
 	RepoSyncStatus,
 	SearchSkillsResponse,
+	SendMessageBody,
 	SendMessageResponse,
 	SessionListEvent,
 	SessionMessagesResponse,
 	SessionResponse,
 	SessionView,
+	SetCredentialBody,
 	SetOverrideResponse,
+	SetProviderOverrideBody,
+	SetSkillEnabledBody,
 	Skill,
 	SkillSearchResult,
 	UsageSummary,
 	UsageSummaryResponse,
 } from "@dilna/shared";
-import { encodeSkillId, isApiErrorBody } from "@dilna/shared";
+import { encodeSkillId, isApiErrorBody, paths } from "@dilna/shared";
 import { SessionStreamHub } from "./sessionStream";
 
 // `LlmConfig`, `CustomProviderView`, `ProviderModelOption` and the request
@@ -201,7 +211,7 @@ function openEventStream<T>(
 const sessionStreamHub = new SessionStreamHub(
 	(sessionId, eventTypes, onEvent, onOpen, onConnectionChange) =>
 		openEventStream<AgentStreamEvent>(
-			`/api/sessions/${sessionId}/stream`,
+			paths.sessions.stream(sessionId),
 			eventTypes,
 			onEvent,
 			onOpen,
@@ -219,7 +229,7 @@ const sessionStreamHub = new SessionStreamHub(
  * message list don't refetch the same image.
  */
 export function attachmentUrl(sessionId: string, attachmentId: string): string {
-	return `/api/sessions/${sessionId}/attachments/${attachmentId}`;
+	return paths.sessions.attachment(sessionId, attachmentId);
 }
 
 /**
@@ -233,7 +243,7 @@ export function attachmentUrl(sessionId: string, attachmentId: string): string {
  * because of anything on this side.
  */
 export function artefactUrl(sessionId: string, artefactId: string): string {
-	return `/api/sessions/${sessionId}/artefacts/${artefactId}`;
+	return paths.sessions.artefact(sessionId, artefactId);
 }
 
 export class ApiError extends Error {
@@ -293,61 +303,59 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
 	repos: {
-		list: () => request<ListReposResponse>("/api/repos"),
-		get: (id: string) => request<RepoResponse>(`/api/repos/${id}`),
-		clone: (input: CloneRepoInput) =>
-			request<RepoResponse>("/api/repos", {
+		list: () => request<ListReposResponse>(paths.repos.list()),
+		get: (id: string) => request<RepoResponse>(paths.repos.get(id)),
+		clone: (input: CloneRepoBody) =>
+			request<RepoResponse>(paths.repos.list(), {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
 		pull: (id: string) =>
-			request<RepoResponse>(`/api/repos/${id}/pull`, { method: "POST" }),
-		stats: (id: string) => request<RepoStatsResponse>(`/api/repos/${id}/stats`),
+			request<RepoResponse>(paths.repos.pull(id), { method: "POST" }),
+		stats: (id: string) => request<RepoStatsResponse>(paths.repos.stats(id)),
 		sync: (id: string) =>
-			request<RepoSyncResponse>(`/api/repos/${id}/sync`, {
+			request<RepoSyncResponse>(paths.repos.sync(id), {
 				method: "POST",
 			}),
 		delete: (id: string) =>
-			request<OkIdResponse>(`/api/repos/${id}`, {
+			request<OkIdResponse>(paths.repos.get(id), {
 				method: "DELETE",
 			}),
 	},
 	sessions: {
 		listByRepo: (repoId: string) =>
-			request<ListSessionsResponse>(
-				`/api/sessions?repoId=${encodeURIComponent(repoId)}`,
-			),
-		get: (id: string) => request<SessionResponse>(`/api/sessions/${id}`),
-		create: (repoId: string, agentType?: AgentType) =>
-			request<SessionResponse>("/api/sessions", {
+			request<ListSessionsResponse>(paths.sessions.list(repoId)),
+		get: (id: string) => request<SessionResponse>(paths.sessions.get(id)),
+		create: (repoId: string, agentType?: AgentType) => {
+			// Named against the shared schema (ADR-0039) rather than an
+			// anonymous literal, so a field rename on the server is a compile
+			// error here instead of a 422 at runtime.
+			const body: CreateSessionBody = { repoId, agentType };
+			return request<SessionResponse>(paths.sessions.list(), {
 				method: "POST",
-				body: JSON.stringify({ repoId, agentType }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		createOrchestrator: () =>
-			request<SessionResponse>("/api/sessions/orchestrator", {
+			request<SessionResponse>(paths.sessions.orchestrator(), {
 				method: "POST",
 			}),
 		delete: (id: string) =>
-			request<OkIdResponse>(`/api/sessions/${id}`, {
+			request<OkIdResponse>(paths.sessions.get(id), {
 				method: "DELETE",
 			}),
 		messages: (id: string) =>
-			request<SessionMessagesResponse>(`/api/sessions/${id}/messages`),
+			request<SessionMessagesResponse>(paths.sessions.messages(id)),
 		changedFiles: (id: string) =>
-			request<ChangedFilesResponse>(`/api/sessions/${id}/changed-files`),
+			request<ChangedFilesResponse>(paths.sessions.changedFiles(id)),
 		commits: (id: string) =>
-			request<CommitsResponse>(`/api/sessions/${id}/commits`),
+			request<CommitsResponse>(paths.sessions.commits(id)),
 		artefacts: (id: string) =>
-			request<ArtefactsResponse>(`/api/sessions/${id}/artefacts`),
+			request<ArtefactsResponse>(paths.sessions.artefacts(id)),
 		send: (id: string, text: string, attachmentIds?: string[]) =>
-			request<SendMessageResponse>(`/api/sessions/${id}/messages`, {
+			request<SendMessageResponse>(paths.sessions.messages(id), {
 				method: "POST",
-				body: JSON.stringify({
-					text,
-					// Omitted entirely when empty so a text-only send puts exactly
-					// the same body on the wire it always has.
-					...(attachmentIds?.length ? { attachmentIds } : {}),
-				}),
+				body: JSON.stringify(sendBody(text, attachmentIds)),
 			}),
 		/** Upload one file to a session, before the message that references it
 		 * is sent. Multipart rather than JSON, so the bytes aren't base64-inflated
@@ -357,7 +365,7 @@ export const api = {
 			const form = new FormData();
 			form.append("file", file);
 			const { attachment } = await request<AttachmentResponse>(
-				`/api/sessions/${id}/attachments`,
+				paths.sessions.attachments(id),
 				{ method: "POST", body: form },
 			);
 			return attachment;
@@ -366,35 +374,29 @@ export const api = {
 		 * Stored server-side and dispatched at the next turn boundary, so it
 		 * survives a locked phone or closed tab. Same body shape as `send`. */
 		queueMessage: (id: string, text: string, attachmentIds?: string[]) =>
-			request<QueueMessageResponse>(`/api/sessions/${id}/queue`, {
+			request<QueueMessageResponse>(paths.sessions.queue(id), {
 				method: "POST",
-				body: JSON.stringify({
-					text,
-					...(attachmentIds?.length ? { attachmentIds } : {}),
-				}),
+				body: JSON.stringify(sendBody(text, attachmentIds)),
 			}),
 		/** The queue's initial snapshot — fetched by the on-open resync, then
 		 * kept live via `queue_update` stream events. */
 		queuedMessages: (id: string) =>
-			request<ListQueuedResponse>(`/api/sessions/${id}/queue`),
+			request<ListQueuedResponse>(paths.sessions.queue(id)),
 		/** Withdraw a queued entry before it dispatches. Idempotent on the
 		 * server — an entry that already drained into a turn is still `ok`. */
 		removeQueuedMessage: (id: string, queuedId: string) =>
-			request<OkResponse>(`/api/sessions/${id}/queue/${queuedId}`, {
+			request<OkResponse>(paths.sessions.queuedMessage(id, queuedId), {
 				method: "DELETE",
 			}),
 		stop: (id: string) =>
-			request<OkIdResponse>(`/api/sessions/${id}/stop`, {
+			request<OkIdResponse>(paths.sessions.stop(id), {
 				method: "POST",
 			}),
 		/** Absolute URL to the session's full-transcript export (server route,
 		 * unauthenticated like the rest of the API) — copy-to-clipboard target
 		 * for handing a session's history to another agent. */
 		transcriptUrl: (id: string) =>
-			new URL(
-				`/api/sessions/${id}/transcript`,
-				window.location.origin,
-			).toString(),
+			new URL(paths.sessions.transcript(id), window.location.origin).toString(),
 		/** Subscribe to a session's live SSE stream.
 		 *
 		 * Multiple subscribers to the same `id` share one `EventSource` via
@@ -433,7 +435,7 @@ export const api = {
 			onConnectionChange?: (connected: boolean) => void,
 		): (() => void) =>
 			openEventStream(
-				"/api/stream",
+				paths.stream(),
 				SESSION_LIST_EVENT_TYPES,
 				onEvent,
 				onOpen,
@@ -445,120 +447,125 @@ export const api = {
 		 * all-time. Backs the Metrics page's range selector. */
 		summary: (days?: number | "all") =>
 			request<UsageSummaryResponse>(
-				`/api/usage${days !== undefined ? `?days=${days}` : ""}`,
+				paths.usage.summary(days === "all" ? undefined : days),
 			),
 		/** Live filesystem capacity for the `DILNA_DATA_DIR` volume (read via
 		 * `fs.statfs` on the server) — backs the Metrics page's storage card. */
-		disk: () => request<DiskUsageResponse>("/api/usage/disk"),
+		disk: () => request<DiskUsageResponse>(paths.usage.disk()),
 	},
 	config: {
 		/** Current provider/model + override state for the Settings view. */
-		get: () => request<LlmConfig>("/api/config"),
+		get: () => request<LlmConfig>(paths.config.get()),
 		/** Persist a single provider/model override (replaces any existing). */
-		setOverride: (provider: string, model: string) =>
-			request<SetOverrideResponse>("/api/config", {
+		setOverride: (provider: string, model: string) => {
+			const body: SetProviderOverrideBody = { provider, model };
+			return request<SetOverrideResponse>(paths.config.get(), {
 				method: "PUT",
-				body: JSON.stringify({ provider, model }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		/** Drop the override so provider/model fall back to the env vars. */
 		clearOverride: () =>
-			request<ClearOverrideResponse>("/api/config", {
+			request<ClearOverrideResponse>(paths.config.get(), {
 				method: "DELETE",
 			}),
 		/** Save (replace) a provider's API key — multi-provider support (see
 		 * the Settings "Add a provider" flow). */
-		setCredential: (provider: string, apiKey: string) =>
-			request<OkResponse>("/api/config/credentials", {
+		setCredential: (provider: string, apiKey: string) => {
+			const body: SetCredentialBody = { provider, apiKey };
+			return request<OkResponse>(paths.config.credentials(), {
 				method: "PUT",
-				body: JSON.stringify({ provider, apiKey }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		/** Forget a provider's stored API key (falls back to its env key). */
 		deleteCredential: (provider: string) =>
-			request<OkResponse>(
-				`/api/config/credentials/${encodeURIComponent(provider)}`,
-				{
-					method: "DELETE",
-				},
-			),
+			request<OkResponse>(paths.config.credential(provider), {
+				method: "DELETE",
+			}),
 		/** Begin an Anthropic "Sign in with Claude" OAuth login — returns a URL
 		 * to open plus a `loginId` to complete it with once the user pastes back
 		 * the resulting code/redirect URL (see providerOAuth.ts). */
 		startAnthropicOAuthLogin: () =>
-			request<OauthStartResponse>(
-				"/api/config/providers/anthropic/oauth/start",
-				{ method: "POST" },
-			),
+			request<OauthStartResponse>(paths.config.anthropicOauthStart(), {
+				method: "POST",
+			}),
 		/** Finish a pending login with the pasted code/redirect URL. */
-		completeAnthropicOAuthLogin: (loginId: string, input: string) =>
-			request<OkResponse>("/api/config/providers/anthropic/oauth/complete", {
+		completeAnthropicOAuthLogin: (loginId: string, input: string) => {
+			const body: CompleteOAuthBody = { loginId, input };
+			return request<OkResponse>(paths.config.anthropicOauthComplete(), {
 				method: "POST",
-				body: JSON.stringify({ loginId, input }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		/** Abandon a pending login (e.g. the dialog was closed unsubmitted). */
-		cancelAnthropicOAuthLogin: (loginId: string) =>
-			request<OkResponse>("/api/config/providers/anthropic/oauth/cancel", {
+		cancelAnthropicOAuthLogin: (loginId: string) => {
+			const body: CancelOAuthBody = { loginId };
+			return request<OkResponse>(paths.config.anthropicOauthCancel(), {
 				method: "POST",
-				body: JSON.stringify({ loginId }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		/** Disconnect Anthropic's OAuth login (falls back to a stored API key or
 		 * env thereafter). */
 		disconnectAnthropicOAuth: () =>
-			request<OkResponse>("/api/config/providers/anthropic/oauth", {
+			request<OkResponse>(paths.config.anthropicOauth(), {
 				method: "DELETE",
 			}),
 		/** Create a custom provider (Ollama, LM Studio, vLLM, ...), plus its API
 		 * key when one is given. */
 		createCustomProvider: (input: CreateCustomProviderBody) =>
-			request<OkResponse>("/api/config/custom-providers", {
+			request<OkResponse>(paths.config.customProviders(), {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
 		/** Update a custom provider's definition; the id is immutable. Replaces
 		 * the stored key only when a non-empty `apiKey` is sent. */
 		updateCustomProvider: (id: string, input: CustomProviderFields) =>
-			request<OkResponse>(
-				`/api/config/custom-providers/${encodeURIComponent(id)}`,
-				{ method: "PUT", body: JSON.stringify(input) },
-			),
+			request<OkResponse>(paths.config.customProvider(id), {
+				method: "PUT",
+				body: JSON.stringify(input),
+			}),
 		/** Delete a custom provider and its stored key. */
 		deleteCustomProvider: (id: string) =>
-			request<OkResponse>(
-				`/api/config/custom-providers/${encodeURIComponent(id)}`,
-				{ method: "DELETE" },
-			),
+			request<OkResponse>(paths.config.customProvider(id), {
+				method: "DELETE",
+			}),
 	},
 	/** Skill management (issue #60): skills install globally, then get
 	 * enabled per-Repo — there's only ever one copy of a skill on disk. */
 	skills: {
 		/** The global catalog: every installed skill. */
-		list: () => request<ListSkillsResponse>("/api/skills"),
+		list: () => request<ListSkillsResponse>(paths.skills.list()),
 		/** The catalog, flagged with whether `repoId` has each one enabled. */
 		forRepo: (repoId: string) =>
-			request<ListRepoSkillsResponse>(`/api/skills/repo/${repoId}`),
+			request<ListRepoSkillsResponse>(paths.skills.forRepo(repoId)),
 		/** Search skills.sh. Returns `[]` if the registry is unreachable. */
 		search: (q: string) =>
-			request<SearchSkillsResponse>(
-				`/api/skills/search?q=${encodeURIComponent(q)}`,
-			),
+			request<SearchSkillsResponse>(paths.skills.search(q)),
 		/** Install globally from a skills.sh/GitHub URL. Does not enable it. */
-		install: (url: string) =>
-			request<InstallSkillResponse>("/api/skills", {
+		install: (url: string) => {
+			const body: InstallSkillBody = { url };
+			return request<InstallSkillResponse>(paths.skills.list(), {
 				method: "POST",
-				body: JSON.stringify({ url }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		/** Turn a skill on/off for one Repo. `id` (`{source}/{slug}`) is
 		 * base64url-encoded into one path segment — see encodeSkillId's doc
 		 * comment for why (an edge in front of the deployment can decode a
 		 * plain `%2F` back into `/` and redirect, so the id can't contain a
 		 * `/` at all, not even percent-encoded). */
-		setEnabled: (id: string, repoId: string, enabled: boolean) =>
-			request<OkResponse>(`/api/skills/${encodeSkillId(id)}/enabled`, {
+		setEnabled: (id: string, repoId: string, enabled: boolean) => {
+			const body: SetSkillEnabledBody = { repoId, enabled };
+			return request<OkResponse>(paths.skills.enabled(encodeSkillId(id)), {
 				method: "POST",
-				body: JSON.stringify({ repoId, enabled }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 		/** Uninstall globally — files, catalog row, all enablement rows. */
 		uninstall: (id: string) =>
-			request<OkResponse>(`/api/skills/${encodeSkillId(id)}`, {
+			request<OkResponse>(paths.skills.item(encodeSkillId(id)), {
 				method: "DELETE",
 			}),
 	},
@@ -566,16 +573,29 @@ export const api = {
 	push: {
 		/** The instance VAPID public key needed by `pushManager.subscribe`.
 		 * `configured: false` means push is unavailable, not that it errored. */
-		key: () => request<PushKeyResponse>("/api/push/key"),
-		subscribe: (subscription: PushSubscriptionJSON) =>
-			request<PushSubscriptionsResponse>("/api/push/subscribe", {
+		key: () => request<PushKeyResponse>(paths.push.key()),
+		/** `subscription` is the browser's `PushSubscriptionJSON`; the keys
+		 * `endpoint`/`p256dh`/`auth` are what `PushSubscribeBody` declares.
+		 * Named here so the two are checked against each other — the DOM type
+		 * has every field optional, so it permits a call the server would 422. */
+		subscribe: (subscription: PushSubscribeBody) =>
+			request<PushSubscriptionsResponse>(paths.push.subscribe(), {
 				method: "POST",
 				body: JSON.stringify(subscription),
 			}),
-		unsubscribe: (endpoint: string) =>
-			request<PushSubscriptionsResponse>("/api/push/unsubscribe", {
+		unsubscribe: (endpoint: string) => {
+			const body: PushUnsubscribeBody = { endpoint };
+			return request<PushSubscriptionsResponse>(paths.push.unsubscribe(), {
 				method: "POST",
-				body: JSON.stringify({ endpoint }),
-			}),
+				body: JSON.stringify(body),
+			});
+		},
 	},
 };
+
+/** The send/queue body, built once for both callers rather than written twice.
+ * Omits `attachmentIds` entirely when empty so a text-only send puts exactly
+ * the same bytes on the wire it always has. */
+function sendBody(text: string, attachmentIds?: string[]): SendMessageBody {
+	return attachmentIds?.length ? { text, attachmentIds } : { text };
+}

@@ -527,7 +527,7 @@ describe("live turn snapshot", () => {
 				type: "tool_call_start",
 				messageId: "m1",
 				callId: "c1",
-				tool: "Bash",
+				tool: "bash",
 				input: { command: "ls" },
 			},
 			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
@@ -543,7 +543,7 @@ describe("live turn snapshot", () => {
 				{
 					type: "tool_call",
 					callId: "c1",
-					tool: "Bash",
+					tool: "bash",
 					input: { command: "ls" },
 					output: "ok",
 					error: undefined,
@@ -559,7 +559,7 @@ describe("live turn snapshot", () => {
 				type: "tool_call_start",
 				messageId: "m1",
 				callId: "c1",
-				tool: "Read",
+				tool: "read",
 				input: {},
 			},
 		]);
@@ -575,7 +575,7 @@ describe("live turn snapshot", () => {
 				type: "tool_call_start",
 				messageId: "m1",
 				callId: "c1",
-				tool: "Bash",
+				tool: "bash",
 				input: { command: "pwd" },
 			},
 			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "/w" },
@@ -583,7 +583,7 @@ describe("live turn snapshot", () => {
 				type: "tool_call_start",
 				messageId: "m1",
 				callId: "c2",
-				tool: "Edit",
+				tool: "edit",
 				input: {},
 			},
 		]);
@@ -600,7 +600,7 @@ describe("live turn snapshot", () => {
 				{
 					type: "tool_call",
 					callId: "c1",
-					tool: "Bash",
+					tool: "bash",
 					input: {},
 					output: null,
 				},

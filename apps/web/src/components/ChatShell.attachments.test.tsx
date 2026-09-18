@@ -1,11 +1,10 @@
-import type { Attachment } from "@dilna/shared";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
 import type { PartialApi } from "@/test/api-mock";
-import { makeSession } from "@/test/factories";
+import { makeAttachment, makeSession } from "@/test/factories";
 
 /**
  * The composer's attachment affordances (issue #53): the two-row layout's
@@ -54,20 +53,6 @@ vi.mock("@/api/client", () => ({
 }));
 
 const session = makeSession({ title: "Test session" });
-
-function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
-	return {
-		id: "att-1",
-		sessionId: "sess-1",
-		filename: "diagram.png",
-		mimeType: "image/png",
-		size: 2048,
-		kind: "image",
-		path: "/data/attachments/sess-1/abc-diagram.png",
-		createdAt: 1,
-		...overrides,
-	};
-}
 
 beforeEach(() => {
 	vi.clearAllMocks();

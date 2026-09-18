@@ -7,6 +7,22 @@
 		".": {
 			"types": "./src/index.ts",
 			"default": "./src/index.ts"
+		},
+		"./tools": {
+			"types": "./src/tools.ts",
+			"default": "./src/tools.ts"
+		},
+		"./notification": {
+			"types": "./src/notification.ts",
+			"default": "./src/notification.ts"
+		},
+		"./paths": {
+			"types": "./src/paths.ts",
+			"default": "./src/paths.ts"
+		},
+		"./testing": {
+			"types": "./src/testing.ts",
+			"default": "./src/testing.ts"
 		}
 	},
 	"scripts": {

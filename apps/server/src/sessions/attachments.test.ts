@@ -7,7 +7,6 @@ import {
 	ATTACHMENT_MAX_BYTES,
 	AttachmentRejectedError,
 	attachmentDir,
-	attachmentKindFor,
 	deleteAttachmentsForSession,
 	describeAttachmentsForPrompt,
 	describeAttachmentsForTitle,
@@ -34,40 +33,6 @@ afterAll(() => {
 });
 
 const bytes = (text: string) => new TextEncoder().encode(text);
-
-describe("attachmentKindFor", () => {
-	it.each([
-		"image/png",
-		"image/jpeg",
-		"image/gif",
-		"image/webp",
-	])("classifies %s as an image", (mime) => {
-		expect(attachmentKindFor(mime)).toBe("image");
-	});
-
-	it("tolerates a charset parameter and odd casing", () => {
-		expect(attachmentKindFor("IMAGE/PNG; charset=binary")).toBe("image");
-	});
-
-	// An image type no Provider in dilna's catalog accepts must not be sent
-	// down the inline-base64 path, where it becomes a turn-level API error —
-	// as a document it still works, the Agent just reads it off disk.
-	it.each([
-		"image/tiff",
-		"image/heic",
-		"image/svg+xml",
-	])("classifies unsupported image type %s as a document", (mime) => {
-		expect(attachmentKindFor(mime)).toBe("document");
-	});
-
-	it.each([
-		"application/pdf",
-		"text/plain",
-		"application/octet-stream",
-	])("classifies %s as a document", (mime) => {
-		expect(attachmentKindFor(mime)).toBe("document");
-	});
-});
 
 describe("sanitizeFilename", () => {
 	it("keeps an ordinary name untouched", () => {

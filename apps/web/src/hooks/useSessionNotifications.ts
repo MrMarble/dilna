@@ -1,4 +1,11 @@
-import type { SessionStatus, SessionView } from "@dilna/shared";
+import {
+	ACTIVE_STATUSES,
+	isTurnCompletion,
+	type SessionStatus,
+	type SessionView,
+	TERMINAL_STATUSES,
+	turnCompleteNotification,
+} from "@dilna/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePersistedBoolean } from "@/hooks/usePersistedBoolean";
 import { useWebPush } from "@/hooks/useWebPush";
@@ -39,14 +46,6 @@ import { useWebPush } from "@/hooks/useWebPush";
  *    reaches the phone with the browser closed. This hook only owns the
  *    *subscription*, tied to the same toggle; delivery lives in `sw.js`.
  */
-
-/** Statuses that signal a turn is complete and durable (ADR-0016 §1: any
- * terminal status ⇒ a history refetch is safe and complete). */
-const TERMINAL: readonly SessionStatus[] = ["idle", "crashed"];
-
-/** Statuses that mean "a turn is in flight" — a transition out of these into
- * a terminal status is a real task completion, not a pause. */
-const ACTIVE: readonly SessionStatus[] = ["starting", "working", "stopping"];
 
 /** Guard: coalesce back-to-back completions on the same session into one
  * system notification so a fast agent doesn't spam the OS. */
@@ -120,9 +119,15 @@ export function useSessionNotifications({
 		previousStatusRef.current[session.id] = session.status;
 
 		// Only a transition out of an active phase into a terminal status is
-		// "task completion". First-connection snapshots (prev undefined) and
-		// idle→idle levels are ignored.
-		if (!prev || !ACTIVE.includes(prev) || !TERMINAL.includes(session.status)) {
+		// "task completion" (ADR-0016 §1). First-connection snapshots (prev
+		// undefined) and idle→idle levels are ignored. The status sets are
+		// shared, so the badge rule and the server's notification rule can't
+		// drift apart again.
+		if (
+			!prev ||
+			!ACTIVE_STATUSES.includes(prev) ||
+			!TERMINAL_STATUSES.includes(session.status)
+		) {
 			return;
 		}
 
@@ -139,10 +144,12 @@ export function useSessionNotifications({
 		}));
 
 		// System notification — only for a clean `idle` completion (a
-		// `crashed` session already stands out via the sidebar's red dot).
+		// `crashed` session already stands out via the sidebar's red dot),
+		// which is exactly the shared `isTurnCompletion` rule the server's push
+		// sender calls, so the two channels agree by construction.
 		if (
 			enabledRef.current &&
-			session.status === "idle" &&
+			isTurnCompletion(prev, session.status) &&
 			typeof Notification !== "undefined" &&
 			Notification.permission === "granted"
 		) {
@@ -150,10 +157,11 @@ export function useSessionNotifications({
 			const last = lastNotifiedAtRef.current[session.id];
 			if (last === undefined || now - last > NOTIFY_COOLDOWN_MS) {
 				lastNotifiedAtRef.current[session.id] = now;
+				const payload = turnCompleteNotification(session);
 				try {
-					new Notification(`dilna · ${session.title}`, {
-						body: "Agent finished the turn.",
-						tag: `dilna:${session.id}`,
+					new Notification(payload.title, {
+						body: payload.body,
+						tag: payload.tag,
 					});
 				} catch {
 					// Some engines throw on `new Notification` (e.g. older

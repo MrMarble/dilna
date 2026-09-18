@@ -100,7 +100,7 @@ describe("liveTurnReplayEvents", () => {
 				type: "tool_call_start",
 				messageId: "m1",
 				callId: "c1",
-				tool: "Bash",
+				tool: "bash",
 				input: { command: "shoot" },
 			},
 			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { parseRoute, type Route, routePath } from "@/lib/routes";
+import {
+	parseRoute,
+	type Route,
+	routePath,
+	sessionIdFromSearch,
+} from "@/lib/routes";
 
 /**
  * The current {@link Route}, as React state, kept in sync with the address bar
@@ -20,9 +25,22 @@ import { parseRoute, type Route, routePath } from "@/lib/routes";
 export function useRoute(): {
 	route: Route;
 	navigate: (route: Route, options?: { replace?: boolean }) => void;
+	/** A Session a push notification's tap target (`/?session=<id>`) asked for,
+	 * captured once at load. Resolving it needs the repo/session lists, which
+	 * only `App` has — so this reports the *request* and `App` turns it into a
+	 * route once the data is there. Cleared by {@link clearRequestedSession}
+	 * so it isn't re-applied on every render. */
+	requestedSessionId: string | null;
+	clearRequestedSession: () => void;
 } {
 	const [route, setRoute] = useState<Route>(() =>
 		parseRoute(window.location.pathname),
+	);
+	// Read once, at mount: the tap target is always `/?session=<id>`, so there
+	// is nothing to re-read on navigation, and the query string is dropped the
+	// moment `App` resolves it.
+	const [requestedSessionId, setRequestedSessionId] = useState<string | null>(
+		() => sessionIdFromSearch(window.location.search),
 	);
 
 	useEffect(() => {
@@ -49,5 +67,10 @@ export function useRoute(): {
 		[],
 	);
 
-	return { route, navigate };
+	return {
+		route,
+		navigate,
+		requestedSessionId,
+		clearRequestedSession: () => setRequestedSessionId(null),
+	};
 }

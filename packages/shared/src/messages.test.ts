@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatAttachmentSize, MAX_ATTACHMENTS_PER_MESSAGE } from "./messages";
+import {
+	attachmentKindFor,
+	formatAttachmentSize,
+	IMAGE_MIME_TYPES,
+	MAX_ATTACHMENTS_PER_MESSAGE,
+} from "./messages";
 
 /**
  * These two live in `packages/shared` rather than on either side because
@@ -33,5 +38,54 @@ describe("MAX_ATTACHMENTS_PER_MESSAGE", () => {
 	it("is a positive integer both sides can enforce", () => {
 		expect(Number.isInteger(MAX_ATTACHMENTS_PER_MESSAGE)).toBe(true);
 		expect(MAX_ATTACHMENTS_PER_MESSAGE).toBeGreaterThan(0);
+	});
+});
+
+/**
+ * Which channel a file takes to the Agent is decided once at upload and
+ * stored, so both sides must classify identically — server-side it picks the
+ * prompt channel, web-side it decides whether to show a thumbnail. Two
+ * implementations had already drifted: the server's strict allow-list called
+ * `image/heic` a document while the web's `startsWith("image/")` called it an
+ * image, so the same file previewed in the composer and then rendered as a
+ * file card after sending.
+ */
+describe("attachmentKindFor", () => {
+	it.each([
+		"image/png",
+		"image/jpeg",
+		"image/gif",
+		"image/webp",
+	])("classifies %s as an image", (mime) => {
+		expect(attachmentKindFor(mime)).toBe("image");
+	});
+
+	it("tolerates a charset parameter and odd casing", () => {
+		expect(attachmentKindFor("IMAGE/PNG; charset=binary")).toBe("image");
+	});
+
+	it.each([
+		"image/tiff",
+		"image/heic",
+		"image/svg+xml",
+	])("classifies unsupported image type %s as a document", (mime) => {
+		expect(attachmentKindFor(mime)).toBe("document");
+	});
+
+	it.each([
+		"application/pdf",
+		"text/plain",
+		"application/octet-stream",
+	])("classifies %s as a document", (mime) => {
+		expect(attachmentKindFor(mime)).toBe("document");
+	});
+
+	it("exposes the allow-list it classifies against", () => {
+		expect([...IMAGE_MIME_TYPES].sort()).toEqual([
+			"image/gif",
+			"image/jpeg",
+			"image/png",
+			"image/webp",
+		]);
 	});
 });

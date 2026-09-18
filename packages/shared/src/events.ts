@@ -1,6 +1,7 @@
 import type { Artefact } from "./artefact";
 import type { ChangedFile } from "./diff";
 import type { Attachment, Message, QueuedMessage } from "./messages";
+import type { WireToolName } from "./tools";
 
 export type AgentStreamEvent =
 	| { type: "session_status"; status: SessionStatus }
@@ -67,7 +68,12 @@ export type AgentStreamEvent =
 			type: "tool_call_start";
 			messageId: string;
 			callId: string;
-			tool: string;
+			/** dilna's own tool vocabulary, not the provider's — narrowed to the
+			 * shared union so the web's exhaustive `Record` over it fails to compile
+			 * when a tool is added server-side. {@link WireToolName} still admits a
+			 * name this build doesn't know (an MCP tool, a newer server), which the
+			 * renderer falls back on rather than dropping. */
+			tool: WireToolName;
 			input: unknown;
 	  }
 	| {
@@ -118,7 +124,11 @@ export type AgentStreamEvent =
 				attempt?: number;
 				maxRetries?: number;
 			} | null;
-			runningTools: { callId: string; tool: string; startedAt: number }[];
+			runningTools: {
+				callId: string;
+				tool: WireToolName;
+				startedAt: number;
+			}[];
 			tasks: {
 				taskId: string;
 				description: string;

@@ -2,7 +2,12 @@ import { execFile } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Repo, RepoStats, RepoSyncStatus } from "@dilna/shared";
+import {
+	isReservedSlug,
+	type Repo,
+	type RepoStats,
+	type RepoSyncStatus,
+} from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { Db } from "../db";
@@ -56,9 +61,15 @@ async function getDefaultBranch(barePath: string): Promise<string> {
 }
 
 function uniqueSlug(used: Set<string>, base: string): string {
-	if (!used.has(base)) return base;
+	// A reserved slug is treated as already taken, so a Repo cloned from
+	// `github.com/x/metrics` lands on `metrics-2` rather than a slug the web's
+	// router would parse back as the Metrics page — which would produce a Repo
+	// that shows in the sidebar and can never be opened. The set is shared with
+	// the web (`@dilna/shared`), so the two can't disagree about which slugs are
+	// unaddressable.
+	if (!used.has(base) && !isReservedSlug(base)) return base;
 	let i = 2;
-	while (used.has(`${base}-${i}`)) i++;
+	while (used.has(`${base}-${i}`) || isReservedSlug(`${base}-${i}`)) i++;
 	return `${base}-${i}`;
 }
 

@@ -42,7 +42,8 @@ export function App() {
 	// rather than tracking its own copy, which is what keeps deep links, back/
 	// forward and refresh consistent for free — and what stops Metrics/Settings
 	// from behaving like overlays that the sidebar can't navigate out of.
-	const { route, navigate } = useRoute();
+	const { route, navigate, requestedSessionId, clearRequestedSession } =
+		useRoute();
 
 	// Which repo/session the route points at. Resolving the slug needs the
 	// repo list, so until it lands `selectedRepo` is simply null and the app
@@ -150,6 +151,43 @@ export function App() {
 		},
 		[repos],
 	);
+
+	// A push notification's tap target is `/?session=<id>` (see the service
+	// worker's `notificationclick`): the notification is raised when no tab is
+	// open, so it can't name a path that depends on state the page hasn't
+	// loaded yet. `useRoute` reports the requested id; this resolves it to a
+	// real route once the cross-session stream has told us which repo that
+	// Session belongs to. Before this existed the query string was written by
+	// `sw.js` and read by nothing — the deep link had never worked.
+	useEffect(() => {
+		if (!requestedSessionId) return;
+		const session = sessionsById[requestedSessionId];
+		// Not yet known: the stream may simply not have delivered it. Leave the
+		// request in place rather than bouncing the user to home.
+		if (!session) return;
+		if (session.kind === "orchestrator") {
+			navigate(
+				{ kind: "orchestrator", sessionId: session.id },
+				{ replace: true },
+			);
+			clearRequestedSession();
+			return;
+		}
+		// A repo-bound Session needs its Repo resolved before it can be
+		// addressed as `/<slug>/<id>`. The session list and the repo list load
+		// independently, so this effect runs again when the repo arrives — and
+		// must not give up (nor fall back to home) while `repos` is still empty.
+		if (!repos.some((r) => r.id === session.repoId)) return;
+		navigate(repoRoute(session.repoId, session.id), { replace: true });
+		clearRequestedSession();
+	}, [
+		requestedSessionId,
+		sessionsById,
+		repos,
+		navigate,
+		repoRoute,
+		clearRequestedSession,
+	]);
 
 	const handleSelectRepo = useCallback(
 		(id: string) => {

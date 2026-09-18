@@ -12,6 +12,9 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": path.resolve(__dirname, "./src"),
+			// See vitest.config.ts — the package's `exports` field points every
+			// subpath at TypeScript source, which Vite resolves by prefix.
+			"@dilna/shared": path.resolve(__dirname, "../../packages/shared/src"),
 		},
 	},
 	define: {

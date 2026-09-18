@@ -11,7 +11,6 @@ import {
 	encryptPayload,
 	endpointFingerprint,
 	generateVapidKeys,
-	notificationTag,
 } from "./webPush";
 
 /** Stand in for a subscribing browser: generate a P-256 keypair and an auth
@@ -205,10 +204,6 @@ describe("encryptPayload", () => {
 });
 
 describe("helpers", () => {
-	it("tags notifications per session so the OS replaces rather than stacks", () => {
-		expect(notificationTag("abc")).toBe("dilna:abc");
-	});
-
 	it("fingerprints an endpoint without leaking it", () => {
 		const endpoint = "https://fcm.googleapis.com/fcm/send/secret-token";
 		const fingerprint = endpointFingerprint(endpoint);
