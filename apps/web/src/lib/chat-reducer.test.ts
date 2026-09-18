@@ -249,6 +249,80 @@ describe("message_start", () => {
 		);
 		expect(again.live.m1).toBe(s.live.m1);
 	});
+
+	/**
+	 * The mid-turn replay (ADR-0014, issue #244). `SessionManager.subscribe`
+	 * pushes `liveTurnReplayEvents` to any subscriber that connects while a turn
+	 * is in flight, and a tab that is *reconnecting* already holds the message
+	 * those events describe. The replay's `message_start` is marked, so the fold
+	 * rebuilds that entry from empty; treating it as idempotent (the case above)
+	 * leaves the tab to fold the whole re-narrated turn onto what it already has,
+	 * repeating the prose and appending every tool call a second time.
+	 */
+	describe("a replay re-narrating a message this tab already holds", () => {
+		/** What the tab has: it watched the turn stream so far. */
+		const watched = () =>
+			run([
+				{ type: "message_start", messageId: "m1", role: "assistant" },
+				{ type: "token", messageId: "m1", chunk: "Let me look. " },
+				{
+					type: "tool_call_start",
+					messageId: "m1",
+					callId: "c1",
+					tool: "Bash",
+					input: { command: "ls" },
+				},
+			]);
+
+		/** The server's replay of that same turn, exactly as it goes on the wire. */
+		const replay = (from: ChatState = watched()) =>
+			run(
+				[
+					{
+						type: "message_start",
+						messageId: "m1",
+						role: "assistant",
+						replay: true,
+					},
+					{ type: "token", messageId: "m1", chunk: "Let me look. " },
+					{
+						type: "tool_call_start",
+						messageId: "m1",
+						callId: "c1",
+						tool: "Bash",
+						input: { command: "ls" },
+					},
+				],
+				from,
+			);
+
+		it("rebuilds the message, so no part is doubled", () => {
+			const after = replay();
+
+			expect(after.live.m1?.parts).toEqual([
+				{ type: "text", text: "Let me look. " },
+				{
+					type: "tool_call",
+					callId: "c1",
+					tool: "Bash",
+					input: { command: "ls" },
+					output: null,
+				},
+			]);
+		});
+
+		it("converges on what a tab that missed the turn builds from the replay alone", () => {
+			const fromEmpty = replay(state());
+			const overExisting = replay(watched());
+
+			expect(overExisting.live.m1?.parts).toEqual(fromEmpty.live.m1?.parts);
+		});
+
+		it("keeps the entry's original startedAt", () => {
+			const before = watched().live.m1?.startedAt;
+			expect(replay().live.m1?.startedAt).toBe(before);
+		});
+	});
 });
 
 describe("content events", () => {

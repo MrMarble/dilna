@@ -59,7 +59,16 @@ export function applyEventToLiveTurn(
  */
 export function liveTurnReplayEvents(turn: LiveTurn): AgentStreamEvent[] {
 	const events: AgentStreamEvent[] = [
-		{ type: "message_start", messageId: turn.messageId, role: "assistant" },
+		{
+			type: "message_start",
+			messageId: turn.messageId,
+			role: "assistant",
+			// Marked as a re-narration: a consumer that already holds this message
+			// (a reconnecting tab, not a fresh one) must rebuild it rather than fold
+			// the replay onto the parts it already has. See `AgentStreamEvent`'s
+			// `message_start` and `applyEventToParts` (issue #244).
+			replay: true,
+		},
 	];
 	for (const part of turn.parts) {
 		if (part.type === "text") {

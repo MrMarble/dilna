@@ -53,7 +53,27 @@ export type AgentStreamEvent =
 			messageId: string;
 			attachment: Attachment;
 	  }
-	| { type: "message_start"; messageId: string; role: "user" | "assistant" }
+	| {
+			type: "message_start";
+			messageId: string;
+			role: "user" | "assistant";
+			/** True on a *re-narration* of a message the consumer may already hold —
+			 * ADR-0014's mid-turn snapshot replay (see `liveTurnReplayEvents`),
+			 * as opposed to the real start of a message nobody has seen before.
+			 *
+			 * A consumer that folds events into accumulated parts (`applyEventToParts`)
+			 * must **discard** whatever it already has for `messageId` and rebuild
+			 * from the replay's own events. Folding a replay into an
+			 * already-populated message appends a second copy of every text chunk
+			 * and every tool call, because `tool_call_start` appends and `token`
+			 * concatenates — the client is then only corrected when the turn ends
+			 * and the authoritative rows replace the live overlay (issue #244).
+			 *
+			 * Optional and additive: absent means "an ordinary start", and a
+			 * consumer that ignores it entirely behaves as it did before this
+			 * existed. */
+			replay?: boolean;
+	  }
 	| { type: "token"; messageId: string; chunk: string }
 	| {
 			/** Mirrors `token`'s shape, fed by `thinking_delta` frames (ADR-0016
