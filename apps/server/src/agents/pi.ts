@@ -41,12 +41,10 @@ import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import {
 	type BashOperations,
 	createBashTool,
-	createEditTool,
 	createFindTool,
 	createGrepTool,
 	createLocalBashOperations,
 	createLsTool,
-	createReadTool,
 	createWriteTool,
 } from "@earendil-works/pi-coding-agent";
 import { logger } from "../logger";
@@ -81,6 +79,10 @@ export type { AgentEvent, OrchestratorDeps };
 const log = logger.child({ component: "agents/pi" });
 
 import { buildCustomModel, getCustomProvider } from "./customProviders";
+import {
+	createHashlineEditTool,
+	createHashlineReadTool,
+} from "./hashlineTools";
 import { isDilnaProvider } from "./providerConfig";
 import { effectiveModel, effectiveProvider } from "./providerConfigStore";
 import { resolveApiKey } from "./providerCredentials";
@@ -507,9 +509,13 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 
 	// biome-ignore lint/suspicious/noExplicitAny: AgentTool<any> is the library's own alias for a type-erased tool (pi-coding-agent's `Tool` type)
 	const tools: AgentTool<any>[] = [
-		createReadTool(opts.worktreePath),
+		// dilna's own read/edit pair (issue #138, item 1): line-anchored,
+		// tag-guarded, replacing pi's `str_replace`-style stock tools. These
+		// keep pi's names and flat `path` argument deliberately — that is what
+		// `confinement.ts`'s beforeToolCall hook gates on.
+		createHashlineReadTool(opts.worktreePath),
 		createWriteTool(opts.worktreePath),
-		createEditTool(opts.worktreePath),
+		createHashlineEditTool(opts.worktreePath),
 		createGrepTool(opts.worktreePath),
 		createFindTool(opts.worktreePath),
 		createLsTool(opts.worktreePath),

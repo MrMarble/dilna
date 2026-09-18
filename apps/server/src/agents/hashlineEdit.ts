@@ -95,7 +95,10 @@ function parsePatch(patch: string): { ops: Operation[] } | { error: string } {
 					error: `\`${line}\` has nowhere to go — no \`PUT\` header is open.`,
 				};
 			}
-			current.body.push(line.startsWith("++") ? line.slice(1) : line.slice(1));
+			// `++foo` is how a body row whose literal text begins with `+` is
+			// written, so exactly one leading `+` is the marker and the rest is
+			// content.
+			current.body.push(line.slice(1));
 			continue;
 		}
 
