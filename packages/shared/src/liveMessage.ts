@@ -89,6 +89,16 @@ export function applyEventToParts(
 	}
 }
 
+/** The union {@link isMessageContentEvent} narrows to — exported so a consumer
+ * can name it instead of restating the literal set. The web's
+ * `MessageContentEvent` used to be a hand-written `Extract<…>` with a comment
+ * asserting it matched this guard; it listed three of the four variants and
+ * silently dropped `image_sent` (issue #222). */
+export type MessageContentEvent = Extract<
+	AgentStreamEvent,
+	{ type: "token" | "tool_call_start" | "tool_call_end" | "image_sent" }
+>;
+
 /** Whether an event carries assistant message content, i.e. whether
  * {@link applyEventToParts} would do anything with it. Lets a consumer that
  * keys messages by id decide whether to *create* an entry for a message it
@@ -97,10 +107,7 @@ export function applyEventToParts(
  * all. */
 export function isMessageContentEvent(
 	ev: AgentStreamEvent,
-): ev is Extract<
-	AgentStreamEvent,
-	{ type: "token" | "tool_call_start" | "tool_call_end" | "image_sent" }
-> {
+): ev is MessageContentEvent {
 	return (
 		ev.type === "token" ||
 		ev.type === "tool_call_start" ||

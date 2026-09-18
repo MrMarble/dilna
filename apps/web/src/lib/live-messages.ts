@@ -1,7 +1,7 @@
 import {
-	type AgentStreamEvent,
 	applyEventToParts,
 	type Message,
+	type MessageContentEvent,
 	type MessagePart,
 } from "@dilna/shared";
 
@@ -18,12 +18,16 @@ export type LiveMessage = {
 	startedAt: number;
 };
 
-/** The content-carrying subset {@link applyEventToLive} handles — the same
- * events `@dilna/shared`'s `isMessageContentEvent` narrows to. */
-export type MessageContentEvent = Extract<
-	AgentStreamEvent,
-	{ type: "token" | "tool_call_start" | "tool_call_end" }
->;
+/** The content-carrying subset {@link applyEventToLive} handles.
+ *
+ * Re-exported from `@dilna/shared` rather than restated: this used to be a
+ * local `Extract<AgentStreamEvent, { type: "token" | … }>` with a doc
+ * comment claiming it matched the shared guard — and it didn't. It omitted
+ * `image_sent`, so an Agent-sent image was delivered to `ChatShell`, matched
+ * no case there, and only appeared after `message_end` triggered a refetch
+ * (issue #222, ADR-0038). The type and the guard now come from one place, so
+ * they can't disagree again. */
+export type { MessageContentEvent };
 
 /**
  * Apply one content-carrying event to the keyed live-message map: resolve

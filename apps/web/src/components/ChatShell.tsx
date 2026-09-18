@@ -418,11 +418,16 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 						});
 						break;
 					case "token":
+					case "image_sent":
 					case "tool_call_start":
 					case "tool_call_end":
 						// Content stops the 'Thinking...' marker — except tool_call_end,
 						// which resolves a call whose _start already cleared it and can
-						// arrive while the next round is thinking again.
+						// arrive while the next round is thinking again. An `image_sent`
+						// is content: the Agent sent a picture mid-turn and the live view
+						// has to show it now, not at the next refetch (issue #222,
+						// ADR-0038) — this case was missing, so the event was delivered
+						// and then dropped on the floor.
 						if (ev.type !== "tool_call_end") {
 							setThinking(false);
 							sawTurnRef.current = true;
@@ -469,6 +474,25 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 					case "resync":
 						resync();
 						break;
+					// Handled by sibling subscribers on the same hub, not by the chat:
+					// `ContextPanel` owns `changed_files`/`artefact_published`, and the
+					// usage/context badges own `usage_update`/`context_usage`. Listing
+					// them explicitly (rather than a `default:`) is what makes the count
+					// meaningful — see the assert below.
+					case "changed_files":
+					case "artefact_published":
+					case "usage_update":
+					case "context_usage":
+						break;
+					default: {
+						// Exhaustiveness assert: every `AgentStreamEvent` variant must be
+						// handled above — by a real case or by one of the deliberate
+						// no-ops. Adding a variant in `packages/shared/src/events.ts`
+						// fails to compile here until it is listed, which is exactly what
+						// would have caught `image_sent` being silently dropped.
+						const _never: never = ev;
+						void _never;
+					}
 				}
 			},
 			resync,
