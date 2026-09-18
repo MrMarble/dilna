@@ -1,10 +1,10 @@
-import type { AgentStreamEvent, Attachment } from "@dilna/shared";
+import type { AgentStreamEvent } from "@dilna/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
 import type { PartialApi } from "@/test/api-mock";
-import { makeSession } from "@/test/factories";
+import { makeAttachment, makeSession } from "@/test/factories";
 
 /**
  * The *live* path for an Agent-sent image (issue #222, ADR-0038).
@@ -55,21 +55,6 @@ vi.mock("@/api/client", () => ({
 
 const session = makeSession({ title: "Test session" });
 
-function makeAttachment(overrides: Partial<Attachment> = {}): Attachment {
-	return {
-		id: "img-1",
-		sessionId: "sess-1",
-		filename: "shot.png",
-		mimeType: "image/png",
-		size: 2048,
-		kind: "image",
-		source: "agent",
-		path: "/data/attachments/sess-1/aa-shot.png",
-		createdAt: 1,
-		...overrides,
-	};
-}
-
 /** Captures the live-event sink so a test can push events mid-turn. */
 let emit: ((ev: AgentStreamEvent) => void) | null = null;
 
@@ -107,7 +92,7 @@ describe("an image the Agent sends mid-turn", () => {
 		emit?.({
 			type: "image_sent",
 			messageId: "m1",
-			attachment: makeAttachment(),
+			attachment: makeAttachment({ filename: "shot.png" }),
 		});
 
 		// No message_end, no terminal status, no refetch — the picture must be

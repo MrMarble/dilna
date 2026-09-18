@@ -1,4 +1,4 @@
-import type { SessionView } from "@dilna/shared";
+import { makeRepo, makeSession } from "@dilna/shared/testing";
 import { describe, expect, it, vi } from "vitest";
 import {
 	createOrchestratorTools,
@@ -6,33 +6,9 @@ import {
 	type OrchestratorDeps,
 } from "./orchestratorTools";
 
-function makeSession(overrides: Partial<SessionView> = {}): SessionView {
-	return {
-		id: "sess-1",
-		repoId: "repo-1",
-		title: "Session sess",
-		agentType: "pi",
-		kind: "session",
-		status: "idle",
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-		...overrides,
-	};
-}
-
 function makeDeps(overrides: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
 	return {
-		listRepos: vi.fn(async () => [
-			{
-				id: "repo-1",
-				slug: "dilna",
-				path: "/data/repos/dilna",
-				defaultBranch: "main",
-				remoteUrl: "git@github.com:owner/dilna.git",
-				createdAt: 1,
-			},
-		]),
+		listRepos: vi.fn(async () => [makeRepo({ path: "/data/repos/dilna" })]),
 		listSessions: vi.fn(async () => [makeSession()]),
 		getSession: vi.fn(async () => ({
 			...makeSession(),
