@@ -156,6 +156,25 @@ describe("skillsRoute /:id/enabled and DELETE /:id (real DB)", () => {
 		});
 		expect(res.status).toBe(200);
 	});
+
+	// `/repo/:repoId` is guarded by `requireRepo` (issue #231) while
+	// `DELETE /:id` beside it is not. `/repo/...` would match `/:id` too, so
+	// these pin the precedence as well as the 404 — if the guarded sub-router
+	// stopped being mounted, the list below would fall through to the
+	// uninstall handler instead.
+	it("lists a known Repo's skills through the guard", async () => {
+		seedSkillAndRepo();
+		const res = await app.request("/repo/r1");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { skills: { id: string }[] };
+		expect(body.skills.map((s) => s.id)).toContain(skillId);
+	});
+
+	it("404s listing skills for an unknown Repo", async () => {
+		seedSkillAndRepo();
+		const res = await app.request("/repo/nope");
+		expect(res.status).toBe(404);
+	});
 });
 
 describe("encodeSkillId/decodeSkillId", () => {

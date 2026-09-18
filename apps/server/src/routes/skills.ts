@@ -1,4 +1,13 @@
-import type { RepoSkill, Skill, SkillSearchResult } from "@dilna/shared";
+import type {
+	InstallSkillResponse,
+	ListRepoSkillsResponse,
+	ListSkillsResponse,
+	OkResponse,
+	RepoSkill,
+	SearchSkillsResponse,
+	Skill,
+	SkillSearchResult,
+} from "@dilna/shared";
 import {
 	decodeSkillId,
 	installSkillBodySchema,
@@ -7,6 +16,7 @@ import {
 } from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { type RepoEnv, requireRepo } from "../middleware/requireRepo";
 import type { RepoManager } from "../repos/manager";
 import { searchSkills } from "../skills/registry";
 import {
@@ -30,10 +40,18 @@ import { validate } from "./factory";
 export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 	const skillsRoute = new Hono();
 
+	// `/repo/:repoId` is the only route here whose Repo id is a path param, so
+	// it is the only one `requireRepo` can guard. `POST /:id/enabled` takes its
+	// `repoId` from the validated JSON body instead and keeps an inline check —
+	// see `requireRepo`'s doc comment.
+	const guardedByRepo = new Hono<RepoEnv>();
+	guardedByRepo.use("/repo/:repoId", requireRepo(deps.repos, "repoId"));
+
 	/** Every installed skill (global catalog). */
 	skillsRoute.get("/", async (c) => {
 		const skills: Skill[] = await listSkills();
-		return c.json({ skills });
+		const body: ListSkillsResponse = { skills };
+		return c.json(body);
 	});
 
 	/**
@@ -46,17 +64,16 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 		async (c) => {
 			const { q, owner } = c.req.valid("query");
 			const results: SkillSearchResult[] = await searchSkills(q, owner);
-			return c.json({ results });
+			const body: SearchSkillsResponse = { results };
+			return c.json(body);
 		},
 	);
 
 	/** Installed skills, flagged with whether this Repo has each enabled. */
-	skillsRoute.get("/repo/:repoId", async (c) => {
-		const repoId = c.req.param("repoId");
-		const repo = await deps.repos.get(repoId);
-		if (!repo) throw new HTTPException(404, { message: "repo not found" });
-		const skills: RepoSkill[] = await listSkillsForRepo(repoId);
-		return c.json({ skills });
+	guardedByRepo.get("/repo/:repoId", async (c) => {
+		const skills: RepoSkill[] = await listSkillsForRepo(c.get("repo").id);
+		const body: ListRepoSkillsResponse = { skills };
+		return c.json(body);
 	});
 
 	/** Install a skill globally (does not enable it for any Repo). */
@@ -64,7 +81,10 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 		const body = c.req.valid("json");
 		const result = await installSkill(body.url);
 		if (!result.ok) throw new HTTPException(400, { message: result.error });
-		return c.json({ skill: result.skill }, result.replaced ? 200 : 201);
+		const res: InstallSkillResponse = { skill: result.skill };
+		// 200 vs 201 is the only signal distinguishing a reinstall from a fresh
+		// install; it is not a body field, and `request()` discards the status.
+		return c.json(res, result.replaced ? 200 : 201);
 	});
 
 	/**
@@ -95,7 +115,7 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 
 			const result = await setSkillEnabled(id, body.repoId, body.enabled);
 			if (!result.ok) throw new HTTPException(404, { message: result.error });
-			return c.json({ ok: true });
+			return c.json<OkResponse>({ ok: true });
 		},
 	);
 
@@ -103,8 +123,9 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 	 * Same base64url-encoded `id` as the `/enabled` route above. */
 	skillsRoute.delete("/:id", async (c) => {
 		await uninstallSkill(decodeSkillId(c.req.param("id")));
-		return c.json({ ok: true });
+		return c.json<OkResponse>({ ok: true });
 	});
 
+	skillsRoute.route("/", guardedByRepo);
 	return skillsRoute;
 }

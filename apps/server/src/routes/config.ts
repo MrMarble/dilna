@@ -1,10 +1,14 @@
 import {
+	type ClearOverrideResponse,
 	cancelOAuthBodySchema,
 	completeOAuthBodySchema,
 	createCustomProviderBodySchema,
 	customProviderFieldsSchema,
 	type LlmConfig,
+	type OauthStartResponse,
+	type OkResponse,
 	type ProviderModelOption,
+	type SetOverrideResponse,
 	setCredentialBodySchema,
 	setProviderOverrideBodySchema,
 } from "@dilna/shared";
@@ -103,13 +107,15 @@ configRoute.put(
 		if (!result.ok) {
 			throw new HTTPException(400, { message: result.error });
 		}
-		return c.json({ ok: true, override: getOverride() });
+		const res: SetOverrideResponse = { ok: true, override: getOverride() };
+		return c.json(res);
 	},
 );
 
 configRoute.delete("/", (c) => {
 	clearOverride();
-	return c.json({ ok: true, override: null });
+	const res: ClearOverrideResponse = { ok: true, override: null };
+	return c.json(res);
 });
 
 // ---- Stored API keys (multi-provider — see providerCredentials.ts) ----------
@@ -125,14 +131,14 @@ configRoute.put(
 		if (!result.ok) {
 			throw new HTTPException(400, { message: result.error });
 		}
-		return c.json({ ok: true });
+		return c.json<OkResponse>({ ok: true });
 	},
 );
 
 /** Forget a provider's stored key (falls back to its env key thereafter). */
 configRoute.delete("/credentials/:provider", (c) => {
 	clearProviderApiKey(c.req.param("provider"));
-	return c.json({ ok: true });
+	return c.json<OkResponse>({ ok: true });
 });
 
 // ---- Anthropic OAuth ("Sign in with Claude" — see providerOAuth.ts) --------
@@ -145,7 +151,11 @@ configRoute.post("/providers/anthropic/oauth/start", async (c) => {
 	if (!result.ok) {
 		throw new HTTPException(502, { message: result.error });
 	}
-	return c.json({ loginId: result.loginId, authUrl: result.authUrl });
+	const res: OauthStartResponse = {
+		loginId: result.loginId,
+		authUrl: result.authUrl,
+	};
+	return c.json(res);
 });
 
 /** Finish a pending login with the code/redirect URL the user pasted back. */
@@ -158,7 +168,7 @@ configRoute.post(
 		if (!result.ok) {
 			throw new HTTPException(400, { message: result.error });
 		}
-		return c.json({ ok: true });
+		return c.json<OkResponse>({ ok: true });
 	},
 );
 
@@ -168,7 +178,7 @@ configRoute.post(
 	validate("json", cancelOAuthBodySchema),
 	(c) => {
 		cancelAnthropicLogin(c.req.valid("json").loginId);
-		return c.json({ ok: true });
+		return c.json<OkResponse>({ ok: true });
 	},
 );
 
@@ -176,7 +186,7 @@ configRoute.post(
  * thereafter). */
 configRoute.delete("/providers/anthropic/oauth", (c) => {
 	clearProviderOAuthCredential("anthropic");
-	return c.json({ ok: true });
+	return c.json<OkResponse>({ ok: true });
 });
 
 // ---- Custom providers (Ollama, LM Studio, vLLM, ... — see customProviders.ts) ----
@@ -200,7 +210,7 @@ configRoute.post(
 				throw new HTTPException(400, { message: keyResult.error });
 			}
 		}
-		return c.json({ ok: true });
+		return c.json<OkResponse>({ ok: true });
 	},
 );
 
@@ -224,7 +234,7 @@ configRoute.put(
 				throw new HTTPException(400, { message: keyResult.error });
 			}
 		}
-		return c.json({ ok: true });
+		return c.json<OkResponse>({ ok: true });
 	},
 );
 
@@ -233,5 +243,5 @@ configRoute.put(
  * `deleteCustomProvider`). */
 configRoute.delete("/custom-providers/:id", (c) => {
 	deleteCustomProvider(c.req.param("id"), clearProviderApiKey);
-	return c.json({ ok: true });
+	return c.json<OkResponse>({ ok: true });
 });

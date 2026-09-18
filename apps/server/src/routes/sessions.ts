@@ -1,17 +1,23 @@
 import { readFile } from "node:fs/promises";
 import {
 	type AgentType,
-	type Artefact,
+	type ArtefactsResponse,
 	type Attachment,
-	type ChangedFile,
-	type CommitInfo,
-	type ContextUsageEstimate,
+	type AttachmentResponse,
+	type ChangedFilesResponse,
+	type CommitsResponse,
 	commitsQuerySchema,
 	createSessionBodySchema,
+	type ListQueuedResponse,
+	type ListSessionsResponse,
 	listSessionsQuerySchema,
 	type Message,
-	type QueuedMessage,
-	type SessionView,
+	type OkIdResponse,
+	type OkResponse,
+	type QueueMessageResponse,
+	type SendMessageResponse,
+	type SessionMessagesResponse,
+	type SessionResponse,
 	sendMessageBodySchema,
 } from "@dilna/shared";
 import { Hono } from "hono";
@@ -44,14 +50,11 @@ const log = logger.child({ component: "routes/sessions" });
 
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
 
-type ListResponse = { sessions: SessionView[] };
-type OneResponse = {
-	session: SessionView;
-	/** ADR-0023's addendum — see `SessionManager.getContextUsageEstimate`'s
-	 * doc comment. `null` for an orchestrator Session or one whose
-	 * provider/model has fallen out of dilna's catalog. */
-	contextUsage: ContextUsageEstimate | null;
-};
+// Response envelopes live in `@dilna/shared` (ADR-0040) so the web client's
+// `request<...>` call sites name the same declaration these handlers annotate
+// with. `ListResponse`/`OneResponse` used to be declared here and restated by
+// hand on the client, which is how `POST /` and `POST /orchestrator` came to
+// be typed without the `contextUsage` they have always sent.
 
 // Request schemas now live in `@dilna/shared` (apiSchemas.ts) so the web
 // client types its calls against the same definitions the server validates
@@ -79,7 +82,7 @@ export function createSessionsRoute(deps: {
 		async (c) => {
 			const { repoId } = c.req.valid("query");
 			const sessions = await deps.sessions.listByRepo(repoId);
-			const body: ListResponse = { sessions };
+			const body: ListSessionsResponse = { sessions };
 			return c.json(body);
 		},
 	);
@@ -89,7 +92,7 @@ export function createSessionsRoute(deps: {
 		const contextUsage = await deps.sessions.getContextUsageEstimate(
 			session.id,
 		);
-		const body: OneResponse = { session: toView(session), contextUsage };
+		const body: SessionResponse = { session: toView(session), contextUsage };
 		return c.json(body);
 	});
 
@@ -114,7 +117,7 @@ export function createSessionsRoute(deps: {
 	// turns), then kept live via the session's SSE stream thereafter.
 	guarded.get("/:id/changed-files", async (c) => {
 		const files = await deps.sessions.getChangedFiles(c.get("session").id);
-		const body: { files: ChangedFile[] } = { files };
+		const body: ChangedFilesResponse = { files };
 		return c.json(body);
 	});
 
@@ -133,7 +136,7 @@ export function createSessionsRoute(deps: {
 				c.get("session").id,
 				limit,
 			);
-			const body: { commits: CommitInfo[] } = { commits };
+			const body: CommitsResponse = { commits };
 			return c.json(body);
 		},
 	);
@@ -142,7 +145,7 @@ export function createSessionsRoute(deps: {
 	// client's on-open resync routine (ADR-0016 §4), then kept live via
 	// `queue_update` events thereafter.
 	guarded.get("/:id/queue", (c) => {
-		const body: { queued: QueuedMessage[] } = {
+		const body: ListQueuedResponse = {
 			queued: deps.sessions.listQueuedMessages(c.get("session").id),
 		};
 		return c.json(body);
@@ -161,7 +164,7 @@ export function createSessionsRoute(deps: {
 			try {
 				const session = await deps.sessions.create(body.repoId, body.agentType);
 				// A brand-new Session has no turns yet — nothing to estimate.
-				const res: OneResponse = { session, contextUsage: null };
+				const res: SessionResponse = { session, contextUsage: null };
 				return c.json(res, 201);
 			} catch (err) {
 				if (err instanceof RepoNotFoundError) {
@@ -180,7 +183,7 @@ export function createSessionsRoute(deps: {
 		try {
 			const session = await deps.sessions.createOrchestrator();
 			// Orchestrator Sessions never get compaction/context reporting.
-			const res: OneResponse = { session, contextUsage: null };
+			const res: SessionResponse = { session, contextUsage: null };
 			return c.json(res, 201);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : "create failed";
@@ -191,13 +194,14 @@ export function createSessionsRoute(deps: {
 	sessionsRoute.delete("/:id", async (c) => {
 		const id = c.req.param("id");
 		await deps.sessions.delete(id);
-		return c.json({ ok: true, id });
+		const body: OkIdResponse = { ok: true, id };
+		return c.json(body);
 	});
 
 	sessionsRoute.get("/:id/messages", async (c) => {
 		const id = c.req.param("id");
 		const messages = await deps.sessions.getMessages(id);
-		const body: { messages: Message[] } = { messages };
+		const body: SessionMessagesResponse = { messages };
 		return c.json(body);
 	});
 
@@ -253,7 +257,8 @@ export function createSessionsRoute(deps: {
 			turnPromise.catch((err) => {
 				log.error({ sessionId: id, err }, "runTurn failed");
 			});
-			return c.json({ ok: true, message }, 202);
+			const res: SendMessageResponse = { ok: true, message };
+			return c.json(res, 202);
 		},
 	);
 
@@ -292,7 +297,8 @@ export function createSessionsRoute(deps: {
 			}
 			try {
 				const entry = deps.sessions.enqueueMessage(id, body.text, attachments);
-				return c.json({ ok: true, entry }, 202);
+				const res: QueueMessageResponse = { ok: true, entry };
+				return c.json(res, 202);
 			} catch (err) {
 				if (err instanceof SessionNotFoundError) {
 					throw new HTTPException(404, { message: err.message });
@@ -313,7 +319,8 @@ export function createSessionsRoute(deps: {
 	sessionsRoute.delete("/:id/queue/:queuedId", (c) => {
 		const id = c.req.param("id");
 		deps.sessions.removeQueuedMessage(id, c.req.param("queuedId"));
-		return c.json({ ok: true });
+		const body: OkResponse = { ok: true };
+		return c.json(body);
 	});
 
 	/**
@@ -354,7 +361,7 @@ export function createSessionsRoute(deps: {
 				mimeType: file.type || "application/octet-stream",
 				bytes: new Uint8Array(await file.arrayBuffer()),
 			});
-			const body: { attachment: Attachment } = { attachment };
+			const body: AttachmentResponse = { attachment };
 			return c.json(body, 201);
 		} catch (err) {
 			if (err instanceof AttachmentRejectedError) {
@@ -440,7 +447,7 @@ export function createSessionsRoute(deps: {
 	 * arrives on the stream.
 	 */
 	guarded.get("/:id/artefacts", (c) => {
-		const body: { artefacts: Artefact[] } = {
+		const body: ArtefactsResponse = {
 			artefacts: listArtefacts(c.get("session").id),
 		};
 		return c.json(body);
@@ -499,7 +506,8 @@ export function createSessionsRoute(deps: {
 	sessionsRoute.post("/:id/stop", async (c) => {
 		const id = c.req.param("id");
 		await deps.sessions.requestStop(id);
-		return c.json({ ok: true, id });
+		const body: OkIdResponse = { ok: true, id };
+		return c.json(body);
 	});
 
 	sessionsRoute.get("/:id/stream", (c) => {

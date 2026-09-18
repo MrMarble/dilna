@@ -8,7 +8,9 @@ import { MAX_ATTACHMENTS_PER_MESSAGE } from "./messages";
  * `packages/shared`", applied to request bodies rather than just domain
  * types).
  *
- * Response *envelopes* that both sides need live here too. Domain shapes
+ * Response *envelopes* now live in `apiResponses.ts` (ADR-0040); `LlmConfig`
+ * below stays here because it is assembled from the custom-provider schemas
+ * next to it. Domain shapes
  * themselves (`Repo`, `SessionView`, `Message`, ...) stay as plain
  * TypeScript types in their own modules — they're produced by the server
  * from the DB and never parsed from untrusted input, so a runtime schema for

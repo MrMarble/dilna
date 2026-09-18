@@ -2,6 +2,11 @@
 // are runtime values — the server shapes responses with them, the web client
 // narrows with them.
 export * from "./apiError";
+// Type-only: response envelopes are plain types by design (ADR-0039's "type
+// what goes out", extended to responses by ADR-0040) — the route annotates
+// what it returns, the client types what it expects, and the compiler links
+// the two.
+export type * from "./apiResponses";
 // Not type-only: these are Zod schemas, i.e. runtime values. The server
 // validates with them; the web client derives its request types from them.
 export * from "./apiSchemas";

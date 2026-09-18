@@ -66,9 +66,14 @@ vi.mock("@/api/client", () => ({
 			pull: async (id: string) => ({ repo: { ...REPO, id } }),
 		},
 		sessions: {
-			create: async () => ({ session: REPO_SESSION }),
+			// `create`/`createOrchestrator` resolve the same `{ session,
+			// contextUsage }` envelope `get` does — always `contextUsage: null`,
+			// since a brand-new Session has no turns to estimate from and an
+			// orchestrator Session never reports context at all.
+			create: async () => ({ session: REPO_SESSION, contextUsage: null }),
 			createOrchestrator: async () => ({
 				session: state.createdOrchestrator ?? ORCHESTRATOR_SESSION,
+				contextUsage: null,
 			}),
 			delete: async (id: string) => ({ ok: true, id }),
 			// `get` resolves `{ session, contextUsage }` — there is no separate

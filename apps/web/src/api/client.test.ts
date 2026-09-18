@@ -58,3 +58,35 @@ describe("request() error handling", () => {
 		await expect(api.repos.list()).resolves.toEqual({ repos: [] });
 	});
 });
+
+/**
+ * Response envelopes are shared types now (ADR-0040). These cover the runtime
+ * half: the previously-missing fields survive `request()`'s parse and reach
+ * the caller, rather than being stripped on the way through.
+ *
+ * They do **not** catch a hand-narrowed client type — the body comes from the
+ * `fetch` mock below, so the field is present at runtime whatever the type
+ * says. That is `client.contract.test-d.ts`'s job, and the reason it exists.
+ */
+describe("response envelopes reach callers whole", () => {
+	it("keeps contextUsage on a freshly created Session", async () => {
+		// The server has always sent this; the client used to type
+		// `POST /api/sessions` as `{ session }` only.
+		mockFetch(201, { session: { id: "s1" }, contextUsage: null });
+		const res = await api.sessions.create("r1");
+		expect(res).toHaveProperty("contextUsage", null);
+	});
+
+	it("keeps push delivery health alongside the key", async () => {
+		// `subscriptions`/`lastSuccessAt` are what the push route's doc comment
+		// calls the first thing to check when notifications aren't arriving.
+		mockFetch(200, {
+			publicKey: "BKey",
+			configured: true,
+			subscriptions: 2,
+			lastSuccessAt: 4242,
+		});
+		const res = await api.push.key();
+		expect(res).toMatchObject({ subscriptions: 2, lastSuccessAt: 4242 });
+	});
+});
