@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.31.0](https://github.com/MrMarble/dilna/compare/v0.30.0...v0.31.0) (2026-09-18)
+
+
+### Features
+
+* **agents:** let an Agent send an image into the chat ([#227](https://github.com/MrMarble/dilna/issues/227)) ([7ef4bd0](https://github.com/MrMarble/dilna/commit/7ef4bd0ed01125660182cedc2463934cdcca3db3))
+* **api:** share zod request schemas and return one error envelope ([#229](https://github.com/MrMarble/dilna/issues/229)) ([8c486aa](https://github.com/MrMarble/dilna/commit/8c486aa17c43f2e33373e33018911894534177ab))
+* **shared:** share HTTP response envelopes across server and web ([#232](https://github.com/MrMarble/dilna/issues/232)) ([503b761](https://github.com/MrMarble/dilna/commit/503b7618c95b9715032c7c411a1b7e57adf22205))
+
 ## [0.30.0](https://github.com/MrMarble/dilna/compare/v0.29.0...v0.30.0) (2026-09-16)
 
 
