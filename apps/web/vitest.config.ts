@@ -20,6 +20,14 @@ export default defineConfig({
 		// them rather than failing loudly.
 		include: ["src/**/*.test.{ts,tsx}"],
 		setupFiles: ["./src/test/setup.ts"],
+		// Type-level suites (`*.test-d.ts`) assert the API client's response
+		// envelopes against the shared types (ADR-0040). They never execute, so
+		// they stay out of `include` above — a normal run would report them as
+		// empty files. `pnpm --filter @dilna/web run test:types` runs them.
+		typecheck: {
+			include: ["src/**/*.test-d.ts"],
+			tsconfig: "./tsconfig.json",
+		},
 	},
 	resolve: {
 		alias: {

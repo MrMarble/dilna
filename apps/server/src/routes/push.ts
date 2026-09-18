@@ -1,4 +1,6 @@
 import {
+	type PushKeyResponse,
+	type PushSubscriptionsResponse,
 	pushSubscribeBodySchema,
 	pushUnsubscribeBodySchema,
 } from "@dilna/shared";
@@ -44,11 +46,12 @@ export const pushRoute = new Hono();
  */
 pushRoute.get("/key", (c) => {
 	const key = vapidPublicKey();
-	return c.json({
+	const body: PushKeyResponse = {
 		publicKey: key,
 		configured: key !== null,
 		...deliveryStatus(),
-	});
+	};
+	return c.json(body);
 });
 
 pushRoute.post("/subscribe", validate("json", pushSubscribeBodySchema), (c) => {
@@ -58,7 +61,11 @@ pushRoute.post("/subscribe", validate("json", pushSubscribeBodySchema), (c) => {
 		p256dh: body.keys.p256dh,
 		auth: body.keys.auth,
 	});
-	return c.json({ ok: true, subscriptions: subscriptionCount() });
+	const res: PushSubscriptionsResponse = {
+		ok: true,
+		subscriptions: subscriptionCount(),
+	};
+	return c.json(res);
 });
 
 /**
@@ -72,6 +79,10 @@ pushRoute.post(
 	validate("json", pushUnsubscribeBodySchema),
 	(c) => {
 		deleteSubscription(c.req.valid("json").endpoint);
-		return c.json({ ok: true, subscriptions: subscriptionCount() });
+		const res: PushSubscriptionsResponse = {
+			ok: true,
+			subscriptions: subscriptionCount(),
+		};
+		return c.json(res);
 	},
 );

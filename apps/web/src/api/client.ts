@@ -1,32 +1,57 @@
 import type {
 	AgentStreamEvent,
 	AgentType,
-	Artefact,
+	ArtefactsResponse,
 	Attachment,
+	AttachmentResponse,
 	ChangedFile,
+	ChangedFilesResponse,
+	ClearOverrideResponse,
 	CloneRepoBody,
 	CommitInfo,
-	ContextUsageEstimate,
+	CommitsResponse,
 	CreateCustomProviderBody,
 	CustomModelDef,
 	CustomProviderApi,
 	CustomProviderFields,
 	CustomProviderView,
 	DiskUsage,
+	DiskUsageResponse,
+	InstallSkillResponse,
+	ListQueuedResponse,
+	ListRepoSkillsResponse,
+	ListReposResponse,
+	ListSessionsResponse,
+	ListSkillsResponse,
 	LlmConfig,
 	Message,
+	OauthStartResponse,
+	OkIdResponse,
+	OkResponse,
 	ProviderModelOption,
+	PushKeyResponse,
+	PushSubscriptionsResponse,
 	QueuedMessage,
+	QueueMessageResponse,
 	RateLimitWindow,
 	Repo,
+	RepoResponse,
 	RepoSkill,
 	RepoStats,
+	RepoStatsResponse,
+	RepoSyncResponse,
 	RepoSyncStatus,
+	SearchSkillsResponse,
+	SendMessageResponse,
 	SessionListEvent,
+	SessionMessagesResponse,
+	SessionResponse,
 	SessionView,
+	SetOverrideResponse,
 	Skill,
 	SkillSearchResult,
 	UsageSummary,
+	UsageSummaryResponse,
 } from "@dilna/shared";
 import { encodeSkillId, isApiErrorBody } from "@dilna/shared";
 import { SessionStreamHub } from "./sessionStream";
@@ -38,6 +63,12 @@ import { SessionStreamHub } from "./sessionStream";
 // twin of the server's `GetConfigResponse` and had already drifted — this
 // side typed a custom provider's `api` as a bare `string` where the server
 // had a four-literal union.
+//
+// The `*Response` types are the same idea applied to every other endpoint
+// (ADR-0040): each call below names the envelope its route annotates rather
+// than restating its shape in a `request<{ ... }>` generic. Three of those
+// hand-written generics had drifted from the server before they were
+// replaced — see the ADR for which.
 export type {
 	AgentStreamEvent,
 	AgentType,
@@ -262,70 +293,62 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
 	repos: {
-		list: () => request<{ repos: Repo[] }>("/api/repos"),
-		get: (id: string) => request<{ repo: Repo }>(`/api/repos/${id}`),
+		list: () => request<ListReposResponse>("/api/repos"),
+		get: (id: string) => request<RepoResponse>(`/api/repos/${id}`),
 		clone: (input: CloneRepoInput) =>
-			request<{ repo: Repo }>("/api/repos", {
+			request<RepoResponse>("/api/repos", {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
 		pull: (id: string) =>
-			request<{ repo: Repo }>(`/api/repos/${id}/pull`, { method: "POST" }),
-		stats: (id: string) =>
-			request<{ stats: RepoStats }>(`/api/repos/${id}/stats`),
+			request<RepoResponse>(`/api/repos/${id}/pull`, { method: "POST" }),
+		stats: (id: string) => request<RepoStatsResponse>(`/api/repos/${id}/stats`),
 		sync: (id: string) =>
-			request<{ status: RepoSyncStatus }>(`/api/repos/${id}/sync`, {
+			request<RepoSyncResponse>(`/api/repos/${id}/sync`, {
 				method: "POST",
 			}),
 		delete: (id: string) =>
-			request<{ ok: boolean; id: string }>(`/api/repos/${id}`, {
+			request<OkIdResponse>(`/api/repos/${id}`, {
 				method: "DELETE",
 			}),
 	},
 	sessions: {
 		listByRepo: (repoId: string) =>
-			request<{ sessions: SessionView[] }>(
+			request<ListSessionsResponse>(
 				`/api/sessions?repoId=${encodeURIComponent(repoId)}`,
 			),
-		get: (id: string) =>
-			request<{
-				session: SessionView;
-				contextUsage: ContextUsageEstimate | null;
-			}>(`/api/sessions/${id}`),
+		get: (id: string) => request<SessionResponse>(`/api/sessions/${id}`),
 		create: (repoId: string, agentType?: AgentType) =>
-			request<{ session: SessionView }>("/api/sessions", {
+			request<SessionResponse>("/api/sessions", {
 				method: "POST",
 				body: JSON.stringify({ repoId, agentType }),
 			}),
 		createOrchestrator: () =>
-			request<{ session: SessionView }>("/api/sessions/orchestrator", {
+			request<SessionResponse>("/api/sessions/orchestrator", {
 				method: "POST",
 			}),
 		delete: (id: string) =>
-			request<{ ok: boolean; id: string }>(`/api/sessions/${id}`, {
+			request<OkIdResponse>(`/api/sessions/${id}`, {
 				method: "DELETE",
 			}),
 		messages: (id: string) =>
-			request<{ messages: Message[] }>(`/api/sessions/${id}/messages`),
+			request<SessionMessagesResponse>(`/api/sessions/${id}/messages`),
 		changedFiles: (id: string) =>
-			request<{ files: ChangedFile[] }>(`/api/sessions/${id}/changed-files`),
+			request<ChangedFilesResponse>(`/api/sessions/${id}/changed-files`),
 		commits: (id: string) =>
-			request<{ commits: CommitInfo[] }>(`/api/sessions/${id}/commits`),
+			request<CommitsResponse>(`/api/sessions/${id}/commits`),
 		artefacts: (id: string) =>
-			request<{ artefacts: Artefact[] }>(`/api/sessions/${id}/artefacts`),
+			request<ArtefactsResponse>(`/api/sessions/${id}/artefacts`),
 		send: (id: string, text: string, attachmentIds?: string[]) =>
-			request<{ ok: boolean; message: Message }>(
-				`/api/sessions/${id}/messages`,
-				{
-					method: "POST",
-					body: JSON.stringify({
-						text,
-						// Omitted entirely when empty so a text-only send puts exactly
-						// the same body on the wire it always has.
-						...(attachmentIds?.length ? { attachmentIds } : {}),
-					}),
-				},
-			),
+			request<SendMessageResponse>(`/api/sessions/${id}/messages`, {
+				method: "POST",
+				body: JSON.stringify({
+					text,
+					// Omitted entirely when empty so a text-only send puts exactly
+					// the same body on the wire it always has.
+					...(attachmentIds?.length ? { attachmentIds } : {}),
+				}),
+			}),
 		/** Upload one file to a session, before the message that references it
 		 * is sent. Multipart rather than JSON, so the bytes aren't base64-inflated
 		 * on the way up; `Content-Type` is deliberately left unset so the browser
@@ -333,7 +356,7 @@ export const api = {
 		uploadAttachment: async (id: string, file: File): Promise<Attachment> => {
 			const form = new FormData();
 			form.append("file", file);
-			const { attachment } = await request<{ attachment: Attachment }>(
+			const { attachment } = await request<AttachmentResponse>(
 				`/api/sessions/${id}/attachments`,
 				{ method: "POST", body: form },
 			);
@@ -343,28 +366,25 @@ export const api = {
 		 * Stored server-side and dispatched at the next turn boundary, so it
 		 * survives a locked phone or closed tab. Same body shape as `send`. */
 		queueMessage: (id: string, text: string, attachmentIds?: string[]) =>
-			request<{ ok: boolean; entry: QueuedMessage }>(
-				`/api/sessions/${id}/queue`,
-				{
-					method: "POST",
-					body: JSON.stringify({
-						text,
-						...(attachmentIds?.length ? { attachmentIds } : {}),
-					}),
-				},
-			),
+			request<QueueMessageResponse>(`/api/sessions/${id}/queue`, {
+				method: "POST",
+				body: JSON.stringify({
+					text,
+					...(attachmentIds?.length ? { attachmentIds } : {}),
+				}),
+			}),
 		/** The queue's initial snapshot — fetched by the on-open resync, then
 		 * kept live via `queue_update` stream events. */
 		queuedMessages: (id: string) =>
-			request<{ queued: QueuedMessage[] }>(`/api/sessions/${id}/queue`),
+			request<ListQueuedResponse>(`/api/sessions/${id}/queue`),
 		/** Withdraw a queued entry before it dispatches. Idempotent on the
 		 * server — an entry that already drained into a turn is still `ok`. */
 		removeQueuedMessage: (id: string, queuedId: string) =>
-			request<{ ok: boolean }>(`/api/sessions/${id}/queue/${queuedId}`, {
+			request<OkResponse>(`/api/sessions/${id}/queue/${queuedId}`, {
 				method: "DELETE",
 			}),
 		stop: (id: string) =>
-			request<{ ok: boolean; id: string }>(`/api/sessions/${id}/stop`, {
+			request<OkIdResponse>(`/api/sessions/${id}/stop`, {
 				method: "POST",
 			}),
 		/** Absolute URL to the session's full-transcript export (server route,
@@ -424,40 +444,37 @@ export const api = {
 		/** `days` selects the lookback window; omit (or pass `"all"`) for
 		 * all-time. Backs the Metrics page's range selector. */
 		summary: (days?: number | "all") =>
-			request<{ summary: UsageSummary }>(
+			request<UsageSummaryResponse>(
 				`/api/usage${days !== undefined ? `?days=${days}` : ""}`,
 			),
 		/** Live filesystem capacity for the `DILNA_DATA_DIR` volume (read via
 		 * `fs.statfs` on the server) — backs the Metrics page's storage card. */
-		disk: () => request<{ disk: DiskUsage }>("/api/usage/disk"),
+		disk: () => request<DiskUsageResponse>("/api/usage/disk"),
 	},
 	config: {
 		/** Current provider/model + override state for the Settings view. */
 		get: () => request<LlmConfig>("/api/config"),
 		/** Persist a single provider/model override (replaces any existing). */
 		setOverride: (provider: string, model: string) =>
-			request<{
-				ok: boolean;
-				override: { provider: string; model: string } | null;
-			}>("/api/config", {
+			request<SetOverrideResponse>("/api/config", {
 				method: "PUT",
 				body: JSON.stringify({ provider, model }),
 			}),
 		/** Drop the override so provider/model fall back to the env vars. */
 		clearOverride: () =>
-			request<{ ok: boolean; override: null }>("/api/config", {
+			request<ClearOverrideResponse>("/api/config", {
 				method: "DELETE",
 			}),
 		/** Save (replace) a provider's API key — multi-provider support (see
 		 * the Settings "Add a provider" flow). */
 		setCredential: (provider: string, apiKey: string) =>
-			request<{ ok: boolean }>("/api/config/credentials", {
+			request<OkResponse>("/api/config/credentials", {
 				method: "PUT",
 				body: JSON.stringify({ provider, apiKey }),
 			}),
 		/** Forget a provider's stored API key (falls back to its env key). */
 		deleteCredential: (provider: string) =>
-			request<{ ok: boolean }>(
+			request<OkResponse>(
 				`/api/config/credentials/${encodeURIComponent(provider)}`,
 				{
 					method: "DELETE",
@@ -467,45 +484,45 @@ export const api = {
 		 * to open plus a `loginId` to complete it with once the user pastes back
 		 * the resulting code/redirect URL (see providerOAuth.ts). */
 		startAnthropicOAuthLogin: () =>
-			request<{ loginId: string; authUrl: string }>(
+			request<OauthStartResponse>(
 				"/api/config/providers/anthropic/oauth/start",
 				{ method: "POST" },
 			),
 		/** Finish a pending login with the pasted code/redirect URL. */
 		completeAnthropicOAuthLogin: (loginId: string, input: string) =>
-			request<{ ok: boolean }>(
-				"/api/config/providers/anthropic/oauth/complete",
-				{ method: "POST", body: JSON.stringify({ loginId, input }) },
-			),
+			request<OkResponse>("/api/config/providers/anthropic/oauth/complete", {
+				method: "POST",
+				body: JSON.stringify({ loginId, input }),
+			}),
 		/** Abandon a pending login (e.g. the dialog was closed unsubmitted). */
 		cancelAnthropicOAuthLogin: (loginId: string) =>
-			request<{ ok: boolean }>("/api/config/providers/anthropic/oauth/cancel", {
+			request<OkResponse>("/api/config/providers/anthropic/oauth/cancel", {
 				method: "POST",
 				body: JSON.stringify({ loginId }),
 			}),
 		/** Disconnect Anthropic's OAuth login (falls back to a stored API key or
 		 * env thereafter). */
 		disconnectAnthropicOAuth: () =>
-			request<{ ok: boolean }>("/api/config/providers/anthropic/oauth", {
+			request<OkResponse>("/api/config/providers/anthropic/oauth", {
 				method: "DELETE",
 			}),
 		/** Create a custom provider (Ollama, LM Studio, vLLM, ...), plus its API
 		 * key when one is given. */
 		createCustomProvider: (input: CreateCustomProviderBody) =>
-			request<{ ok: boolean }>("/api/config/custom-providers", {
+			request<OkResponse>("/api/config/custom-providers", {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),
 		/** Update a custom provider's definition; the id is immutable. Replaces
 		 * the stored key only when a non-empty `apiKey` is sent. */
 		updateCustomProvider: (id: string, input: CustomProviderFields) =>
-			request<{ ok: boolean }>(
+			request<OkResponse>(
 				`/api/config/custom-providers/${encodeURIComponent(id)}`,
 				{ method: "PUT", body: JSON.stringify(input) },
 			),
 		/** Delete a custom provider and its stored key. */
 		deleteCustomProvider: (id: string) =>
-			request<{ ok: boolean }>(
+			request<OkResponse>(
 				`/api/config/custom-providers/${encodeURIComponent(id)}`,
 				{ method: "DELETE" },
 			),
@@ -514,18 +531,18 @@ export const api = {
 	 * enabled per-Repo — there's only ever one copy of a skill on disk. */
 	skills: {
 		/** The global catalog: every installed skill. */
-		list: () => request<{ skills: Skill[] }>("/api/skills"),
+		list: () => request<ListSkillsResponse>("/api/skills"),
 		/** The catalog, flagged with whether `repoId` has each one enabled. */
 		forRepo: (repoId: string) =>
-			request<{ skills: RepoSkill[] }>(`/api/skills/repo/${repoId}`),
+			request<ListRepoSkillsResponse>(`/api/skills/repo/${repoId}`),
 		/** Search skills.sh. Returns `[]` if the registry is unreachable. */
 		search: (q: string) =>
-			request<{ results: SkillSearchResult[] }>(
+			request<SearchSkillsResponse>(
 				`/api/skills/search?q=${encodeURIComponent(q)}`,
 			),
 		/** Install globally from a skills.sh/GitHub URL. Does not enable it. */
 		install: (url: string) =>
-			request<{ skill: Skill }>("/api/skills", {
+			request<InstallSkillResponse>("/api/skills", {
 				method: "POST",
 				body: JSON.stringify({ url }),
 			}),
@@ -535,13 +552,13 @@ export const api = {
 		 * plain `%2F` back into `/` and redirect, so the id can't contain a
 		 * `/` at all, not even percent-encoded). */
 		setEnabled: (id: string, repoId: string, enabled: boolean) =>
-			request<{ ok: boolean }>(`/api/skills/${encodeSkillId(id)}/enabled`, {
+			request<OkResponse>(`/api/skills/${encodeSkillId(id)}/enabled`, {
 				method: "POST",
 				body: JSON.stringify({ repoId, enabled }),
 			}),
 		/** Uninstall globally — files, catalog row, all enablement rows. */
 		uninstall: (id: string) =>
-			request<{ ok: boolean }>(`/api/skills/${encodeSkillId(id)}`, {
+			request<OkResponse>(`/api/skills/${encodeSkillId(id)}`, {
 				method: "DELETE",
 			}),
 	},
@@ -549,17 +566,14 @@ export const api = {
 	push: {
 		/** The instance VAPID public key needed by `pushManager.subscribe`.
 		 * `configured: false` means push is unavailable, not that it errored. */
-		key: () =>
-			request<{ publicKey: string | null; configured: boolean }>(
-				"/api/push/key",
-			),
+		key: () => request<PushKeyResponse>("/api/push/key"),
 		subscribe: (subscription: PushSubscriptionJSON) =>
-			request<{ ok: boolean; subscriptions: number }>("/api/push/subscribe", {
+			request<PushSubscriptionsResponse>("/api/push/subscribe", {
 				method: "POST",
 				body: JSON.stringify(subscription),
 			}),
 		unsubscribe: (endpoint: string) =>
-			request<{ ok: boolean; subscriptions: number }>("/api/push/unsubscribe", {
+			request<PushSubscriptionsResponse>("/api/push/unsubscribe", {
 				method: "POST",
 				body: JSON.stringify({ endpoint }),
 			}),

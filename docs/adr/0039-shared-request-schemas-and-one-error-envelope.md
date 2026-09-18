@@ -143,6 +143,12 @@ All 857 pre-existing tests pass; 22 new ones cover the envelope, the
 validator hook, and the schemas. 24 existing assertions changed 400 → 422,
 all of them in validation-rejection tests.
 
+Superseded in part by ADR-0040, which moves response *envelopes* into
+`packages/shared` too. The "schema what crosses the wire inbound, type what
+goes out" rule survives unchanged — ADR-0040 adds no runtime validation, it
+only gives the outbound types one home instead of two. Three envelopes had
+already drifted by then, in the same way `LlmConfig`/`GetConfigResponse` had.
+
 Out of scope: response validation, multipart bodies (`POST
 /:id/attachments` still parses `c.req.parseBody()` by hand, which is
 appropriate), and the ~950 lines of hand-written mock data in the web tests —
