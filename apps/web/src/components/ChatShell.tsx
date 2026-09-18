@@ -951,6 +951,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 								onClick={handleStop}
 								className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border transition-colors hover:bg-accent active:scale-[0.97]"
 								title="Stop"
+								aria-label="Stop"
 							>
 								<Square className="size-3.5" />
 							</button>
@@ -977,7 +978,13 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 								pending.some((p) => p.status === "uploading")
 							}
 							className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-[background-color,scale] hover:bg-primary/90 active:scale-[0.97] disabled:opacity-40"
+							// Send vs Queue names the *action*, like a submit button that reads
+							// "Create account" on a signup form — it is not a toggle, so the
+							// label tracks what clicking will do. `aria-busy` carries the
+							// in-flight state (issue #223).
 							title={busy || queued.length > 0 ? "Queue message" : "Send"}
+							aria-label={busy || queued.length > 0 ? "Queue message" : "Send"}
+							aria-busy={sending}
 						>
 							{sending ? (
 								<LoaderCircle className="size-3.5 animate-spin" />

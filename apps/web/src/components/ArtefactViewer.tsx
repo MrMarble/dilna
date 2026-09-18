@@ -53,6 +53,7 @@ export function ArtefactViewer({
 						target="_blank"
 						rel="noreferrer"
 						title="Open in a new tab"
+						aria-label="Open in a new tab"
 						className="mr-6 shrink-0 rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 					>
 						<ExternalLink className="size-4" />

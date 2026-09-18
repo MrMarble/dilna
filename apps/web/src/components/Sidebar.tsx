@@ -213,6 +213,7 @@ export function Sidebar({
 							type="button"
 							onClick={onCollapse}
 							title="Collapse sidebar"
+							aria-label="Collapse sidebar"
 							className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
 						>
 							<PanelLeftClose className="size-4" />
@@ -363,6 +364,8 @@ function CurrentSessionRow({
 				type="button"
 				onClick={() => onDelete(session.id)}
 				disabled={deleting}
+				aria-busy={deleting}
+				aria-label="Delete session"
 				title={deleting ? "Deleting session…" : "Delete session"}
 				className={cn(
 					"shrink-0 rounded-md p-2.5 transition-[background-color,color,scale]",
@@ -409,6 +412,7 @@ function OrchestratorSection({
 			<SidebarSectionHeader
 				title="Orchestrator"
 				newTitle={creating ? "Creating…" : "New orchestrator chat"}
+				newLabel="New orchestrator chat"
 				onNew={onNew}
 			/>
 			{sessions.length > 0 && (
@@ -497,6 +501,7 @@ function ReposSection({
 			<SidebarSectionHeader
 				title="Repositories"
 				newTitle="New repository"
+				newLabel="New repository"
 				onNew={onNew}
 				onRefresh={onRefresh}
 				refreshing={refreshing}
@@ -711,6 +716,8 @@ function NotificationsToggle({
 			type="button"
 			onClick={onClick}
 			title={title}
+			aria-label="Session completion notifications"
+			aria-pressed={enabled}
 			className={cn(
 				"relative rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent",
 				className,
@@ -886,6 +893,7 @@ function RateLimitBar({
 function SidebarSectionHeader({
 	title,
 	newTitle,
+	newLabel,
 	onNew,
 	onRefresh,
 	refreshing = false,
@@ -893,6 +901,11 @@ function SidebarSectionHeader({
 }: {
 	title: string;
 	newTitle: string;
+	/** Stable accessible name for the `+`. `newTitle` doubles as the hover
+	 * tooltip and swaps to "Creating…" mid-request, which would make the name
+	 * drift with state — the name describes the button's purpose, so it stays
+	 * put while the tooltip carries the progress. */
+	newLabel: string;
 	onNew: () => void;
 	onRefresh?: () => void;
 	/** Spins the refresh icon and disables the button while the fetch is in
@@ -910,6 +923,7 @@ function SidebarSectionHeader({
 						onClick={onRefresh}
 						disabled={refreshing}
 						aria-busy={refreshing}
+						aria-label={refreshTitle}
 						className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
 						title={refreshing ? "Fetching changes…" : refreshTitle}
 					>
@@ -921,6 +935,7 @@ function SidebarSectionHeader({
 					onClick={onNew}
 					className="rounded-md p-2.5 text-muted-foreground transition-[background-color,color,scale] hover:bg-sidebar-accent hover:text-foreground active:scale-90 active:bg-sidebar-accent"
 					title={newTitle}
+					aria-label={newLabel}
 				>
 					<Plus className="size-4" />
 				</button>

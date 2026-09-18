@@ -7,6 +7,7 @@ import type {
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { expectEveryButtonNamed } from "@/test/accessible-name";
 import type { PartialApi } from "@/test/api-mock";
 import { makeRepo, makeSession } from "@/test/factories";
 
@@ -164,7 +165,7 @@ function sidebar(): HTMLElement {
 	// Both the Sidebar and the ContextPanel are <aside>s, and the latter is
 	// mounted whenever a session is open — so pick the Sidebar by a control
 	// only it has rather than by bare role.
-	const collapse = screen.getByTitle("Collapse sidebar");
+	const collapse = screen.getByRole("button", { name: "Collapse sidebar" });
 	const aside = collapse.closest("aside");
 	if (!aside) throw new Error("sidebar not mounted");
 	return aside;
@@ -310,5 +311,22 @@ describe("notification deep link", () => {
 			expect(within(sidebar()).getByText("main")).toBeInTheDocument(),
 		);
 		expect(window.location.pathname).toBe("/");
+	});
+});
+
+describe("accessible names across the app shell (issue #223)", () => {
+	// ChatHeader and ContextPanel have no suite of their own, and ChatShell's
+	// live states are hard to reach in isolation — but the real App mounts all
+	// three together, so this is where their icon-only controls get swept. The
+	// buttons here previously relied on `title` alone ("Show sidebar", "Copy
+	// transcript link", "Stop", "Delete session", …).
+	it("names every button while a session is open", async () => {
+		await renderApp(`/dilna/${REPO_SESSION.id}`);
+		expectEveryButtonNamed(document.body);
+	});
+
+	it("names every button on the no-repo-selected fallback", async () => {
+		await renderApp("/");
+		expectEveryButtonNamed(document.body);
 	});
 });
