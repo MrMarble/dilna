@@ -1,9 +1,10 @@
-import type { RepoSkill, SessionView } from "@dilna/shared";
+import type { RepoSkill } from "@dilna/shared";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
+import { makeSession } from "@/test/factories";
 
 /**
  * The composer's slash-command menu: typing `/` on an empty composer lists
@@ -46,17 +47,7 @@ vi.mock("@/api/client", () => ({
 	},
 }));
 
-const session: SessionView = {
-	id: "sess-1",
-	repoId: "repo-1",
-	title: "Test session",
-	agentType: "pi",
-	kind: "session",
-	status: "idle",
-	usage: { inputTokens: 0, outputTokens: 0 },
-	createdAt: 1,
-	lastActiveAt: 1,
-};
+const session = makeSession({ title: "Test session" });
 
 function skill(name: string, enabled = true): RepoSkill {
 	return {

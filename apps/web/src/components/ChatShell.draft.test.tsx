@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
+import { makeSession as sharedMakeSession } from "@/test/factories";
 
 /**
  * Composer draft persistence (issue: navigating to another Session or view
@@ -50,17 +51,7 @@ vi.mock("@/api/client", () => ({
 }));
 
 function makeSession(id: string): SessionView {
-	return {
-		id,
-		repoId: "repo-1",
-		title: "Test session",
-		agentType: "pi",
-		kind: "session",
-		status: "idle",
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-	};
+	return sharedMakeSession({ id, title: "Test session" });
 }
 
 beforeEach(() => {

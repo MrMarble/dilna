@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
+import { makeSession as sharedMakeSession } from "@/test/factories";
 
 /**
  * The composer's server-held send queue (ADR-0033): submitting while the
@@ -60,17 +61,7 @@ vi.mock("@/api/client", () => ({
 }));
 
 function makeSession(status: SessionView["status"]): SessionView {
-	return {
-		id: "sess-1",
-		repoId: "repo-1",
-		title: "Test session",
-		agentType: "pi",
-		kind: "session",
-		status,
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-	};
+	return sharedMakeSession({ status, title: "Test session" });
 }
 
 function makeEntry(id: string, text: string): QueuedMessage {

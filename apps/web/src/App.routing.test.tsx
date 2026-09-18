@@ -8,6 +8,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PartialApi } from "@/test/api-mock";
+import { makeRepo, makeSession } from "@/test/factories";
 
 /**
  * End-to-end routing behaviour, against the real `App` (not a harness):
@@ -21,31 +22,9 @@ import type { PartialApi } from "@/test/api-mock";
  * MetricsPage, SettingsPage) is the real one.
  */
 
-const REPO = {
-	id: "repo-1",
-	slug: "dilna",
-	path: "/tmp/dilna",
-	defaultBranch: "main",
-	remoteUrl: "git@github.com:owner/dilna.git",
-	createdAt: 1,
-};
+const REPO = makeRepo();
 
-function makeSession(over: Partial<SessionView> = {}): SessionView {
-	return {
-		id: "sess-1",
-		repoId: REPO.id,
-		title: "Repo session",
-		agentType: "pi",
-		kind: "session",
-		status: "idle",
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-		...over,
-	};
-}
-
-const REPO_SESSION = makeSession();
+const REPO_SESSION = makeSession({ title: "Repo session" });
 const ORCHESTRATOR_SESSION = makeSession({
 	id: "orc-1",
 	title: "Orchestrator chat",

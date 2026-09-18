@@ -6,6 +6,7 @@ import type {
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionList } from "@/hooks/useSessionList";
+import { makeSession as sharedMakeSession } from "@/test/factories";
 
 /**
  * The cross-Session SSE fold (ADR-0008) that `useSessionList` owns — issue
@@ -14,18 +15,7 @@ import { useSessionList } from "@/hooks/useSessionList";
  */
 
 function makeSession(over: Partial<SessionView> = {}): SessionView {
-	return {
-		id: "sess-1",
-		repoId: "repo-1",
-		title: "Repo session",
-		agentType: "pi",
-		kind: "session",
-		status: "idle",
-		usage: { inputTokens: 0, outputTokens: 0 },
-		createdAt: 1,
-		lastActiveAt: 1,
-		...over,
-	};
+	return sharedMakeSession({ title: "Repo session", ...over });
 }
 
 const stream = vi.hoisted(() => ({
