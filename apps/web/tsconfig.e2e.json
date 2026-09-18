@@ -1,0 +1,32 @@
+{
+	// The e2e suite is type-checked as its own project for the same reason the
+	// service worker is (`tsconfig.sw.json`): its globals are a different world
+	// from the app's. These files run in Node under Playwright — `process`,
+	// `node:fs`, `node:child_process` — where the app project is DOM-only with
+	// `types: ["vite/client"]`. Adding `node` to the app project's `types`
+	// would make `process` and friends look available inside `src/`, which is
+	// exactly the mistake this split prevents.
+	//
+	// Its purpose: until issue #238 nothing under `e2e/` was checked by any
+	// TypeScript project, so the page objects and fixtures were only ever
+	// verified by a test run reaching them. A renamed prop or a stale locator
+	// signature failed at play time, if at all.
+	//
+	// `allowJs` lets `seed.mjs` (imported by the TS fixtures) resolve at all;
+	// `checkJs` stays off because `server.mjs` and `seed.mjs` are plain JS that
+	// Playwright runs through `node` directly — checking them here would mean
+	// typing the whole server-supervision script for no coverage gain.
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"noEmit": true,
+		"composite": false,
+		"types": ["node"],
+		"allowJs": true,
+		"paths": {
+			"@dilna/shared": ["../../packages/shared/src/index.ts"],
+			"@dilna/shared/*": ["../../packages/shared/src/*"]
+		}
+	},
+	"include": ["e2e/**/*.ts", "e2e/**/*.mjs", "playwright.config.ts"]
+}
