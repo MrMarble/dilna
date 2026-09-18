@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
+import type { PartialApi } from "@/test/api-mock";
 
 /**
  * The composer's attachment affordances (issue #53): the two-row layout's
@@ -48,7 +49,7 @@ vi.mock("@/api/client", () => ({
 		skills: {
 			forRepo: vi.fn(async () => ({ skills: [] })),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 const session: SessionView = {

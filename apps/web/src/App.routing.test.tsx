@@ -1,7 +1,13 @@
-import type { SessionListEvent, SessionView } from "@dilna/shared";
+import type {
+	Message,
+	QueuedMessage,
+	SessionListEvent,
+	SessionView,
+} from "@dilna/shared";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { PartialApi } from "@/test/api-mock";
 
 /**
  * End-to-end routing behaviour, against the real `App` (not a harness):
@@ -46,6 +52,24 @@ const ORCHESTRATOR_SESSION = makeSession({
 	kind: "orchestrator",
 });
 
+// Returned by the send/queue stubs purely to satisfy their real signatures —
+// no test here asserts on either, since this file is about routing.
+const USER_MESSAGE: Message = {
+	id: "msg-1",
+	sessionId: REPO_SESSION.id,
+	turnId: "turn-1",
+	role: "user",
+	parts: [{ type: "text", text: "hello" }],
+	createdAt: 1,
+};
+const QUEUED_MESSAGE: QueuedMessage = {
+	id: "queued-1",
+	sessionId: REPO_SESSION.id,
+	text: "hello",
+	attachments: [],
+	createdAt: 1,
+};
+
 const state = vi.hoisted(() => ({
 	// Sessions pushed through the cross-session SSE stream on connect.
 	sessions: [] as SessionView[],
@@ -60,32 +84,30 @@ vi.mock("@/api/client", () => ({
 				stats: { languages: [], fileCount: 0, totalBytes: 0 },
 			}),
 			sync: async () => ({ status: { ahead: 0, behind: 0 } }),
-			pull: async () => ({}),
+			pull: async (id: string) => ({ repo: { ...REPO, id } }),
 		},
 		sessions: {
 			create: async () => ({ session: REPO_SESSION }),
 			createOrchestrator: async () => ({
 				session: state.createdOrchestrator ?? ORCHESTRATOR_SESSION,
 			}),
-			delete: async () => ({}),
-			get: async () => ({ session: REPO_SESSION, messages: [] }),
+			delete: async (id: string) => ({ ok: true, id }),
+			// `get` resolves `{ session, contextUsage }` — there is no separate
+			// `contextUsage` endpoint, and no `messages` key on this response.
+			get: async () => ({ session: REPO_SESSION, contextUsage: null }),
 			messages: async () => ({ messages: [] }),
-			history: async () => ({ messages: [] }),
 			// The chat column's live surfaces (ChatShell, UsageBadge,
 			// SessionContextRow) all open the per-session SSE stream; a no-op
 			// unsubscribe is enough, since none of them is under test here.
 			stream: () => () => {},
-			send: async () => ({}),
-			queueMessage: async () => ({}),
+			send: async () => ({ ok: true, message: USER_MESSAGE }),
+			queueMessage: async () => ({ ok: true, entry: QUEUED_MESSAGE }),
 			queuedMessages: async () => ({ queued: [] }),
 			removeQueuedMessage: async () => ({ ok: true }),
-			stop: async () => ({}),
+			stop: async (id: string) => ({ ok: true, id }),
 			changedFiles: async () => ({ files: [] }),
 			commits: async () => ({ commits: [] }),
 			artefacts: async () => ({ artefacts: [] }),
-			contextUsage: async () => ({
-				usage: { usedTokens: 0, maxTokens: 100_000 },
-			}),
 		},
 		// The composer reads the Repo's Skills for its slash-command menu.
 		skills: {
@@ -99,7 +121,6 @@ vi.mock("@/api/client", () => ({
 				return () => {};
 			},
 		},
-		stream: () => () => {},
 		usage: {
 			summary: async () => ({
 				summary: {
@@ -115,6 +136,7 @@ vi.mock("@/api/client", () => ({
 					dailyByModel: [],
 					byRepo: [],
 					byModel: [],
+					topSessions: [],
 				},
 			}),
 			disk: async () => ({ disk: { totalBytes: 10_000, freeBytes: 4_000 } }),
@@ -134,7 +156,7 @@ vi.mock("@/api/client", () => ({
 				customProviders: [],
 			}),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 // Imported after the mock so App picks up the faked client.
