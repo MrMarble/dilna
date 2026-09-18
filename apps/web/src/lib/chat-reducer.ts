@@ -235,10 +235,23 @@ export function chatReducer(
 		case "message_start": {
 			// Always a new assistant turn message (pi.ts never emits user-role
 			// starts); the optimistic temp user entry stays in place until the
-			// idle-time reconcile swaps in the DB rows. Idempotent: a message the
-			// tab already knows keeps its entry (and its `startedAt`).
+			// idle-time reconcile swaps in the DB rows.
+			//
+			// A **replay** (`replay: true`) is the exception: it re-narrates a
+			// message this tab may already hold, so the entry is rebuilt from empty
+			// rather than kept. Keeping it would leave the whole re-narrated turn
+			// folded onto the parts already shown — `tool_call_start` appends and
+			// `token` concatenates, so every tool call appears twice and the prose
+			// repeats inside the bubble, until the turn ends and the authoritative
+			// rows replace the live overlay. The `startedAt` is preserved: it is
+			// this tab's own clock for a message it is already displaying, and the
+			// replay carries no timestamp of its own to re-stamp it with.
+			//
+			// Otherwise idempotent: a message the tab already knows keeps its
+			// entry (and its `startedAt`).
 			const withSawTurn = state.sawTurn ? state : { ...state, sawTurn: true };
-			if (withSawTurn.live[action.messageId]) return withSawTurn;
+			const existing = withSawTurn.live[action.messageId];
+			if (existing && !action.replay) return withSawTurn;
 			return {
 				...withSawTurn,
 				live: {
@@ -247,7 +260,7 @@ export function chatReducer(
 						id: action.messageId,
 						role: action.role,
 						parts: [],
-						startedAt: now(),
+						startedAt: existing?.startedAt ?? now(),
 					},
 				},
 			};

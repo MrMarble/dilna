@@ -33,12 +33,26 @@ import type { MessagePart } from "./messages";
  * skip a state update) for every event that carries no message content —
  * status, usage, diff, notice, thinking, and the message-lifecycle events.
  * Callers are expected to have already resolved *which* message the event
- * addresses; this only merges. */
+ * addresses; this only merges.
+ *
+ * The one exception is a **replay** `message_start` (`replay: true`), which
+ * returns an empty array: a re-narration replaces the message rather than
+ * merging into it. See `AgentStreamEvent`'s `message_start` for why. */
 export function applyEventToParts(
 	parts: MessagePart[],
 	ev: AgentStreamEvent,
 ): MessagePart[] {
 	switch (ev.type) {
+		case "message_start":
+			// A replay frame re-narrates a message the caller may already hold, so
+			// the only correct fold is to rebuild it from empty. Merging instead
+			// appends a second copy of each text chunk and tool call — the caller
+			// has no other way to tell a re-narration from new content, since the
+			// replay's events are ordinary `token`/`tool_call_*` shapes and are
+			// interleaved with the real turn's own still-arriving events.
+			// An ordinary start carries no parts to merge either, so it stays the
+			// identity it has always been (see the same-reference contract above).
+			return ev.replay ? [] : parts;
 		case "token": {
 			// Streamed chunks join the trailing text part so a sentence arrives
 			// as one part; a chunk that lands right after a tool call opens a new

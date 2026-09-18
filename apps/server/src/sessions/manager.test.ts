@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import type { AgentStreamEvent, MessagePart } from "@dilna/shared";
+import { applyEventToParts, isMessageContentEvent } from "@dilna/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../container";
 import { getDb } from "../db";
@@ -608,6 +610,123 @@ describe("live turn snapshot", () => {
 		};
 		const types = liveTurnReplayEvents(turn).map((e) => e.type);
 		expect(types).toEqual(["message_start", "tool_call_start"]);
+	});
+});
+
+/**
+ * Issue #244: the replay is pushed to a subscriber that may *already* hold the
+ * turn it re-narrates — a reconnecting tab is the common case, not a fresh one.
+ * Driving `subscribe()` itself (rather than the fold, which is covered in
+ * `liveTurn.test.ts`) is what pins the contract the client actually receives:
+ * the replay's opening `message_start` has to be recognisable as a replay, or
+ * the tab has no way to know it should rebuild rather than merge.
+ */
+describe("mid-turn subscribe replay", () => {
+	/** One turn's worth of events, folded into the manager's live-turn snapshot
+	 * the way `runTurn`'s `onEvent` does — then handed to a subscriber. */
+	async function withLiveTurn(
+		sessionId: string,
+		events: AgentStreamEvent[],
+		run: (subscribe: (l: (ev: AgentStreamEvent) => void) => void) => void,
+	): Promise<void> {
+		const manager = sessionManager as unknown as {
+			active: Map<string, { liveTurn: LiveTurn | null }>;
+			beginTurn: (
+				id: string,
+				text: string,
+			) => { abortController: AbortController };
+			turns: { release: (id: string) => void };
+		};
+		manager.beginTurn(sessionId, "hi");
+		const active = { liveTurn: null as LiveTurn | null };
+		manager.active.set(sessionId, active as never);
+		try {
+			for (const ev of events) {
+				active.liveTurn = applyEventToLiveTurn(active.liveTurn, ev);
+			}
+			run((l) => {
+				const unsub = sessionManager.subscribe(sessionId, l);
+				unsub();
+			});
+		} finally {
+			manager.active.delete(sessionId);
+			manager.turns.release(sessionId);
+		}
+	}
+
+	it("marks the opening message_start as a replay, so a tab holding it rebuilds", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `replay-${Date.now()}`);
+		const session = await sessionManager.create(repo.id);
+
+		const messageId = "m1";
+		const events: AgentStreamEvent[] = [
+			{ type: "message_start", messageId, role: "assistant" },
+			{ type: "token", messageId, chunk: "Let me look. " },
+			{
+				type: "tool_call_start",
+				messageId,
+				callId: "c1",
+				tool: "bash",
+				input: { command: "ls" },
+			},
+		];
+
+		const received: AgentStreamEvent[] = [];
+		await withLiveTurn(session.id, events, (subscribe) => {
+			subscribe((ev) => received.push(ev));
+		});
+
+		const start = received.find((e) => e.type === "message_start");
+		expect(start).toMatchObject({ messageId, replay: true });
+
+		await sessionManager.delete(session.id).catch(() => {});
+		await repoManager.delete(repo.id).catch(() => {});
+	});
+
+	it("lets a client that already holds the turn converge, not double", async () => {
+		const repo = await repoManager.clone(fixtureRepo, `converge-${Date.now()}`);
+		const session = await sessionManager.create(repo.id);
+
+		const messageId = "m1";
+		const events: AgentStreamEvent[] = [
+			{ type: "message_start", messageId, role: "assistant" },
+			{ type: "token", messageId, chunk: "Let me look. " },
+			...Array.from({ length: 8 }, (_, i) => [
+				{
+					type: "tool_call_start" as const,
+					messageId,
+					callId: `c${i}`,
+					tool: "bash" as const,
+					input: { command: `echo ${i}` },
+				},
+				{
+					type: "tool_call_end" as const,
+					messageId,
+					callId: `c${i}`,
+					output: `${i}`,
+				},
+			]).flat(),
+		];
+
+		const received: AgentStreamEvent[] = [];
+		await withLiveTurn(session.id, events, (subscribe) => {
+			subscribe((ev) => received.push(ev));
+		});
+
+		// Replay exactly what the stream delivered onto a fold that already holds
+		// the turn — the reconnecting tab's situation — and count what it renders.
+		const clientParts = received.reduce<MessagePart[]>(
+			(parts, ev) => {
+				if (ev.type === "message_start") return ev.replay ? [] : parts;
+				return isMessageContentEvent(ev) ? applyEventToParts(parts, ev) : parts;
+			},
+			events.slice(1).reduce<MessagePart[]>(applyEventToParts, []),
+		);
+
+		expect(clientParts.filter((p) => p.type === "tool_call")).toHaveLength(8);
+
+		await sessionManager.delete(session.id).catch(() => {});
+		await repoManager.delete(repo.id).catch(() => {});
 	});
 });
 

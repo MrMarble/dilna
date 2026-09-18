@@ -213,6 +213,72 @@ describe("applyEventToParts", () => {
 	});
 });
 
+describe("applyEventToParts (replay)", () => {
+	/** A replay frame (ADR-0014's mid-turn snapshot) re-narrates a turn the
+	 * consumer may already be holding. Its `message_start` carries `replay:
+	 * true`, and the fold must rebuild the message from empty rather than
+	 * merge into it — otherwise the same prose and the same tool calls land a
+	 * second time (issue #244). */
+	const replayStart: AgentStreamEvent = {
+		type: "message_start",
+		messageId: "m1",
+		role: "assistant",
+		replay: true,
+	};
+
+	/** The turn so far, as a subscriber that watched it stream already holds
+	 * it. */
+	const alreadyStreamed = (): MessagePart[] =>
+		fold([
+			token("Let me look. "),
+			toolStart("c1", "bash", { command: "ls" }),
+			{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
+		]);
+
+	/** The server's replay of that same turn. */
+	const replayOfTheSameTurn = (): AgentStreamEvent[] => [
+		replayStart,
+		token("Let me look. "),
+		toolStart("c1", "bash", { command: "ls" }),
+		{ type: "tool_call_end", messageId: "m1", callId: "c1", output: "ok" },
+	];
+
+	it("rebuilds the message instead of merging into what is already held", () => {
+		const held = alreadyStreamed();
+		const after = replayOfTheSameTurn().reduce(applyEventToParts, held);
+
+		expect(after).toEqual([
+			{ type: "text", text: "Let me look. " },
+			{
+				type: "tool_call",
+				callId: "c1",
+				tool: "bash",
+				input: { command: "ls" },
+				output: "ok",
+				error: undefined,
+			},
+		]);
+	});
+
+	it("is idempotent, so a second reconnect does not double anything", () => {
+		const once = replayOfTheSameTurn().reduce(applyEventToParts, []);
+		const twice = replayOfTheSameTurn().reduce(applyEventToParts, once);
+
+		expect(twice).toEqual(once);
+	});
+
+	it("leaves the parts reference alone for an ordinary message_start", () => {
+		const parts: MessagePart[] = [{ type: "text", text: "hi" }];
+		expect(
+			applyEventToParts(parts, {
+				type: "message_start",
+				messageId: "m1",
+				role: "assistant",
+			}),
+		).toBe(parts);
+	});
+});
+
 describe("isMessageContentEvent", () => {
 	/** The exported `MessageContentEvent` type must be exactly what the guard
 	 * narrows to. A consumer that names the type (the web's `applyEventToLive`)
@@ -258,7 +324,13 @@ describe("isMessageContentEvent", () => {
 	/** Guards the pairing the two functions rely on: anything
 	 * `isMessageContentEvent` accepts must be something `applyEventToParts`
 	 * actually acts on, or a consumer would create an empty live entry for an
-	 * event that then contributes nothing to it. */
+	 * event that then contributes nothing to it.
+	 *
+	 * A **replay** `message_start` is the deliberate asymmetry: it is not a
+	 * content event (it carries no content), yet it *does* change the parts — by
+	 * discarding them. A consumer must therefore not gate its replay handling on
+	 * `isMessageContentEvent`; the client's reducer case handles it separately,
+	 * which is why the guard is checked against a non-replay start here. */
 	it("accepts exactly the events applyEventToParts acts on", () => {
 		const samples: AgentStreamEvent[] = [
 			token("x"),
@@ -285,6 +357,19 @@ describe("isMessageContentEvent", () => {
 			const changed = applyEventToParts(base, ev) !== base;
 			expect(changed).toBe(isMessageContentEvent(ev));
 		}
+	});
+
+	it("treats a replay message_start as the one non-content event that acts", () => {
+		const replayStart: AgentStreamEvent = {
+			type: "message_start",
+			messageId: "m1",
+			role: "assistant",
+			replay: true,
+		};
+		const base: MessagePart[] = [{ type: "text", text: "already shown" }];
+
+		expect(isMessageContentEvent(replayStart)).toBe(false);
+		expect(applyEventToParts(base, replayStart)).toEqual([]);
 	});
 });
 

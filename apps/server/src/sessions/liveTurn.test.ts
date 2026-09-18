@@ -110,4 +110,67 @@ describe("liveTurnReplayEvents", () => {
 
 		expect(fold(liveTurnReplayEvents(original))).toEqual(original);
 	});
+
+	/**
+	 * A replay always lands on a subscriber that may already hold the message —
+	 * that is the point of it, and the reconnecting case (staleness reconnect,
+	 * native retry) is the common one. Issue #244: the replay was folded onto
+	 * what the tab already had, so a turn with 8 tool calls rendered 16 and the
+	 * prose repeated inside the bubble. Marking the replay's `message_start` is
+	 * what lets the consumer tell a re-narration from new content.
+	 */
+	describe("replaying onto a consumer that already holds the turn", () => {
+		it("marks the opening message_start as a replay", () => {
+			const turn = fold([
+				start,
+				{ type: "token", messageId: "m1", chunk: "hi" },
+			]);
+			if (!turn) throw new Error("expected a snapshot");
+
+			expect(liveTurnReplayEvents(turn)[0]).toMatchObject({
+				type: "message_start",
+				messageId: "m1",
+				replay: true,
+			});
+		});
+
+		it("rebuilds the message instead of doubling its parts", () => {
+			const turn = fold([
+				start,
+				{ type: "token", messageId: "m1", chunk: "Let me look. " },
+				...Array.from({ length: 8 }, (_, i) => [
+					{
+						type: "tool_call_start" as const,
+						messageId: "m1",
+						callId: `c${i}`,
+						tool: "bash" as const,
+						input: { command: `echo ${i}` },
+					},
+					{
+						type: "tool_call_end" as const,
+						messageId: "m1",
+						callId: `c${i}`,
+						output: `${i}`,
+					},
+				]).flat(),
+			]);
+			if (!turn) throw new Error("expected a snapshot");
+
+			// The tab already holds exactly this turn, having watched it stream.
+			const alreadyHeld = fold(
+				liveTurnReplayEvents(turn).map((e) =>
+					e.type === "message_start" ? { ...e, replay: false } : e,
+				),
+			);
+
+			// Replaying onto it converges instead of appending a second copy of
+			// every tool call and every text chunk.
+			const afterReplay = liveTurnReplayEvents(turn).reduce<LiveTurn | null>(
+				applyEventToLiveTurn,
+				alreadyHeld,
+			);
+
+			expect(afterReplay).toEqual(turn);
+		});
+	});
 });
