@@ -30,6 +30,9 @@ export * from "./messages";
 // sender, the web's in-page path, and the service worker that decodes the
 // push, so all three agree by construction rather than by comment.
 export * from "./notification";
+// Not type-only: the path builders are runtime functions, the single source
+// for every route address both sides must agree on.
+export * from "./paths";
 export type * from "./repo";
 export type * from "./session";
 // Not type-only like its neighbors: skill.ts also exports the

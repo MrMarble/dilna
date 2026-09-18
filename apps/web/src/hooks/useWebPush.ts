@@ -1,3 +1,4 @@
+import { pushSubscribeBodySchema } from "@dilna/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api/client";
 
@@ -112,7 +113,16 @@ export function useWebPush() {
 					applicationServerKey: base64UrlToUint8Array(publicKey),
 				}));
 
-			await api.push.subscribe(subscription.toJSON());
+			// `toJSON()` is the DOM's shape, where every field is optional and
+			// `keys` is an open `Record<string, string>`. It can therefore describe
+			// a subscription the server would reject with a 422. Parsing through
+			// the *shared* schema (the same one the route validates with) narrows
+			// it to `PushSubscribeBody`, so an unusable subscription fails here
+			// rather than as an opaque server error.
+			const parsed = pushSubscribeBodySchema.safeParse(subscription.toJSON());
+			if (!parsed.success) return false;
+
+			await api.push.subscribe(parsed.data);
 			if (mountedRef.current) setState({ supported: true, subscribed: true });
 			return true;
 		} catch {
