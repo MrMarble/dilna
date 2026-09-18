@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
 	api,
 	type CustomModelInput,
+	type CustomProviderApi,
 	type CustomProviderView,
 	type LlmConfig,
 } from "@/api/client";
@@ -32,9 +33,10 @@ type Props = {
 	onBack: () => void;
 };
 
-/** The four `pi-ai` API shapes a custom provider can speak (see
- * apps/server/src/agents/providerConfig.ts's `CUSTOM_PROVIDER_APIS`), with
- * display labels for the dialog's select. */
+/** Display labels for the dialog's select. The `value`s are typed as
+ * `CustomProviderApi` (the shared Zod schema's four literals) rather than
+ * re-listed as strings, so adding a flavour server-side is a compile error
+ * here instead of a silently missing option. */
 const CUSTOM_PROVIDER_API_OPTIONS = [
 	{
 		value: "openai-completions",
@@ -43,7 +45,7 @@ const CUSTOM_PROVIDER_API_OPTIONS = [
 	{ value: "openai-responses", label: "OpenAI-compatible (Responses)" },
 	{ value: "anthropic-messages", label: "Anthropic Messages" },
 	{ value: "google-generative-ai", label: "Google Generative AI" },
-] as const;
+] as const satisfies readonly { value: CustomProviderApi; label: string }[];
 
 /** One editable row in the "Add/Edit custom provider" dialog's model list. */
 /** `key` is a client-only synthetic id (stable React list key across
@@ -117,7 +119,7 @@ export function SettingsPage({ onBack }: Props) {
 	const [customId, setCustomId] = useState("");
 	const [customName, setCustomName] = useState("");
 	const [customBaseUrl, setCustomBaseUrl] = useState("");
-	const [customApi, setCustomApi] = useState<string>(
+	const [customApi, setCustomApi] = useState<CustomProviderApi>(
 		CUSTOM_PROVIDER_API_OPTIONS[0].value,
 	);
 	const [customApiKey, setCustomApiKey] = useState("");
@@ -1017,7 +1019,13 @@ export function SettingsPage({ onBack }: Props) {
 								<select
 									id="custom-api"
 									value={customApi}
-									onChange={(e) => setCustomApi(e.target.value)}
+									// The options below are the only values this can produce, and
+									// they're typed from the shared schema — but the DOM hands
+									// back a bare `string`, so narrow it here rather than
+									// widening the state and losing the check at the call site.
+									onChange={(e) =>
+										setCustomApi(e.target.value as CustomProviderApi)
+									}
 									className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 								>
 									{CUSTOM_PROVIDER_API_OPTIONS.map((opt) => (

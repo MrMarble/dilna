@@ -1,8 +1,9 @@
 import type { RepoStats, RepoSyncStatus } from "@dilna/shared";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Repo } from "@/api/client";
 import { useRepoList } from "@/hooks/useRepoList";
+import type { PartialApi } from "@/test/api-mock";
+import { makeRepo } from "@/test/factories";
 
 /**
  * The polling/cancellation/partial-failure semantics `useRepoList` owns
@@ -11,18 +12,6 @@ import { useRepoList } from "@/hooks/useRepoList";
  * with Sidebar, ChatShell and dialogs attached. The hook's return value is the
  * seam: a mocked `api` is the only thing needed here.
  */
-
-function makeRepo(over: Partial<Repo> = {}): Repo {
-	return {
-		id: "repo-1",
-		slug: "dilna",
-		path: "/tmp/dilna",
-		defaultBranch: "main",
-		remoteUrl: "git@github.com:owner/dilna.git",
-		createdAt: 1,
-		...over,
-	};
-}
 
 const REPO_A = makeRepo();
 const REPO_B = makeRepo({ id: "repo-2", slug: "other" });
@@ -48,7 +37,7 @@ vi.mock("@/api/client", () => ({
 			stats: (...args: unknown[]) => mocks.stats(...args),
 			sync: (...args: unknown[]) => mocks.sync(...args),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 beforeEach(() => {

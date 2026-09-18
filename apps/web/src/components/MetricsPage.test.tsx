@@ -2,6 +2,7 @@ import type { UsageSummary } from "@dilna/shared";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MetricsPage } from "@/components/MetricsPage";
+import type { PartialApi } from "@/test/api-mock";
 
 const ZERO_TOTALS = {
 	inputTokens: 0,
@@ -29,7 +30,7 @@ vi.mock("@/api/client", () => ({
 				disk: { totalBytes: 10_000, freeBytes: 4_000 },
 			}),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 describe("MetricsPage", () => {

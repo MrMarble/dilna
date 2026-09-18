@@ -8,6 +8,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "@/api/client";
 import { ChatShell } from "@/components/ChatShell";
+import type { PartialApi } from "@/test/api-mock";
 import { makeSession as sharedMakeSession } from "@/test/factories";
 
 /**
@@ -57,7 +58,7 @@ vi.mock("@/api/client", () => ({
 		skills: {
 			forRepo: vi.fn(async () => ({ skills: [] })),
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 function makeSession(status: SessionView["status"]): SessionView {

@@ -6,6 +6,7 @@ import type {
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSessionList } from "@/hooks/useSessionList";
+import type { PartialApi } from "@/test/api-mock";
 import { makeSession as sharedMakeSession } from "@/test/factories";
 
 /**
@@ -34,7 +35,7 @@ vi.mock("@/api/client", () => ({
 				return stream.unsubscribe;
 			},
 		},
-	},
+	} satisfies PartialApi,
 }));
 
 /** Push an event through the mocked stream, as the server would. */
