@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/Sidebar";
+import { expectEveryButtonNamed } from "@/test/accessible-name";
 import { makeRepo, makeSession as sharedMakeSession } from "@/test/factories";
 
 const noop = () => {};
@@ -268,7 +269,12 @@ describe("Sidebar", () => {
 	describe("pending-action feedback", () => {
 		it("spins the refresh icon and disables the button while fetching changes", () => {
 			const { container } = renderSidebar({ refreshingRepos: true });
-			const button = screen.getByTitle("Fetching changes…");
+			// The hover tooltip swaps to the progress copy, but the accessible name
+			// stays put (issue #223) — assert both, since only the tooltip should move.
+			const button = screen.getByRole("button", {
+				name: "Pull latest default-branch changes",
+			});
+			expect(button).toHaveAttribute("title", "Fetching changes…");
 			expect(button).toBeDisabled();
 			expect(container.querySelector(".animate-spin")).not.toBeNull();
 		});
@@ -276,7 +282,9 @@ describe("Sidebar", () => {
 		it("leaves the refresh button idle and clickable when not fetching", async () => {
 			const onRefreshRepos = vi.fn();
 			renderSidebar({ refreshingRepos: false, onRefreshRepos });
-			const button = screen.getByTitle("Pull latest default-branch changes");
+			const button = screen.getByRole("button", {
+				name: "Pull latest default-branch changes",
+			});
 			expect(button).not.toBeDisabled();
 			await userEvent.click(button);
 			expect(onRefreshRepos).toHaveBeenCalledTimes(1);
@@ -349,7 +357,9 @@ describe("Sidebar", () => {
 				onDeleteCurrentSession: noop,
 				deletingSessionIds: ["s1"],
 			});
-			expect(screen.getByTitle("Deleting session…")).toBeDisabled();
+			expect(
+				screen.getByRole("button", { name: "Delete session" }),
+			).toBeDisabled();
 		});
 	});
 
@@ -381,12 +391,61 @@ describe("Sidebar", () => {
 		it("toggles notifications on click", async () => {
 			const user = userEvent.setup();
 			renderSidebar({ notificationsEnabled: false });
-			const bell = screen.getByTitle(
-				/Notify me when a session's turn completes/,
-			);
+			// Stable name + `aria-pressed` rather than a name that follows state
+			// (issue #223): the purpose never changes, only the on/off state.
+			const bell = screen.getByRole("button", {
+				name: "Session completion notifications",
+			});
+			expect(bell).toHaveAttribute("aria-pressed", "false");
 			await user.click(bell);
 			// The handler is stubbed in renderSidebar; clicking must not throw.
 			expect(bell).toBeInTheDocument();
+		});
+
+		it("reports notification state via aria-pressed, not via the name", () => {
+			renderSidebar({ notificationsEnabled: true });
+			const bell = screen.getByRole("button", {
+				name: "Session completion notifications",
+			});
+			expect(bell).toHaveAttribute("aria-pressed", "true");
+		});
+	});
+
+	describe("accessible names (issue #223)", () => {
+		// Guards the whole surface at once: every icon-only control here used to
+		// be named by `title` (or, for the Back button, not at all). Rendering the
+		// busy/disabled states too, since those are where the name used to be
+		// swapped out wholesale.
+		it("names every button in the fully-populated sidebar", () => {
+			const repo = makeRepo({ id: "repo-1" });
+			const session = makeSession({ id: "s1", title: "current" });
+			const { container } = renderSidebar({
+				repos: [repo],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: { [repo.id]: [session] },
+				selectedSessionId: session.id,
+				orchestratorSessions: [makeSession({ id: "o1", title: "orch" })],
+				backgroundSessions: [makeSession({ id: "b1", title: "bg" })],
+				unreadBySessionId: { s1: 2 },
+				refreshingRepos: true,
+				deletingSessionIds: ["o1"],
+				notificationsEnabled: true,
+				rateLimitWindows: [makeRateLimitWindow()],
+				// The collapse control is conditional on this callback — without it the
+				// guard silently skips the very button the issue led with.
+				onCollapse: noop,
+			});
+			expectEveryButtonNamed(container);
+		});
+
+		it("names every button in the sheet variant", () => {
+			const { container } = renderSidebar({
+				variant: "sheet",
+				currentSession: makeSession({ id: "s1", title: "current" }),
+				onDeleteCurrentSession: noop,
+				deletingSessionIds: ["s1"],
+			});
+			expectEveryButtonNamed(container);
 		});
 	});
 });

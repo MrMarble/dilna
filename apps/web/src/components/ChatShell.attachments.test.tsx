@@ -107,7 +107,7 @@ describe("composer attachments", () => {
 		expect(
 			await screen.findByRole("button", { name: /attach files/i }),
 		).toBeTruthy();
-		expect(screen.getByTitle("Send")).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
 	});
 
 	it("uploads a picked file and shows it in the tray", async () => {
@@ -220,7 +220,7 @@ describe("composer attachments", () => {
 		const textarea = screen.getByRole("textbox");
 		await userEvent.type(textarea, "send anyway");
 
-		const send = screen.getByTitle("Send");
+		const send = screen.getByRole("button", { name: "Send" });
 		expect((send as HTMLButtonElement).disabled).toBe(false);
 
 		await userEvent.click(send);
@@ -245,9 +245,10 @@ describe("composer attachments", () => {
 		await screen.findByText("Uploading…");
 
 		await userEvent.type(screen.getByRole("textbox"), "wait for it");
-		expect((screen.getByTitle("Send") as HTMLButtonElement).disabled).toBe(
-			true,
-		);
+		expect(
+			(screen.getByRole("button", { name: "Send" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(true);
 	});
 
 	// "Look at this" with no words is a real message.
@@ -270,7 +271,7 @@ describe("composer attachments", () => {
 		pickFiles(new File(["bytes"], "diagram.png", { type: "image/png" }));
 		await screen.findByText("diagram.png");
 
-		await userEvent.click(screen.getByTitle("Send"));
+		await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
 		await waitFor(() => {
 			expect(api.sessions.send).toHaveBeenCalledWith("sess-1", "", ["att-1"]);

@@ -166,7 +166,13 @@ export function SkillsPage({ repos, onBack }: Props) {
 	return (
 		<div className="flex h-full flex-col overflow-y-auto">
 			<div className="flex items-center gap-2 border-b px-4 py-3">
-				<Button variant="ghost" size="sm" onClick={onBack}>
+				<Button
+					variant="ghost"
+					size="sm"
+					onClick={onBack}
+					title="Back"
+					aria-label="Back"
+				>
 					<ArrowLeft className="size-4" />
 				</Button>
 				<h1 className="font-semibold text-lg">Skills</h1>

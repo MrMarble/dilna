@@ -111,6 +111,7 @@ export function ChatHeader({
 						onClick={() => onDeleteSession(selectedSession.id)}
 						disabled={deletingSession}
 						aria-busy={deletingSession}
+						aria-label="Delete session"
 						title={deletingSession ? "Deleting session…" : "Delete session"}
 						className={cn(
 							"hidden rounded-md p-1.5 transition-colors md:inline-flex",
@@ -130,6 +131,7 @@ export function ChatHeader({
 							type="button"
 							onClick={onExpandContext}
 							title="Show context panel"
+							aria-label="Show context panel"
 							className="hidden rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:inline-flex"
 						>
 							<PanelRight className="size-4" />
@@ -159,6 +161,7 @@ function CopyTranscriptLinkButton({ sessionId }: { sessionId: string }) {
 			type="button"
 			onClick={handleClick}
 			title="Copy transcript link"
+			aria-label="Copy transcript link"
 			className="rounded-md p-2 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-foreground active:scale-90 active:bg-accent"
 		>
 			{copied ? (
@@ -179,6 +182,7 @@ export function ExpandSidebarButton({ onClick }: { onClick: () => void }) {
 			type="button"
 			onClick={onClick}
 			title="Show sidebar"
+			aria-label="Show sidebar"
 			className="hidden rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground md:inline-flex"
 		>
 			<PanelLeft className="size-4" />

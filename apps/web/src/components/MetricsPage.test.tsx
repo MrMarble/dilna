@@ -2,6 +2,7 @@ import type { UsageSummary } from "@dilna/shared";
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MetricsPage } from "@/components/MetricsPage";
+import { expectEveryButtonNamed } from "@/test/accessible-name";
 import type { PartialApi } from "@/test/api-mock";
 
 const ZERO_TOTALS = {
@@ -150,5 +151,19 @@ describe("MetricsPage", () => {
 		// Legend lists every model present in the stacked daily chart.
 		expect(screen.getAllByText("claude-opus-5").length).toBeGreaterThan(0);
 		expect(screen.getAllByText("deepseek-v4-pro").length).toBeGreaterThan(0);
+	});
+
+	it("names the icon-only Back button (issue #223)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+		};
+		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);
+		await screen.findByText(/no usage recorded yet/i);
+		expectEveryButtonNamed(container);
 	});
 });

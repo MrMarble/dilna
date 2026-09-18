@@ -8,10 +8,9 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * CSS paths or nth-child — restyling or re-nesting the markup must not break
  * a test, but removing an accessible name should.
  *
- * Where a control is icon-only the locator falls back to `title`, which is the
- * last-resort source in the accessible-name computation. Those are flagged
- * individually: they are the brittle ones, and giving the button a real
- * `aria-label` is the fix that lets the fallback go away.
+ * Icon-only controls are addressed by `getByRole(..., { name })`, which matches
+ * the accessible name rather than the `title` tooltip: the two are separate
+ * attributes (issue #223), so a tooltip reword no longer breaks a spec.
  */
 
 /** The left-hand `<aside>`: repo/session navigation and the app-level views. */
@@ -23,7 +22,7 @@ export class SidebarObject {
 		// panel), so `getByRole("complementary")` alone is ambiguous. The collapse
 		// control is unique to the sidebar, which pins down which aside this is.
 		this.root = page.locator("aside").filter({
-			has: page.getByTitle("Collapse sidebar"),
+			has: page.getByRole("button", { name: "Collapse sidebar" }),
 		});
 	}
 
@@ -41,14 +40,16 @@ export class SidebarObject {
 		return this.root.getByRole("button", { name: /New session/ });
 	}
 
-	/** Icon-only (`+`), named only by `title`. */
+	/** Icon-only (`+`). */
 	get newRepo(): Locator {
-		return this.root.getByTitle("New repository");
+		return this.root.getByRole("button", { name: "New repository" });
 	}
 
-	/** Icon-only (refresh), named only by `title`. */
+	/** Icon-only (refresh). */
 	get refreshRepos(): Locator {
-		return this.root.getByTitle("Pull latest default-branch changes");
+		return this.root.getByRole("button", {
+			name: "Pull latest default-branch changes",
+		});
 	}
 
 	/** A repo row, addressed by the slug the user sees. */

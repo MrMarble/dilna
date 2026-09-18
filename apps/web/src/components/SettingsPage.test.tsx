@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CustomProviderView, LlmConfig } from "@/api/client";
 import { SettingsPage } from "@/components/SettingsPage";
+import { expectEveryButtonNamed } from "@/test/accessible-name";
 import type { PartialApi } from "@/test/api-mock";
 
 // Mutable fixture state lives inside vi.hoisted so the vi.mock factory (also
@@ -112,6 +113,13 @@ vi.mock("@/api/client", () => ({
 }));
 
 describe("SettingsPage", () => {
+	it("names every button, including the icon-only Back (issue #223)", async () => {
+		state.reset();
+		const { container } = render(<SettingsPage onBack={() => {}} />);
+		await screen.findByText(/currently in effect/i);
+		expectEveryButtonNamed(container);
+	});
+
 	it("loads and shows the currently-in-effect provider/model", async () => {
 		state.reset();
 		render(<SettingsPage onBack={() => {}} />);

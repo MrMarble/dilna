@@ -97,7 +97,13 @@ export function MetricsPage({ repos, onBack }: Props) {
 	return (
 		<div className="flex flex-1 flex-col overflow-y-auto">
 			<header className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-4">
-				<Button variant="ghost" size="icon" onClick={onBack} title="Back">
+				<Button
+					variant="ghost"
+					size="icon"
+					onClick={onBack}
+					title="Back"
+					aria-label="Back"
+				>
 					<ArrowLeft className="size-4" />
 				</Button>
 				<h1 className="font-semibold tracking-tight">Metrics</h1>

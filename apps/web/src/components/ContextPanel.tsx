@@ -174,6 +174,7 @@ export function ContextPanel({
 							type="button"
 							onClick={onCollapse}
 							title="Collapse context panel"
+							aria-label="Collapse context panel"
 							className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground"
 						>
 							<PanelRightClose className="size-4" />
@@ -261,6 +262,7 @@ function ArtefactsSection({
 								target="_blank"
 								rel="noreferrer"
 								title="Open in a new tab"
+								aria-label={`Open ${artefact.title} in a new tab`}
 								className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
 							>
 								<ExternalLink className="size-3.5" />
