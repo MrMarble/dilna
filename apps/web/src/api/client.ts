@@ -4,10 +4,16 @@ import type {
 	Artefact,
 	Attachment,
 	ChangedFile,
+	CloneRepoBody,
 	CommitInfo,
 	ContextUsageEstimate,
+	CustomModelDef,
+	CustomProviderApi,
+	CustomProviderView,
 	DiskUsage,
+	LlmConfig,
 	Message,
+	ProviderModelOption,
 	QueuedMessage,
 	RateLimitWindow,
 	Repo,
@@ -20,16 +26,27 @@ import type {
 	SkillSearchResult,
 	UsageSummary,
 } from "@dilna/shared";
-import { encodeSkillId } from "@dilna/shared";
+import { encodeSkillId, isApiErrorBody } from "@dilna/shared";
 import { SessionStreamHub } from "./sessionStream";
 
+// `LlmConfig`, `CustomProviderView`, `ProviderModelOption` and the request
+// body types below are no longer declared here: they live in
+// `@dilna/shared`'s apiSchemas.ts alongside the Zod schemas the server
+// validates with. `LlmConfig` in particular used to be a hand-maintained
+// twin of the server's `GetConfigResponse` and had already drifted — this
+// side typed a custom provider's `api` as a bare `string` where the server
+// had a four-literal union.
 export type {
 	AgentStreamEvent,
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	CustomProviderApi,
+	CustomProviderView,
 	DiskUsage,
+	LlmConfig,
 	Message,
+	ProviderModelOption,
 	QueuedMessage,
 	RateLimitWindow,
 	Repo,
@@ -43,50 +60,11 @@ export type {
 	UsageSummary,
 };
 
-export type CloneRepoInput = {
-	url: string;
-	slug?: string;
-};
+/** @deprecated Prefer `CustomModelDef` from `@dilna/shared`; kept as an alias
+ * so existing Settings-view imports keep resolving. */
+export type CustomModelInput = CustomModelDef;
 
-/** A single model option shown in the LLM Settings dropdown. */
-export type ProviderModelOption = {
-	id: string;
-	name: string;
-};
-
-/** A model entry on a custom provider — see apps/server/src/agents/customProviders.ts. */
-export type CustomModelInput = { id: string; name?: string };
-
-/** A user-defined provider (Ollama, LM Studio, vLLM, ...) — see
- * apps/server/src/agents/customProviders.ts. No key material included. */
-export type CustomProviderView = {
-	id: string;
-	name: string;
-	baseUrl: string;
-	api: string;
-	models: CustomModelInput[];
-};
-
-/** Server `/api/config` GET response — see apps/server/src/routes/config.ts. */
-export type LlmConfig = {
-	override: { provider: string; model: string } | null;
-	envDefault: { provider: string; model: string };
-	effective: { provider: string; model: string };
-	apiKeysConfigured: Record<string, boolean>;
-	/** Providers that have a **stored** (Settings-added) API key — see the
-	 * server's providerCredentials.ts. Provider ids only; key material never
-	 * leaves the server. */
-	keyedStoredProviders: { provider: string }[];
-	modelsByProvider: Record<string, ProviderModelOption[]>;
-	/** Providers with a connected OAuth login ("Sign in with Claude") — today
-	 * only ever `{ anthropic: boolean }`. An OAuth login outranks a stored API
-	 * key for the same provider. */
-	oauthConnected: Record<string, boolean>;
-	/** User-defined providers — already folded into `modelsByProvider`/
-	 * `apiKeysConfigured` above, this is only for the "Custom providers"
-	 * management section. */
-	customProviders: CustomProviderView[];
-};
+export type CloneRepoInput = CloneRepoBody;
 
 const SESSION_LIST_EVENT_TYPES: SessionListEvent["type"][] = [
 	"session_status",
@@ -230,6 +208,9 @@ export class ApiError extends Error {
 		public status: number,
 		public body: unknown,
 		message: string,
+		/** Per-field validation messages on a 422, so a form can mark the
+		 * offending inputs rather than showing one opaque string. */
+		public fieldErrors?: Record<string, string[]>,
 	) {
 		super(message);
 	}
@@ -258,11 +239,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 		}
 	}
 	if (!res.ok) {
-		const msg =
-			typeof body === "object" && body !== null && "message" in body
-				? String((body as { message: unknown }).message)
-				: `request failed (${res.status})`;
-		throw new ApiError(res.status, body, msg);
+		// Every server failure now arrives as `@dilna/shared`'s envelope
+		// (`{ error: { message, status, fieldErrors? } }`), applied by the
+		// server's `app.onError` + the `validate` hook. Before that existed the
+		// server emitted four different shapes — including plain text, which
+		// this function couldn't read at all — so a real message like "repo not
+		// found" always surfaced as the generic fallback below.
+		if (isApiErrorBody(body)) {
+			throw new ApiError(
+				res.status,
+				body,
+				body.error.message,
+				body.error.fieldErrors,
+			);
+		}
+		throw new ApiError(res.status, body, `request failed (${res.status})`);
 	}
 	return body as T;
 }

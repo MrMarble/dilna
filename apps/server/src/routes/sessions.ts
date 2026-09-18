@@ -6,16 +6,17 @@ import {
 	type ChangedFile,
 	type CommitInfo,
 	type ContextUsageEstimate,
-	MAX_ATTACHMENTS_PER_MESSAGE,
+	commitsQuerySchema,
+	createSessionBodySchema,
+	listSessionsQuerySchema,
 	type Message,
 	type QueuedMessage,
 	type SessionView,
+	sendMessageBodySchema,
 } from "@dilna/shared";
-import { zValidator } from "@hono/zod-validator";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
-import { z } from "zod";
 import { logger } from "../logger";
 import { requireSession, type SessionEnv } from "../middleware/requireSession";
 import { type RepoManager, RepoNotFoundError } from "../repos/manager";
@@ -36,19 +37,12 @@ import {
 } from "../sessions/manager";
 import { toView } from "../sessions/sessionStore";
 import { renderTranscript } from "../sessions/transcript";
+import { validate } from "./factory";
 import { runSseLoop } from "./sse";
 
 const log = logger.child({ component: "routes/sessions" });
 
 const CREATABLE_AGENT_TYPES: readonly AgentType[] = ["pi"];
-
-// Bounds the ?limit= query param on GET /:id/commits — falls back to
-// SessionManager.getRecentCommits' own default (5) for anything missing,
-// non-numeric, or out of a sane range, rather than passing it through raw.
-export function parseCommitsLimit(raw: string | undefined): number | undefined {
-	const n = Number(raw);
-	return Number.isInteger(n) && n > 0 && n <= 50 ? n : undefined;
-}
 
 type ListResponse = { sessions: SessionView[] };
 type OneResponse = {
@@ -59,32 +53,9 @@ type OneResponse = {
 	contextUsage: ContextUsageEstimate | null;
 };
 
-// `agentType` is validated structurally against the full shared union here;
-// CREATABLE_AGENT_TYPES below still gates which of those are actually
-// creatable (e.g. "openai" is a reserved placeholder, not yet implemented).
-const createBodySchema = z.object({
-	repoId: z.string().min(1),
-	agentType: z.enum(["pi", "openai"]).optional(),
-});
-const sendBodySchema = z
-	.object({
-		// Empty is allowed at the field level so an attachment-only message
-		// ("look at this") can be sent; the refinement below still rejects a
-		// send that carries neither text nor files.
-		text: z.string().max(200_000),
-		/** Ids from `POST /:id/attachments`, in the order the composer showed
-		 * them. Resolved and ownership-checked before the turn is claimed — see
-		 * the send handler. Bounded by the same shared constant the resolver and
-		 * the composer use, so a send can't pass validation here only to be
-		 * rejected downstream for a limit this schema disagreed about. */
-		attachmentIds: z
-			.array(z.string().min(1))
-			.max(MAX_ATTACHMENTS_PER_MESSAGE)
-			.optional(),
-	})
-	.refine((body) => body.text.trim().length > 0 || body.attachmentIds?.length, {
-		message: "a message needs text or at least one attachment",
-	});
+// Request schemas now live in `@dilna/shared` (apiSchemas.ts) so the web
+// client types its calls against the same definitions the server validates
+// with — see that module's "schema what crosses the wire inbound" note.
 
 export function createSessionsRoute(deps: {
 	sessions: SessionManager;
@@ -102,17 +73,16 @@ export function createSessionsRoute(deps: {
 	guarded.use("/:id/*", requireSession(deps.sessions));
 	guarded.use("/:id", requireSession(deps.sessions));
 
-	sessionsRoute.get("/", async (c) => {
-		const repoId = c.req.query("repoId");
-		if (!repoId) {
-			throw new HTTPException(400, {
-				message: "repoId query param is required",
-			});
-		}
-		const sessions = await deps.sessions.listByRepo(repoId);
-		const body: ListResponse = { sessions };
-		return c.json(body);
-	});
+	sessionsRoute.get(
+		"/",
+		validate("query", listSessionsQuerySchema),
+		async (c) => {
+			const { repoId } = c.req.valid("query");
+			const sessions = await deps.sessions.listByRepo(repoId);
+			const body: ListResponse = { sessions };
+			return c.json(body);
+		},
+	);
 
 	guarded.get("/:id", async (c) => {
 		const session = c.get("session");
@@ -151,15 +121,22 @@ export function createSessionsRoute(deps: {
 	// Recent commits reachable from the Session's Worktree HEAD, for the context
 	// panel. Fetched on mount and refetched by the client after each turn (keyed
 	// off the `changed_files` SSE event) rather than streamed.
-	guarded.get("/:id/commits", async (c) => {
-		const limit = parseCommitsLimit(c.req.query("limit"));
-		const commits = await deps.sessions.getRecentCommits(
-			c.get("session").id,
-			limit,
-		);
-		const body: { commits: CommitInfo[] } = { commits };
-		return c.json(body);
-	});
+	guarded.get(
+		"/:id/commits",
+		validate("query", commitsQuerySchema),
+		async (c) => {
+			// The schema `.catch`es rather than rejecting, so a junk `?limit=`
+			// still falls back to getRecentCommits' own default (5) — same
+			// behaviour the hand-rolled `parseCommitsLimit` had.
+			const { limit } = c.req.valid("query");
+			const commits = await deps.sessions.getRecentCommits(
+				c.get("session").id,
+				limit,
+			);
+			const body: { commits: CommitInfo[] } = { commits };
+			return c.json(body);
+		},
+	);
 
 	// The queue's initial snapshot — mirrors GET /:id/messages: fetched by the
 	// client's on-open resync routine (ADR-0016 §4), then kept live via
@@ -171,26 +148,30 @@ export function createSessionsRoute(deps: {
 		return c.json(body);
 	});
 
-	sessionsRoute.post("/", zValidator("json", createBodySchema), async (c) => {
-		const body = c.req.valid("json");
-		if (body.agentType && !CREATABLE_AGENT_TYPES.includes(body.agentType)) {
-			throw new HTTPException(400, {
-				message: `unsupported agentType: ${body.agentType}`,
-			});
-		}
-		try {
-			const session = await deps.sessions.create(body.repoId, body.agentType);
-			// A brand-new Session has no turns yet — nothing to estimate.
-			const res: OneResponse = { session, contextUsage: null };
-			return c.json(res, 201);
-		} catch (err) {
-			if (err instanceof RepoNotFoundError) {
-				throw new HTTPException(404, { message: err.message });
+	sessionsRoute.post(
+		"/",
+		validate("json", createSessionBodySchema),
+		async (c) => {
+			const body = c.req.valid("json");
+			if (body.agentType && !CREATABLE_AGENT_TYPES.includes(body.agentType)) {
+				throw new HTTPException(400, {
+					message: `unsupported agentType: ${body.agentType}`,
+				});
 			}
-			const msg = err instanceof Error ? err.message : "create failed";
-			throw new HTTPException(500, { message: msg });
-		}
-	});
+			try {
+				const session = await deps.sessions.create(body.repoId, body.agentType);
+				// A brand-new Session has no turns yet — nothing to estimate.
+				const res: OneResponse = { session, contextUsage: null };
+				return c.json(res, 201);
+			} catch (err) {
+				if (err instanceof RepoNotFoundError) {
+					throw new HTTPException(404, { message: err.message });
+				}
+				const msg = err instanceof Error ? err.message : "create failed";
+				throw new HTTPException(500, { message: msg });
+			}
+		},
+	);
 
 	// A dedicated endpoint rather than a `kind` field on the body above (ADR-0021):
 	// an orchestrator Session's repoId is always dilna's own reserved meta-repo,
@@ -222,7 +203,7 @@ export function createSessionsRoute(deps: {
 
 	sessionsRoute.post(
 		"/:id/messages",
-		zValidator("json", sendBodySchema),
+		validate("json", sendMessageBodySchema),
 		async (c) => {
 			const id = c.req.param("id");
 			const body = c.req.valid("json");
@@ -294,29 +275,33 @@ export function createSessionsRoute(deps: {
 	 *
 	 * 202: accepted for later delivery — exactly what this is.
 	 */
-	sessionsRoute.post("/:id/queue", zValidator("json", sendBodySchema), (c) => {
-		const id = c.req.param("id");
-		const body = c.req.valid("json");
-		let attachments: Attachment[];
-		try {
-			attachments = resolveAttachments(id, body.attachmentIds ?? []);
-		} catch (err) {
-			if (err instanceof AttachmentRejectedError) {
-				throw new HTTPException(400, { message: err.message });
+	sessionsRoute.post(
+		"/:id/queue",
+		validate("json", sendMessageBodySchema),
+		(c) => {
+			const id = c.req.param("id");
+			const body = c.req.valid("json");
+			let attachments: Attachment[];
+			try {
+				attachments = resolveAttachments(id, body.attachmentIds ?? []);
+			} catch (err) {
+				if (err instanceof AttachmentRejectedError) {
+					throw new HTTPException(400, { message: err.message });
+				}
+				throw err;
 			}
-			throw err;
-		}
-		try {
-			const entry = deps.sessions.enqueueMessage(id, body.text, attachments);
-			return c.json({ ok: true, entry }, 202);
-		} catch (err) {
-			if (err instanceof SessionNotFoundError) {
-				throw new HTTPException(404, { message: err.message });
+			try {
+				const entry = deps.sessions.enqueueMessage(id, body.text, attachments);
+				return c.json({ ok: true, entry }, 202);
+			} catch (err) {
+				if (err instanceof SessionNotFoundError) {
+					throw new HTTPException(404, { message: err.message });
+				}
+				const msg = err instanceof Error ? err.message : "enqueue failed";
+				throw new HTTPException(500, { message: msg });
 			}
-			const msg = err instanceof Error ? err.message : "enqueue failed";
-			throw new HTTPException(500, { message: msg });
-		}
-	});
+		},
+	);
 
 	// The queue's initial snapshot — mirrors GET /:id/messages: fetched by the
 	// client's on-open resync routine (ADR-0016 §4), then kept live via

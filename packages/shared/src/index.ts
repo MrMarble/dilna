@@ -1,3 +1,10 @@
+// Not type-only: the API error envelope's schema and `isApiErrorBody` guard
+// are runtime values — the server shapes responses with them, the web client
+// narrows with them.
+export * from "./apiError";
+// Not type-only: these are Zod schemas, i.e. runtime values. The server
+// validates with them; the web client derives its request types from them.
+export * from "./apiSchemas";
 // Not type-only: artefact.ts also exports the runtime
 // `ARTEFACT_MAX_BYTES`/`formatArtefactSize` both sides share (issue #194).
 export * from "./artefact";

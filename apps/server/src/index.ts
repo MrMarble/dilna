@@ -12,6 +12,7 @@ import { primeProviderCredentials } from "./agents/providerCredentials";
 import { createServerContext } from "./container";
 import { closeDb, getDataDir, getDb, getDbPath } from "./db/index";
 import { logger } from "./logger";
+import { errorHandler, notFoundHandler } from "./middleware/errors";
 import { requestLogger } from "./middleware/requestLogger";
 import {
 	bearerAuthMiddleware,
@@ -58,6 +59,13 @@ if (!envProviderConfig.ok && !getOverride()) {
 
 const app = new Hono();
 app.use(requestLogger());
+
+// One error envelope for every failure path (`{ error: { message, status,
+// fieldErrors? } }`). Registered before any route so nothing can bypass it:
+// route handlers keep throwing `HTTPException`, this decides how it renders.
+// Without it Hono emits the message as text/plain, which the web client
+// can't read — every server error surfaced as a generic `request failed`.
+app.onError(errorHandler);
 
 // Opt-in hardening against DNS rebinding / CSRF-style requests from a
 // browser tab: CORS alone only stops a script from *reading* a cross-origin
@@ -118,6 +126,11 @@ app.get("/api/health", (c) => {
 	}
 	return c.json({ ok: true, dataDir: getDataDir(), db: getDbPath() });
 });
+
+// Unmatched /api/* paths get the error envelope rather than Hono's bare 404
+// (or, below, the SPA's index.html). Scoped to /api/* so the SPA fallback
+// still owns every other unmatched path.
+app.all("/api/*", notFoundHandler);
 
 // Serve the built web app in production single-container deployments (the
 // dev workflow serves it separately via Vite, so apps/web/dist won't exist

@@ -1,9 +1,12 @@
 import type { RepoSkill, Skill, SkillSearchResult } from "@dilna/shared";
-import { decodeSkillId } from "@dilna/shared";
-import { zValidator } from "@hono/zod-validator";
+import {
+	decodeSkillId,
+	installSkillBodySchema,
+	searchSkillsQuerySchema,
+	setSkillEnabledBodySchema,
+} from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { z } from "zod";
 import type { RepoManager } from "../repos/manager";
 import { searchSkills } from "../skills/registry";
 import {
@@ -13,6 +16,7 @@ import {
 	setSkillEnabled,
 	uninstallSkill,
 } from "../skills/store";
+import { validate } from "./factory";
 
 /**
  * Skill management (issue #60): a global catalog plus per-Repo enablement.
@@ -26,16 +30,6 @@ import {
 export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 	const skillsRoute = new Hono();
 
-	const installBodySchema = z.object({
-		/** A skills.sh or GitHub URL, or `owner/repo/skill` shorthand. */
-		url: z.string().min(1),
-	});
-
-	const enabledBodySchema = z.object({
-		repoId: z.string().min(1),
-		enabled: z.boolean(),
-	});
-
 	/** Every installed skill (global catalog). */
 	skillsRoute.get("/", async (c) => {
 		const skills: Skill[] = await listSkills();
@@ -46,12 +40,15 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 	 * Search skills.sh. Never fails the request on a registry outage — returns an
 	 * empty list, since installing by pasted URL has to keep working regardless.
 	 */
-	skillsRoute.get("/search", async (c) => {
-		const q = c.req.query("q") ?? "";
-		const owner = c.req.query("owner") || undefined;
-		const results: SkillSearchResult[] = await searchSkills(q, owner);
-		return c.json({ results });
-	});
+	skillsRoute.get(
+		"/search",
+		validate("query", searchSkillsQuerySchema),
+		async (c) => {
+			const { q, owner } = c.req.valid("query");
+			const results: SkillSearchResult[] = await searchSkills(q, owner);
+			return c.json({ results });
+		},
+	);
 
 	/** Installed skills, flagged with whether this Repo has each enabled. */
 	skillsRoute.get("/repo/:repoId", async (c) => {
@@ -63,7 +60,7 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 	});
 
 	/** Install a skill globally (does not enable it for any Repo). */
-	skillsRoute.post("/", zValidator("json", installBodySchema), async (c) => {
+	skillsRoute.post("/", validate("json", installSkillBodySchema), async (c) => {
 		const body = c.req.valid("json");
 		const result = await installSkill(body.url);
 		if (!result.ok) throw new HTTPException(400, { message: result.error });
@@ -89,7 +86,7 @@ export function createSkillsRoute(deps: { repos: RepoManager }): Hono {
 	 */
 	skillsRoute.post(
 		"/:id/enabled",
-		zValidator("json", enabledBodySchema),
+		validate("json", setSkillEnabledBodySchema),
 		async (c) => {
 			const id = decodeSkillId(c.req.param("id"));
 			const body = c.req.valid("json");

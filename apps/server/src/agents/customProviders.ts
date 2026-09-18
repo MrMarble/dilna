@@ -1,3 +1,4 @@
+import type { CustomModelDef, CustomProviderView } from "@dilna/shared";
 import type { Model } from "@earendil-works/pi-ai";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
@@ -48,15 +49,11 @@ import {
  * masking/storage/resolution code entirely instead of duplicating it.
  */
 
-export type CustomModelDef = { id: string; name?: string };
-
-export type CustomProvider = {
-	id: string;
-	name: string;
-	baseUrl: string;
-	api: CustomProviderApi;
-	models: CustomModelDef[];
-};
+// Both re-exported from `@dilna/shared` (apiSchemas.ts) rather than declared
+// here: the web client's Settings view needs the same shapes, and a custom
+// provider arrives over the wire, so the schema and the type are one thing.
+export type { CustomModelDef };
+export type CustomProvider = CustomProviderView;
 
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 

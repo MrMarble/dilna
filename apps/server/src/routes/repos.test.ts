@@ -22,7 +22,7 @@ describe("reposRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({}),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST / with an empty url", async () => {
@@ -31,7 +31,7 @@ describe("reposRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ url: "" }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 
 	it("rejects POST / with an empty slug", async () => {
@@ -40,6 +40,6 @@ describe("reposRoute validation", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ url: "https://example.com/repo.git", slug: "" }),
 		});
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(422);
 	});
 });
