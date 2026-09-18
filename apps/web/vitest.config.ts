@@ -32,6 +32,11 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": path.resolve(__dirname, "./src"),
+			// `@dilna/shared` resolves through the package's `exports` field, which
+			// points at TypeScript source. Vite follows that, but a *subpath* import
+			// (`@dilna/shared/testing`) needs the same mapping the tsconfigs declare
+			// so the source is transformed rather than handed to Node raw.
+			"@dilna/shared": path.resolve(__dirname, "../../packages/shared/src"),
 		},
 	},
 });

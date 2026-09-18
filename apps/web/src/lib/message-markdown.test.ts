@@ -1,8 +1,8 @@
-import type { MessagePart } from "@dilna/shared";
+import type { MessagePart, WireToolName } from "@dilna/shared";
 import { describe, expect, it } from "vitest";
 import { partsToMarkdown } from "@/lib/message-markdown";
 
-function tool(tool: string, input: unknown): MessagePart {
+function tool(tool: WireToolName, input: unknown): MessagePart {
 	return { type: "tool_call", callId: "c1", tool, input, output: null };
 }
 
@@ -32,7 +32,7 @@ describe("partsToMarkdown", () => {
 	});
 
 	it("summarizes a tool call as a one-line italic note", () => {
-		expect(partsToMarkdown([tool("Read", { file_path: "src/a.ts" })])).toBe(
+		expect(partsToMarkdown([tool("read", { path: "src/a.ts" })])).toBe(
 			"_Read src/a.ts_",
 		);
 	});
@@ -40,7 +40,7 @@ describe("partsToMarkdown", () => {
 	it("omits tool calls when asked for text only", () => {
 		const parts: MessagePart[] = [
 			{ type: "text", text: "before" },
-			tool("Read", { file_path: "src/a.ts" }),
+			tool("read", { path: "src/a.ts" }),
 			{ type: "text", text: "after" },
 		];
 		expect(partsToMarkdown(parts, { includeToolCalls: false })).toBe(
@@ -51,7 +51,7 @@ describe("partsToMarkdown", () => {
 	it("keeps text and tool calls in their original order", () => {
 		const parts: MessagePart[] = [
 			{ type: "text", text: "before" },
-			tool("Write", { file_path: "out.txt" }),
+			tool("write", { path: "out.txt" }),
 			{ type: "text", text: "after" },
 		];
 		expect(partsToMarkdown(parts)).toBe("before\n\n_Write out.txt_\n\nafter");

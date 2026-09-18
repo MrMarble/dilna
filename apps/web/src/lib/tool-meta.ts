@@ -1,3 +1,4 @@
+import { isToolName, TOOL_ARG_KEYS, type ToolName } from "@dilna/shared";
 import {
 	Bot,
 	FileOutput,
@@ -7,7 +8,6 @@ import {
 	FolderSearch,
 	Globe,
 	Image,
-	ListTodo,
 	SearchCode,
 	SquareTerminal,
 	Wrench,
@@ -41,98 +41,132 @@ function str(obj: Record<string, unknown>, key: string): string | undefined {
 	return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
-function todoDetail(todos: unknown): string | undefined {
-	if (!Array.isArray(todos) || todos.length === 0) return undefined;
-	const done = todos.filter(
-		(t) =>
-			t !== null &&
-			typeof t === "object" &&
-			(t as { status?: unknown }).status === "completed",
-	).length;
-	return `${done}/${todos.length} done`;
+/**
+ * Presentation for each of dilna's tools: icon and human label. The *name set
+ * and its argument key* come from `@dilna/shared` (`tools.ts`) — this map only
+ * adds what is genuinely web-only.
+ *
+ * Typed `Record<ToolName, …>`, so adding a tool to the shared union without an
+ * icon here is a compile error. That is deliberately the opposite of the
+ * switch this replaced: a `default:` case swallowed every missing tool, so the
+ * pi migration (ADR-0020) renamed all the server's tools and left twelve
+ * unreachable `case "Read":`-style branches rendering as a bare wrench — a
+ * green build on both sides and a broken UI.
+ *
+ * `detail` is a key into the call's input, or a function of it for the two
+ * tools whose one-line summary isn't a single field.
+ */
+const TOOL_META: Record<
+	ToolName,
+	{
+		icon: typeof Wrench;
+		label: string;
+		detail: (input: unknown) => string | undefined;
+	}
+> = {
+	read: {
+		icon: FileText,
+		label: "Read",
+		detail: (input) => shortDetail(input, TOOL_ARG_KEYS.read),
+	},
+	write: {
+		icon: FilePlus,
+		label: "Write",
+		detail: (input) => shortDetail(input, TOOL_ARG_KEYS.write),
+	},
+	edit: {
+		icon: FilePen,
+		label: "Edit",
+		detail: (input) => shortDetail(input, TOOL_ARG_KEYS.edit),
+	},
+	grep: {
+		icon: SearchCode,
+		label: "Grep",
+		detail: (input) => str(asObj(input), TOOL_ARG_KEYS.grep),
+	},
+	find: {
+		icon: FolderSearch,
+		label: "Find",
+		detail: (input) => str(asObj(input), TOOL_ARG_KEYS.find),
+	},
+	ls: {
+		icon: FolderSearch,
+		label: "List",
+		detail: (input) => shortDetail(input, TOOL_ARG_KEYS.ls),
+	},
+	bash: {
+		icon: SquareTerminal,
+		label: "Bash",
+		detail: (input) => str(asObj(input), TOOL_ARG_KEYS.bash),
+	},
+	read_repo_memory: {
+		icon: FileText,
+		label: "Read memory",
+		detail: () => undefined,
+	},
+	update_repo_memory: {
+		icon: FilePen,
+		label: "Update memory",
+		detail: () => undefined,
+	},
+	read_skill: {
+		icon: FileText,
+		label: "Read skill",
+		detail: (input) => str(asObj(input), TOOL_ARG_KEYS.read_skill),
+	},
+	fetch: {
+		icon: Globe,
+		label: "Fetch",
+		detail: (input) => str(asObj(input), TOOL_ARG_KEYS.fetch),
+	},
+	task: {
+		icon: Bot,
+		label: "Task",
+		detail: (input) => str(asObj(input), TOOL_ARG_KEYS.task),
+	},
+	// dilna's own publish tool (issue #194). Titled by what the user will see
+	// in the Artefacts panel, falling back to the path when the Agent
+	// published without a title.
+	dilna_publish_artefact: {
+		icon: FileOutput,
+		label: "Publish",
+		detail: (input) =>
+			str(asObj(input), TOOL_ARG_KEYS.dilna_publish_artefact) ??
+			shortDetail(input, "path"),
+	},
+	// dilna's own image tool (issue #222). Detailed by the path rather than the
+	// caption: the caption is already rendered as prose next to the picture, so
+	// repeating it on the collapsed card says nothing new.
+	dilna_send_image: {
+		icon: Image,
+		label: "Send image",
+		detail: (input) => shortDetail(input, TOOL_ARG_KEYS.dilna_send_image),
+	},
+};
+
+function asObj(input: unknown): Record<string, unknown> {
+	return (input !== null && typeof input === "object" ? input : {}) as Record<
+		string,
+		unknown
+	>;
 }
 
 /**
- * Per-tool display metadata for the Claude agent's built-in tool names.
- * Unknown tools (MCP tools, future additions) fall back to a wrench icon
- * with the raw tool name — never throws on unexpected input shapes.
+ * Per-tool display metadata. A tool dilna knows gets its own icon, label and
+ * detail; a tool it doesn't (an MCP tool, or a name a newer server emitted) —
+ * or a persisted part from a build whose vocabulary differs — falls back to a
+ * wrench with the raw name, exactly as before. Never throws on unexpected
+ * input shapes.
  */
 export function getToolMeta(tool: string, input: unknown): ToolMeta {
-	const obj = (
-		input !== null && typeof input === "object" ? input : {}
-	) as Record<string, unknown>;
-
-	switch (tool) {
-		case "Read":
-			return {
-				icon: FileText,
-				label: "Read",
-				detail: shortDetail(obj, "file_path"),
-			};
-		case "Edit":
-		case "MultiEdit":
-			return {
-				icon: FilePen,
-				label: "Edit",
-				detail: shortDetail(obj, "file_path"),
-			};
-		case "Write":
-			return {
-				icon: FilePlus,
-				label: "Write",
-				detail: shortDetail(obj, "file_path"),
-			};
-		case "NotebookEdit":
-			return {
-				icon: FilePen,
-				label: "Notebook",
-				detail: shortDetail(obj, "notebook_path"),
-			};
-		case "Bash":
-			return {
-				icon: SquareTerminal,
-				label: "Bash",
-				detail: str(obj, "command"),
-			};
-		case "Grep":
-			return { icon: SearchCode, label: "Grep", detail: str(obj, "pattern") };
-		case "Glob":
-			return { icon: FolderSearch, label: "Glob", detail: str(obj, "pattern") };
-		case "WebFetch":
-			return { icon: Globe, label: "Fetch", detail: str(obj, "url") };
-		case "WebSearch":
-			return { icon: Globe, label: "Search", detail: str(obj, "query") };
-		case "Task":
-			return { icon: Bot, label: "Task", detail: str(obj, "description") };
-		case "TodoWrite":
-			return { icon: ListTodo, label: "Todos", detail: todoDetail(obj.todos) };
-		// dilna's own publish tool (issue #194). Titled by what the user will
-		// see in the Artefacts panel, falling back to the path when the Agent
-		// published without a title.
-		case "dilna_publish_artefact":
-			return {
-				icon: FileOutput,
-				label: "Publish",
-				detail: str(obj, "title") ?? shortDetail(obj, "path"),
-			};
-		// dilna's own image tool (issue #222). Detailed by the path rather than
-		// the caption: the caption is already rendered as prose next to the
-		// picture, so repeating it on the collapsed card says nothing new.
-		case "dilna_send_image":
-			return {
-				icon: Image,
-				label: "Send image",
-				detail: shortDetail(obj, "path"),
-			};
-		default:
-			return { icon: Wrench, label: tool };
+	if (isToolName(tool)) {
+		const meta = TOOL_META[tool];
+		return { icon: meta.icon, label: meta.label, detail: meta.detail(input) };
 	}
+	return { icon: Wrench, label: tool, detail: undefined };
 }
 
-function shortDetail(
-	obj: Record<string, unknown>,
-	key: string,
-): string | undefined {
-	const v = str(obj, key);
+function shortDetail(input: unknown, key: string): string | undefined {
+	const v = str(asObj(input), key);
 	return v === undefined ? undefined : shortenPath(v);
 }

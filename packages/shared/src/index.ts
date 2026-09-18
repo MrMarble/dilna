@@ -27,5 +27,9 @@ export type * from "./session";
 // Not type-only like its neighbors: skill.ts also exports the
 // encodeSkillId/decodeSkillId runtime functions both server and web need.
 export * from "./skill";
+// Not type-only: the tool vocabulary is a runtime list plus the per-tool
+// argument key, so the web can key a `Record<ToolName, …>` off the union and
+// the server can validate against `TOOL_NAMES`.
+export * from "./tools";
 export type * from "./types";
 export type * from "./usage";

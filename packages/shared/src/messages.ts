@@ -1,3 +1,5 @@
+import type { WireToolName } from "./tools";
+
 /** How an {@link Attachment} is presented to the user and handed to the
  * Agent. `"image"` is the only kind a Provider can see *as pixels* — it
  * travels inline in the prompt as base64 (`pi-agent-core`'s
@@ -67,7 +69,10 @@ export type MessagePart =
 	| {
 			type: "tool_call";
 			callId: string;
-			tool: string;
+			/** dilna's tool vocabulary ({@link WireToolName}), not the provider's — the
+			 * web picks its icon and detail off this, so it is a narrowed union
+			 * rather than an open string. */
+			tool: WireToolName;
 			input: unknown;
 			output: unknown;
 			error?: string;

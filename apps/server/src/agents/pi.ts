@@ -10,6 +10,7 @@ import type {
 	MessagePart,
 	UsageTotals,
 } from "@dilna/shared";
+import { asWireToolName } from "@dilna/shared";
 import {
 	Agent,
 	type AgentEvent,
@@ -910,7 +911,7 @@ export function normalizePiEvent(
 					type: "tool_call_start",
 					messageId,
 					callId: event.toolCallId,
-					tool: event.toolName,
+					tool: asWireToolName(event.toolName),
 					input: event.args,
 				},
 			];
@@ -1174,7 +1175,7 @@ export function piRoundToDilnaMessage(
 			parts.push({
 				type: "tool_call",
 				callId: block.id,
-				tool: block.name,
+				tool: asWireToolName(block.name),
 				input: block.arguments,
 				output: result?.output ?? "",
 				error: result?.error,
