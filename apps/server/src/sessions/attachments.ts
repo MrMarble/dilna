@@ -15,7 +15,9 @@ import {
 	type Attachment,
 	type AttachmentKind,
 	type AttachmentSource,
+	attachmentKindFor,
 	formatAttachmentSize,
+	IMAGE_MIME_TYPES,
 	MAX_ATTACHMENTS_PER_MESSAGE,
 } from "@dilna/shared";
 import { and, eq, inArray } from "drizzle-orm";
@@ -67,50 +69,21 @@ import { attachments as attachmentsTable } from "../db/schema";
  */
 export const ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024;
 
+// The image allow-list and the kind derivation both live in
+// `packages/shared` — the web classifies the same file to decide whether the
+// composer shows a thumbnail, and the two had already drifted (the web's
+// `startsWith("image/")` called `image/heic` an image where this module's
+// allow-list called it a document). Re-exported here so this module stays the
+// one place the rest of the server asks about attachment policy.
+export {
+	attachmentKindFor,
+	bareMimeType,
+	IMAGE_MIME_TYPES,
+} from "@dilna/shared";
 // The per-message cap lives in `packages/shared` — both sides enforce it and
 // they have to agree (see its doc comment). Re-exported here so this module
 // stays the one place the rest of the server asks about attachment policy.
 export { MAX_ATTACHMENTS_PER_MESSAGE };
-
-/**
- * MIME types dilna sends to a Provider as actual image content. Restricted
- * to the four every vision-capable Provider in dilna's catalog accepts —
- * deliberately *not* "anything `image/*`", because an unsupported image type
- * (`image/tiff`, `image/heic`) reaching the Provider is a turn-level API
- * error, whereas classifying it as a document degrades to "the Agent can
- * read the file off disk", which still works.
- */
-export const IMAGE_MIME_TYPES = new Set([
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-]);
-
-/** Normalize a stored MIME for comparison against {@link IMAGE_MIME_TYPES} —
- * lowercased and stripped of any `; charset=…` parameter, the same way
- * {@link attachmentKindFor} reads one. */
-export function bareMimeType(mimeType: string): string {
-	return mimeType.toLowerCase().split(";")[0]?.trim() ?? "";
-}
-
-/**
- * Which channel a file takes to the Agent, decided once at upload time from
- * the MIME type the browser reported.
- *
- * `"image"` means the bytes travel inline in the prompt as base64 and the
- * Provider sees the picture. `"document"` means the Agent is told the path
- * and reads it with its own tools. The fallback is `"document"` precisely
- * because it's the one that can't fail at the Provider: every file is
- * readable off disk, only some are viewable.
- */
-export function attachmentKindFor(mimeType: string): AttachmentKind {
-	return IMAGE_MIME_TYPES.has(
-		mimeType.toLowerCase().split(";")[0]?.trim() ?? "",
-	)
-		? "image"
-		: "document";
-}
 
 /**
  * Reduce a user-supplied filename to something safe to use as a path

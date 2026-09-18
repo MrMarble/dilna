@@ -112,6 +112,17 @@ describe("RepoManager", () => {
 		await repoManager.delete(second.id);
 	});
 
+	it("never mints a slug the web's router would shadow", async () => {
+		// `metrics` is a standalone page, so a Repo with that slug could never
+		// be addressed — the web falls back to home rather than pushing a URL
+		// that parses back as the Metrics view. The server used to mint it
+		// anyway, producing a sidebar entry that could not be opened.
+		const repo = await repoManager.clone(fixtureRepo, "metrics");
+		expect(repo.slug).toBe("metrics-2");
+
+		await repoManager.delete(repo.id);
+	});
+
 	it("computes file count and language breakdown from the bare clone", async () => {
 		writeFileSync(path.join(fixtureRepo, "app.ts"), "const x: number = 1;\n");
 		writeFileSync(path.join(fixtureRepo, "style.css"), "body { margin: 0 }\n");

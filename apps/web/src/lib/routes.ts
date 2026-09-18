@@ -29,6 +29,8 @@
  * get a top-level segment instead of nesting under the hidden meta-repo they
  * technically belong to — the same treatment Metrics and Settings get.
  */
+import { isReservedSlug } from "@dilna/shared";
+
 export type Route =
 	| { kind: "home" }
 	| { kind: "metrics" }
@@ -36,15 +38,6 @@ export type Route =
 	| { kind: "skills" }
 	| { kind: "orchestrator"; sessionId: string | null }
 	| { kind: "repo"; repoSlug: string; sessionId: string | null };
-
-/** Top-level segments claimed by standalone views, and therefore never
- * interpretable as a repo slug. */
-const RESERVED_SEGMENTS = new Set([
-	"metrics",
-	"settings",
-	"skills",
-	"orchestrator",
-]);
 
 export function parseRoute(pathname: string): Route {
 	const [first, second] = pathname.split("/").filter(Boolean);
@@ -80,10 +73,9 @@ export function routePath(route: Route): string {
 
 /** A repo slug that would be shadowed by a standalone view's path can't be
  * addressed as `/<slug>`; callers fall back to `/` rather than pushing a URL
- * that would parse back as Metrics/Settings/Orchestrator on reload. */
-export function isReservedSlug(slug: string): boolean {
-	return RESERVED_SEGMENTS.has(slug);
-}
+ * that would parse back as Metrics/Settings/Orchestrator on reload. The rule
+ * itself is shared — see `isReservedSlug` in `@dilna/shared`. */
+export { isReservedSlug };
 
 /**
  * The Session a `?session=<id>` query parameter asks for, or null.

@@ -1,4 +1,8 @@
-import { type Attachment, MAX_ATTACHMENTS_PER_MESSAGE } from "@dilna/shared";
+import {
+	type Attachment,
+	attachmentKindFor,
+	MAX_ATTACHMENTS_PER_MESSAGE,
+} from "@dilna/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api/client";
 
@@ -23,6 +27,22 @@ import { api } from "@/api/client";
  * one — enforced client-side too so the user is stopped at the picker rather
  * than at a rejected send. */
 export const MAX_ATTACHMENTS = MAX_ATTACHMENTS_PER_MESSAGE;
+
+/**
+ * Whether a picked file gets a local thumbnail in the tray.
+ *
+ * Uses the shared {@link attachmentKindFor} rather than a loose
+ * `type.startsWith("image/")` test, so the tray agrees with what the server
+ * will make of the same file. The two had drifted: the server's allow-list
+ * deliberately calls `image/heic` (and `image/tiff`, `image/svg+xml`) a
+ * *document*, because no vision-capable Provider dilna targets accepts them —
+ * so the composer showed a thumbnail the message then rendered as a file
+ * card. Exported (rather than inlined at its one call site) so the rule is
+ * testable without mounting the hook.
+ */
+export function previewsInline(mimeType: string): boolean {
+	return attachmentKindFor(mimeType) === "image";
+}
 
 export type PendingAttachment = {
 	/** Client-minted, stable for the entry's whole life — see the module
@@ -98,7 +118,7 @@ export function usePendingAttachments(sessionId: string) {
 			const room = Math.max(0, MAX_ATTACHMENTS - pendingCount.current);
 			if (room === 0) return;
 			const accepted = list.slice(0, room).map((file) => {
-				const isImage = file.type.startsWith("image/");
+				const isImage = previewsInline(file.type);
 				const previewUrl = isImage ? URL.createObjectURL(file) : undefined;
 				if (previewUrl) objectUrls.current.add(previewUrl);
 				return {

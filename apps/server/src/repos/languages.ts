@@ -1,67 +1,8 @@
-import type { LanguageStat } from "@dilna/shared";
+import { type LanguageStat, languageForExtension } from "@dilna/shared";
 
-/**
- * Extension → language map for the repo stats endpoint. Deliberately a small
- * curated list rather than a linguist port: only extensions that clearly
- * identify a programming language count toward the breakdown, so docs,
- * config, lockfiles, images etc. never skew it (GitHub's linguist makes the
- * same call by marking those as documentation/data).
- */
-const EXTENSION_LANGUAGES: Record<string, string> = {
-	ts: "TypeScript",
-	tsx: "TypeScript",
-	mts: "TypeScript",
-	cts: "TypeScript",
-	js: "JavaScript",
-	jsx: "JavaScript",
-	mjs: "JavaScript",
-	cjs: "JavaScript",
-	py: "Python",
-	rs: "Rust",
-	go: "Go",
-	rb: "Ruby",
-	php: "PHP",
-	java: "Java",
-	c: "C",
-	h: "C",
-	cc: "C++",
-	cpp: "C++",
-	cxx: "C++",
-	hpp: "C++",
-	cs: "C#",
-	swift: "Swift",
-	kt: "Kotlin",
-	kts: "Kotlin",
-	dart: "Dart",
-	ex: "Elixir",
-	exs: "Elixir",
-	erl: "Erlang",
-	hs: "Haskell",
-	lua: "Lua",
-	zig: "Zig",
-	scala: "Scala",
-	clj: "Clojure",
-	sh: "Shell",
-	bash: "Shell",
-	zsh: "Shell",
-	fish: "Shell",
-	html: "HTML",
-	css: "CSS",
-	scss: "CSS",
-	less: "CSS",
-	vue: "Vue",
-	svelte: "Svelte",
-	sql: "SQL",
-	r: "R",
-	jl: "Julia",
-	nim: "Nim",
-	ml: "OCaml",
-	fs: "F#",
-	tf: "HCL",
-	proto: "Protocol Buffers",
-	yaml: "YAML",
-	yml: "YAML",
-};
+// The extension→language map lives in `packages/shared` (see languages.ts
+// there): the *names* are a contract both sides need, since the web looks each
+// one up for a colour and an icon.
 
 /** Generated lockfiles whose extension is otherwise recognized (YAML/JSON
  * variants) — huge and machine-written, they'd dominate the byte share and
@@ -93,7 +34,7 @@ export function languagesFromFiles(files: TreeFile[]): LanguageStat[] {
 		if (IGNORED_BASENAMES.has(base)) continue;
 		const dot = base.lastIndexOf(".");
 		if (dot <= 0) continue; // no extension, or a dotfile like `.gitignore`
-		const language = EXTENSION_LANGUAGES[base.slice(dot + 1).toLowerCase()];
+		const language = languageForExtension(base.slice(dot + 1));
 		if (!language || file.size <= 0) continue;
 		bytesByLanguage.set(
 			language,

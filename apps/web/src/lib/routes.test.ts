@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-	isReservedSlug,
 	parseRoute,
 	type Route,
 	routePath,
@@ -78,19 +77,6 @@ describe("routePath", () => {
 		for (const [route, path] of cases) {
 			expect(parseRoute(path)).toEqual(route);
 		}
-	});
-});
-
-describe("isReservedSlug", () => {
-	it("flags slugs that a standalone view's path would shadow", () => {
-		expect(isReservedSlug("metrics")).toBe(true);
-		expect(isReservedSlug("settings")).toBe(true);
-		expect(isReservedSlug("orchestrator")).toBe(true);
-	});
-
-	it("leaves ordinary repo slugs alone", () => {
-		expect(isReservedSlug("dilna")).toBe(false);
-		expect(isReservedSlug("my-metrics")).toBe(false);
 	});
 });
 
