@@ -84,3 +84,21 @@ export function routePath(route: Route): string {
 export function isReservedSlug(slug: string): boolean {
 	return RESERVED_SEGMENTS.has(slug);
 }
+
+/**
+ * The Session a `?session=<id>` query parameter asks for, or null.
+ *
+ * A push notification's tap target is `/?session=<id>` (see the service
+ * worker's `notificationclick`) — the notification is raised when no tab is
+ * open, so it cannot name a path that depends on state the page hasn't loaded
+ * yet. The query parameter is therefore a *request* to select a Session, and
+ * only the app can honour it once its repo/session lists have arrived; that
+ * is why this returns an id rather than a `Route`.
+ *
+ * A pure function over the raw search string so the parsing is testable
+ * without a `window`.
+ */
+export function sessionIdFromSearch(search: string): string | null {
+	const id = new URLSearchParams(search).get("session");
+	return id ? id : null;
+}

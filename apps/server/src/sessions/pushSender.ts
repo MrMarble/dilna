@@ -1,3 +1,4 @@
+import { type PushPayload, turnCompleteNotification } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { getDb } from "../db/index";
 import { pushSubscriptions, pushVapidKeys } from "../db/schema";
@@ -7,7 +8,6 @@ import {
 	encryptPayload,
 	endpointFingerprint,
 	generateVapidKeys,
-	notificationTag,
 	type VapidKeypair,
 } from "./webPush";
 
@@ -206,36 +206,6 @@ const defaultTransport: PushTransport = async (endpoint, init) =>
 	});
 
 /**
- * Whether a status transition represents a completed turn worth notifying
- * about — the server-side twin of `useSessionNotifications`'s client rule.
- *
- * Only a transition *out of* an active phase into `idle` counts.
- * `transitionStatus` fires for every status write, so without the `previous`
- * check an `idle → idle` re-write (stopping an already-stopped session, boot
- * recovery) would notify about a turn that never ran.
- *
- * `crashed` deliberately doesn't notify: it's already conspicuous in the
- * sidebar, and "Agent finished the turn." would misdescribe it.
- */
-export function isTurnCompletion(
-	previous: string | undefined,
-	next: string,
-): boolean {
-	if (next !== "idle") return false;
-	return (
-		previous === "working" || previous === "starting" || previous === "stopping"
-	);
-}
-
-export type PushPayload = {
-	title: string;
-	body: string;
-	/** Which session to open when the notification is tapped. */
-	sessionId: string;
-	tag: string;
-};
-
-/**
  * Deliver one payload to one subscription.
  *
  * Returns `"gone"` when the push service reports the subscription is dead
@@ -305,12 +275,10 @@ export async function notifyTurnComplete(
 	const subscriptions = listSubscriptions();
 	if (subscriptions.length === 0) return;
 
-	const payload: PushPayload = {
-		title: `dilna · ${sessionTitle}`,
-		body: "Agent finished the turn.",
-		sessionId,
-		tag: notificationTag(sessionId),
-	};
+	const payload: PushPayload = turnCompleteNotification({
+		id: sessionId,
+		title: sessionTitle,
+	});
 
 	const results = await Promise.all(
 		subscriptions.map(async (subscription) => {

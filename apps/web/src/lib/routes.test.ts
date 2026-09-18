@@ -4,6 +4,7 @@ import {
 	parseRoute,
 	type Route,
 	routePath,
+	sessionIdFromSearch,
 } from "@/lib/routes";
 
 describe("parseRoute", () => {
@@ -90,5 +91,21 @@ describe("isReservedSlug", () => {
 	it("leaves ordinary repo slugs alone", () => {
 		expect(isReservedSlug("dilna")).toBe(false);
 		expect(isReservedSlug("my-metrics")).toBe(false);
+	});
+});
+
+describe("sessionIdFromSearch", () => {
+	it("reads the session id a push notification's tap target carries", () => {
+		expect(sessionIdFromSearch("?session=sess-42")).toBe("sess-42");
+	});
+
+	it("returns null when absent or empty", () => {
+		expect(sessionIdFromSearch("")).toBeNull();
+		expect(sessionIdFromSearch("?other=1")).toBeNull();
+		expect(sessionIdFromSearch("?session=")).toBeNull();
+	});
+
+	it("decodes an escaped id, as the service worker encodes it", () => {
+		expect(sessionIdFromSearch("?session=a%2Fb")).toBe("a/b");
 	});
 });

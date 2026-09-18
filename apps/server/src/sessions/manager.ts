@@ -18,6 +18,7 @@ import type {
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
+import { isTurnCompletion } from "@dilna/shared";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
@@ -75,7 +76,7 @@ import {
 } from "./liveTurn";
 import * as messageQueue from "./messageQueue";
 import * as messageStore from "./messageStore";
-import { isTurnCompletion, notifyTurnComplete } from "./pushSender";
+import { notifyTurnComplete } from "./pushSender";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
 import {
 	defaultSessionTitle,

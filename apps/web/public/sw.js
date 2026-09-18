@@ -10,21 +10,40 @@
  * `new Notification()` constructor at all — `showNotification()` on a service
  * worker registration is the only way to raise a notification there, and the
  * only way to raise one when no tab is running.
+ *
+ * Type-checked as its own project (`tsconfig.sw.json`): the payload this
+ * decodes is the server's `PushPayload`, and the field names are the contract
+ * between them. Before it was checked, renaming `sessionId` here or there was
+ * a green build on both sides and a notification tap that went nowhere.
+ *
+ * @ts-check
  */
 
-self.addEventListener("install", () => {
+/** @typedef {import("@dilna/shared/notification").PushPayload} PushPayload */
+
+// `self` is a `ServiceWorkerGlobalScope` here, but the `WebWorker` lib alone
+// doesn't model the service-worker *events* (`PushEvent`, `NotificationEvent`)
+// or `self.registration`. The handlers' event types are therefore annotated
+// explicitly rather than inferred — which is also what makes the payload
+// contract below checkable.
+const sw = /** @type {ServiceWorkerGlobalScope} */ (
+	/** @type {unknown} */ (self)
+);
+
+sw.addEventListener("install", () => {
 	// Take over immediately rather than waiting for existing tabs to close;
 	// there is no cached state that a version skew could corrupt.
-	self.skipWaiting();
+	sw.skipWaiting();
 });
 
-self.addEventListener("activate", (event) => {
-	event.waitUntil(self.clients.claim());
+sw.addEventListener("activate", (event) => {
+	event.waitUntil(sw.clients.claim());
 });
 
-self.addEventListener("push", (event) => {
+sw.addEventListener("push", (event) => {
 	if (!event.data) return;
 
+	/** @type {PushPayload} */
 	let payload;
 	try {
 		payload = event.data.json();
@@ -37,7 +56,7 @@ self.addEventListener("push", (event) => {
 	// instead of stacking one per turn. See ADR-0029's deduplication note for
 	// why the in-page path intentionally uses the same tag.
 	event.waitUntil(
-		self.registration.showNotification(title, {
+		sw.registration.showNotification(title, {
 			body: payload.body || "",
 			tag: payload.tag,
 			data: { sessionId: payload.sessionId },
@@ -52,13 +71,13 @@ self.addEventListener("push", (event) => {
  * opening a duplicate one; only open a new window if nothing is running.
  * The session id rides along so the app can select the right session.
  */
-self.addEventListener("notificationclick", (event) => {
+sw.addEventListener("notificationclick", (event) => {
 	event.notification.close();
 	const sessionId = event.notification.data?.sessionId;
 	const target = sessionId ? `/?session=${encodeURIComponent(sessionId)}` : "/";
 
 	event.waitUntil(
-		self.clients
+		sw.clients
 			.matchAll({ type: "window", includeUncontrolled: true })
 			.then((clientList) => {
 				for (const client of clientList) {
@@ -69,7 +88,7 @@ self.addEventListener("notificationclick", (event) => {
 						return client.focus();
 					}
 				}
-				return self.clients.openWindow(target);
+				return sw.clients.openWindow(target);
 			}),
 	);
 });

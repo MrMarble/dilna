@@ -1,0 +1,28 @@
+{
+	// The service worker is type-checked as its own project because its
+	// globals (`self` as a `ServiceWorkerGlobalScope`, `PushEvent`,
+	// `NotificationEvent`, `clients`) are mutually exclusive with the DOM lib
+	// the app itself compiles against. Keeping it out of `tsconfig.json` means
+	// the app project stays DOM-only and this one stays worker-only.
+	//
+	// Its purpose: `apps/web/public/sw.js` consumes the push payload the
+	// server encrypts (ADR-0029). It used to be a static asset no TypeScript
+	// project ever saw, so renaming a field on the server — or in
+	// `@dilna/shared`'s `PushPayload` — was a green build on both sides and a
+	// silently broken notification. Checked here, that rename fails to
+	// compile.
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"lib": ["ES2023", "WebWorker"],
+		"noEmit": true,
+		"composite": false,
+		"allowJs": true,
+		"checkJs": true,
+		"types": [],
+		"paths": {
+			"@dilna/shared": ["../../packages/shared/src/index.ts"],
+			"@dilna/shared/*": ["../../packages/shared/src/*"]
+		}
+	},
+	"include": ["public/sw.js"]
+}

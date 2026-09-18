@@ -22,6 +22,11 @@ export * from "./liveMessage";
 // `formatAttachmentSize`/`MAX_ATTACHMENTS_PER_MESSAGE` both sides share
 // (issue #53), same as liveMessage.ts and skill.ts above/below.
 export * from "./messages";
+// Not type-only: notification.ts owns the turn-completion payload, its OS tag
+// and the rule that decides when one fires — composed by the server's push
+// sender, the web's in-page path, and the service worker that decodes the
+// push, so all three agree by construction rather than by comment.
+export * from "./notification";
 export type * from "./repo";
 export type * from "./session";
 // Not type-only like its neighbors: skill.ts also exports the

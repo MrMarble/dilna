@@ -284,3 +284,31 @@ describe("repo/session routing", () => {
 		await waitFor(() => expect(window.location.pathname).toBe("/"));
 	});
 });
+
+describe("notification deep link", () => {
+	// A push notification's tap target is `/?session=<id>` (the service
+	// worker's `notificationclick`), because a notification is raised when no
+	// tab is open and so cannot name a repo-scoped path. Before this worked,
+	// the query string was written by `sw.js` and read by nothing — tapping a
+	// notification always landed on home.
+	it("opens the Session a ?session= link names, once the list has loaded", async () => {
+		await renderApp(`/?session=${REPO_SESSION.id}`);
+
+		await waitFor(() =>
+			expect(window.location.pathname).toBe(`/dilna/${REPO_SESSION.id}`),
+		);
+		// The query string is consumed, not left to be re-applied on the next
+		// render (nor to linger in the address bar).
+		expect(window.location.search).toBe("");
+	});
+
+	it("does not bounce to home for a Session it doesn't know about", async () => {
+		await renderApp("/?session=nonexistent");
+		// A brief settle: the resolution effect runs on every stream update, so
+		// an incorrect "unknown → home" fallback would have fired by now.
+		await waitFor(() =>
+			expect(within(sidebar()).getByText("main")).toBeInTheDocument(),
+		);
+		expect(window.location.pathname).toBe("/");
+	});
+});

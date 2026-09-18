@@ -197,11 +197,6 @@ export function encryptPayload(
 	]);
 }
 
-/** Stable per-payload identity, used only to give the OS a replace-key. */
-export function notificationTag(sessionId: string): string {
-	return `dilna:${sessionId}`;
-}
-
 /** Short, deterministic fingerprint of an endpoint for logging — the full
  * endpoint is a capability URL and must not be written to logs. */
 export function endpointFingerprint(endpoint: string): string {
