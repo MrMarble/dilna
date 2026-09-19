@@ -5,6 +5,7 @@
  * imports keep working; new code can import from either.
  */
 export {
+	makeArtefact,
 	makeAttachment,
 	makeRepo,
 	makeSession,

@@ -1,3 +1,4 @@
+import type { Artefact } from "./artefact";
 import type { Attachment } from "./messages";
 import type { Repo } from "./repo";
 import type { SessionView } from "./session";
@@ -65,8 +66,7 @@ export function makeRepo(overrides: Partial<Repo> = {}): Repo {
 	};
 }
 
-/** An image an Attachment-carrying test can hang off `sess-1`. */
-export function makeAttachment(
+/** An image an Attachment-carrying test can hang off `sess-1`. */ export function makeAttachment(
 	overrides: Partial<Attachment> = {},
 ): Attachment {
 	return {
@@ -77,6 +77,29 @@ export function makeAttachment(
 		size: 2048,
 		kind: "image",
 		path: "/data/attachments/sess-1/abc-diagram.png",
+		createdAt: 1,
+		...overrides,
+	};
+}
+
+/** A published HTML Artefact a panel/viewer test can hang off `sess-1`.
+ *
+ * Defaults to `"html"` because that is the kind with the most moving parts
+ * (it is the only one rendered in a sandboxed iframe, and the only one with no
+ * raw toggle). Tests for the other kinds pass `{ kind: "markdown" }` etc. —
+ * worth doing explicitly rather than through a second factory, since the
+ * `kind`/`mimeType` pair has to stay consistent by hand and a wrong pair is
+ * exactly the bug the real publish path derives rather than accepts. */
+export function makeArtefact(overrides: Partial<Artefact> = {}): Artefact {
+	return {
+		id: "art-1",
+		sessionId: "sess-1",
+		title: "Coverage report",
+		filename: "report.html",
+		sourcePath: "report.html",
+		kind: "html",
+		mimeType: "text/html; charset=utf-8",
+		size: 4096,
 		createdAt: 1,
 		...overrides,
 	};

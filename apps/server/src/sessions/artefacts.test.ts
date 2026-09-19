@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ARTEFACT_MAX_BYTES } from "@dilna/shared";
+import { ARTEFACT_MAX_BYTES, type ArtefactKind } from "@dilna/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { closeDb } from "../db";
 import {
@@ -131,6 +131,42 @@ describe("publishArtefact", () => {
 	});
 });
 
+/**
+ * The extension→kind/MIME mapping (ADR-0043). Table-driven because the value
+ * under test *is* the table: one case per accepted extension is what keeps
+ * `PUBLISHABLE` and the renderers in `apps/web/src/components/artefact-render`
+ * agreeing about which kinds exist, and a missing entry here is a type error
+ * over there.
+ */
+describe("publishArtefact kinds", () => {
+	const cases: Array<[string, ArtefactKind, string]> = [
+		["report.html", "html", "text/html; charset=utf-8"],
+		["report.htm", "html", "text/html; charset=utf-8"],
+		["notes.md", "markdown", "text/markdown; charset=utf-8"],
+		["notes.markdown", "markdown", "text/markdown; charset=utf-8"],
+		["paper.pdf", "pdf", "application/pdf"],
+		["chart.png", "image", "image/png"],
+		["chart.jpg", "image", "image/jpeg"],
+		["chart.jpeg", "image", "image/jpeg"],
+		["chart.gif", "image", "image/gif"],
+		["chart.webp", "image", "image/webp"],
+	];
+
+	it.each(cases)("maps %s to kind %s", (filename, kind, mimeType) => {
+		const rel = inWorktree(filename, "content");
+		const artefact = publish(`s-kind-${kind}`, rel);
+		expect(artefact.kind).toBe(kind);
+		expect(artefact.mimeType).toBe(mimeType);
+	});
+
+	it("matches the extension case-insensitively", () => {
+		// Agents emit `REPORT.HTML` often enough that a case-sensitive map is a
+		// papercut with no upside.
+		const rel = inWorktree("REPORT.HTML", "<p>x</p>");
+		expect(publish("s-kind-upper", rel).kind).toBe("html");
+	});
+});
+
 describe("publishArtefact rejections", () => {
 	it("rejects a path outside the worktree", () => {
 		const outside = path.join(dataDir, "outside.html");
@@ -157,9 +193,24 @@ describe("publishArtefact rejections", () => {
 		);
 	});
 
-	it("rejects a non-HTML file", () => {
+	it("rejects a file type dilna cannot render", () => {
 		const rel = inWorktree("notes.txt", "plain");
 		expect(() => publish("s-reject", rel)).toThrow(/only .* can be published/);
+	});
+
+	/**
+	 * SVG is the one omission that is a *decision* rather than a gap (ADR-0043):
+	 * it is executable document markup wearing an image extension, and it would
+	 * render in an `img` context where the HTML sandbox cannot be applied. If this
+	 * test ever fails because someone added `".svg"` to `PUBLISHABLE`, the serve
+	 * route's per-kind header split needs revisiting in the same commit.
+	 */
+	it("rejects SVG, which is markup rather than an image", () => {
+		const rel = inWorktree(
+			"chart.svg",
+			'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>',
+		);
+		expect(() => publish("s-reject", rel)).toThrow(ArtefactRejectedError);
 	});
 
 	it("rejects a missing file", () => {

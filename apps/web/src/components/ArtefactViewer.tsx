@@ -1,6 +1,10 @@
 import type { Artefact } from "@dilna/shared";
-import { ExternalLink } from "lucide-react";
+import { artefactKindLabel } from "@dilna/shared";
+import { Code2, ExternalLink, Eye } from "lucide-react";
+import { useState } from "react";
 import { artefactUrl } from "@/api/client";
+import { ArtefactBody, useArtefactText } from "@/components/artefact-render";
+import { Button } from "@/components/ui/button";
 import {
 	Dialog,
 	DialogContent,
@@ -9,20 +13,18 @@ import {
 } from "@/components/ui/dialog";
 
 /**
- * Full-screen preview of a published Artefact (issue #194, ADR-0032).
+ * Full-screen preview of a published Artefact (issue #194/ADR-0032 for HTML,
+ * ADR-0043 for markdown/PDF/image).
  *
- * The content is **model-generated HTML**, so it renders inside a
- * `<iframe sandbox>` with no tokens granted: no scripts, no forms, no
- * same-origin access, no top-level navigation. That is one of two independent
- * layers — the server also serves the bytes under a restrictive
- * `Content-Security-Policy` (see the artefacts route and ADR-0032). Either
- * alone would be sufficient today; both exist because the failure mode of
- * getting this wrong is an Agent-authored page with full access to dilna's
- * unauthenticated API on the user's own origin.
+ * This component owns the dialog *chrome* — header, kind badge, raw toggle,
+ * escape hatch — and delegates the body to `ArtefactBody`, which dispatches per
+ * kind. The security reasoning for each renderer lives there and on the serve
+ * route; what matters at this level is that the dialog never decides how bytes
+ * are shown, only which affordances surround them.
  *
- * Do not add `allow-scripts` to make a report "work properly". A report that
- * needs JavaScript is out of scope by decision, not by oversight — adding it
- * alongside `allow-same-origin` re-opens exactly the hole the sandbox closes.
+ * A markdown artefact gets a rendered/raw toggle. The fetch is owned *here*
+ * rather than by either mode, because the two swap on every toggle and the
+ * bytes are immutable — see `useArtefactText`.
  */
 export function ArtefactViewer({
 	sessionId,
@@ -34,8 +36,26 @@ export function ArtefactViewer({
 	artefact: Artefact | null;
 	onClose: () => void;
 }) {
+	const [raw, setRaw] = useState(false);
+	// Both hooks run before the early return below, so `useArtefactText` is
+	// written to tolerate `null` rather than forcing a conditional hook.
+	const text = useArtefactText(sessionId, artefact);
+
+	// Reset raw mode whenever the artefact changes: raw carried over to a
+	// *different* markdown file is a state the user never asked for. Done during
+	// render — React's documented "adjust state when a prop changes" pattern —
+	// rather than in an effect, which would paint one frame of the new artefact
+	// in the previous one's mode.
+	const [lastId, setLastId] = useState(artefact?.id);
+	if (lastId !== artefact?.id) {
+		setLastId(artefact?.id);
+		setRaw(false);
+	}
+
 	if (!artefact) return null;
 	const src = artefactUrl(sessionId, artefact.id);
+	const canToggleRaw = artefact.kind === "markdown";
+
 	return (
 		<Dialog open onOpenChange={(open) => !open && onClose()}>
 			<DialogContent className="flex h-[85vh] max-w-5xl flex-col gap-0 p-0 sm:max-w-5xl">
@@ -48,6 +68,30 @@ export function ArtefactViewer({
 							{artefact.sourcePath}
 						</p>
 					</div>
+					{canToggleRaw && (
+						<Button
+							variant="ghost"
+							size="sm"
+							onClick={() => setRaw((r) => !r)}
+							title={raw ? "Show rendered" : "Show raw source"}
+							aria-label={raw ? "Show rendered" : "Show raw source"}
+						>
+							{raw ? (
+								<>
+									<Eye className="size-4" />
+									Rendered
+								</>
+							) : (
+								<>
+									<Code2 className="size-4" />
+									Raw
+								</>
+							)}
+						</Button>
+					)}
+					<span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+						{artefactKindLabel(artefact.kind)}
+					</span>
 					<a
 						href={src}
 						target="_blank"
@@ -59,14 +103,14 @@ export function ArtefactViewer({
 						<ExternalLink className="size-4" />
 					</a>
 				</DialogHeader>
-				<iframe
+				<ArtefactBody
 					// Keyed by id so switching artefacts replaces the frame rather
 					// than reusing one whose document has already loaded.
 					key={artefact.id}
-					src={src}
-					title={artefact.title}
-					sandbox=""
-					className="min-h-0 flex-1 rounded-b-lg bg-white"
+					sessionId={sessionId}
+					artefact={artefact}
+					raw={raw}
+					text={text}
 				/>
 			</DialogContent>
 		</Dialog>

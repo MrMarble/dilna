@@ -31,6 +31,34 @@ const publishSchema = Type.Object({
 	),
 });
 
+/**
+ * The tool description, kept as a module constant because it is doing real
+ * work rather than being boilerplate: it is the *only* place the Agent learns
+ * that a published report runs no scripts and loads no remote assets.
+ *
+ * That constraint used to be stated as "keep reports self-contained with
+ * inline CSS", and an Agent reading it would still reach for a Tailwind CDN
+ * on about every other attempt — the phrase describes a *style*, while the
+ * failure is mechanical. A report that links `cdn.tailwindcss.com` renders as
+ * unstyled text with no error anywhere the Agent can see it, so the round
+ * trip that fixes it is long. Naming the concrete failure ("a CDN link
+ * silently does nothing") is what actually steers the model to `<style>` or a
+ * `<script>` tag it doesn't write in the first place.
+ *
+ * The kind list is interpolated from `PUBLISHABLE`'s keys in `artefacts.ts`
+ * rather than retyped, so the description cannot promise a type the publish
+ * path rejects.
+ */
+const PUBLISH_DESCRIPTION = [
+	"Publish a file from this worktree so the user can open and view it rendered in the dilna UI.",
+	"Use this whenever you have generated a report, dashboard, document, chart, or any file the user is meant to look at — writing the file alone only lets them read its source.",
+	"Supports .html/.htm, .md/.markdown, .pdf, and .png/.jpg/.jpeg/.gif/.webp. Markdown is rendered and can be toggled to its raw source; images render inline.",
+	// The two sentences that stop the most common silent failure.
+	"A published document runs NO JavaScript and loads NO remote assets: a `<script src>`, a CDN link (e.g. Tailwind), a remote font, or a remote image silently does nothing, and the user sees an unstyled or blank result. Put all CSS in a <style> block and inline any images as base64 data: URIs.",
+	"SVG cannot be published — inline it into an HTML artefact instead, which is sandboxed.",
+	"A published artefact is an immutable snapshot: publish again after regenerating, and the user keeps both versions to compare.",
+].join(" ");
+
 /** Injected rather than imported so this module doesn't reach into
  * `SessionManager` (the circular-import problem `OrchestratorDeps` solves the
  * same way). `onPublished` is what puts the artefact in the user's panel
@@ -47,8 +75,7 @@ export function createPublishArtefactTool(
 	return {
 		name: "dilna_publish_artefact",
 		label: "Publish artefact",
-		description:
-			"Publish an HTML file from this worktree so the user can open and view it rendered in the dilna UI. Use this whenever you have generated a report, dashboard, or any HTML document the user is meant to look at — writing the file alone only lets them read its source. A published artefact is an immutable snapshot: publish again after regenerating, and the user keeps both versions to compare. Only .html/.htm files can be published, and scripts do not run in the rendered view, so keep reports self-contained with inline CSS.",
+		description: PUBLISH_DESCRIPTION,
 		parameters: publishSchema,
 		execute: async (_toolCallId, params) => {
 			try {

@@ -29,7 +29,7 @@ The specific LLM a **Provider** serves — e.g. Claude Opus, DeepSeek-V3, Kimi K
 _Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
 
 **Artefact**:
-A file an **Agent** produced and explicitly *published* for the user to **open** — an HTML report today. An Artefact belongs to exactly one **Session** and is stored outside every **Worktree**; see ADR-0032. Distinct from an Agent-sent **Attachment**, which the user *sees inline in the conversation* rather than opens from a panel: an Agent that wants to show a picture sends an image, an Agent that wants to hand over a document publishes an Artefact. An Artefact is an immutable *copy* taken at publish time, not a pointer at a Worktree file: republishing a regenerated report mints a second Artefact so the two versions can be compared. A file the Agent merely wrote into its Worktree is not an Artefact until it publishes it.
+A file an **Agent** produced and explicitly *published* for the user to **open** — an HTML report, markdown document, PDF or image. An Artefact belongs to exactly one **Session** and is stored outside every **Worktree**; see ADR-0032 and ADR-0043. Distinct from an Agent-sent **Attachment**, which the user *sees inline in the conversation* rather than opens from a panel: an Agent that wants to show a picture sends an image, an Agent that wants to hand over a document publishes an Artefact. An Artefact is an immutable *copy* taken at publish time, not a pointer at a Worktree file: republishing a regenerated report mints a second Artefact so the two versions can be compared. A file the Agent merely wrote into its Worktree is not an Artefact until it publishes it.
 _Avoid_: output, export, report (a report is one *kind* of Artefact), asset
 
 **Queued Message**:

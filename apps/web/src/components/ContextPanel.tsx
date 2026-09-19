@@ -11,7 +11,6 @@ import {
 	ExternalLink,
 	FileDiff,
 	FilePlus,
-	FileText,
 	FileX,
 	GitCommitHorizontal,
 	PanelRightClose,
@@ -20,6 +19,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { api, artefactUrl } from "@/api/client";
 import { ArtefactViewer } from "@/components/ArtefactViewer";
+import { ARTEFACT_KIND_ICONS } from "@/components/artefact-render";
 import { useSessionContextUsage } from "@/hooks/useSessionContextUsage";
 import { useSessionUsage } from "@/hooks/useSessionUsage";
 import {
@@ -235,41 +235,45 @@ function ArtefactsSection({
 			}
 		>
 			<ul className="space-y-0.5">
-				{artefacts.map((artefact) => (
-					<li key={artefact.id}>
-						<div className="group flex items-center gap-2 rounded-md px-1 py-1 hover:bg-sidebar-accent">
-							<button
-								type="button"
-								onClick={() => onOpen(artefact)}
-								className="flex min-w-0 flex-1 items-center gap-2 text-left"
-								title={`Open ${artefact.title}`}
-							>
-								<FileText className="size-4 shrink-0 text-muted-foreground" />
-								<span className="min-w-0 flex-1">
-									<span className="block truncate text-sm">
-										{artefact.title}
+				{artefacts.map((artefact) => {
+					const KindIcon = ARTEFACT_KIND_ICONS[artefact.kind];
+					return (
+						<li key={artefact.id}>
+							<div className="group flex items-center gap-2 rounded-md px-1 py-1 hover:bg-sidebar-accent">
+								<button
+									type="button"
+									onClick={() => onOpen(artefact)}
+									className="flex min-w-0 flex-1 items-center gap-2 text-left"
+									title={`Open ${artefact.title}`}
+								>
+									<KindIcon className="size-4 shrink-0 text-muted-foreground" />
+									<span className="min-w-0 flex-1">
+										<span className="block truncate text-sm">
+											{artefact.title}
+										</span>
+										<span className="block truncate text-xs text-muted-foreground">
+											{artefact.sourcePath} ·{" "}
+											{formatArtefactSize(artefact.size)}
+										</span>
 									</span>
-									<span className="block truncate text-xs text-muted-foreground">
-										{artefact.sourcePath} · {formatArtefactSize(artefact.size)}
-									</span>
-								</span>
-							</button>
-							{/* Escape hatch from the sandboxed iframe: a report that
+								</button>
+								{/* Escape hatch from the sandboxed iframe: a report that
 							    wants the full window, or to be bookmarked. Same
 							    hardened response either way — the CSP travels with it. */}
-							<a
-								href={artefactUrl(sessionId, artefact.id)}
-								target="_blank"
-								rel="noreferrer"
-								title="Open in a new tab"
-								aria-label={`Open ${artefact.title} in a new tab`}
-								className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
-							>
-								<ExternalLink className="size-3.5" />
-							</a>
-						</div>
-					</li>
-				))}
+								<a
+									href={artefactUrl(sessionId, artefact.id)}
+									target="_blank"
+									rel="noreferrer"
+									title="Open in a new tab"
+									aria-label={`Open ${artefact.title} in a new tab`}
+									className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover:opacity-100"
+								>
+									<ExternalLink className="size-3.5" />
+								</a>
+							</div>
+						</li>
+					);
+				})}
 			</ul>
 		</SectionCard>
 	);
