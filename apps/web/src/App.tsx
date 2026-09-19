@@ -189,19 +189,18 @@ export function App() {
 		clearRequestedSession,
 	]);
 
+	// Clicking a repo in the sidebar selects it and expands its Session list —
+	// it deliberately does *not* open any Session, and (on mobile) deliberately
+	// leaves the sheet open. Auto-jumping to the most recently active Session
+	// meant the sheet closed on the same tap that expanded the repo, so a user
+	// with several Sessions had to reopen the drawer and hunt for the one they
+	// actually wanted. Picking a Session is now the only thing that commits to
+	// one, and it's the only thing that dismisses the drawer.
 	const handleSelectRepo = useCallback(
 		(id: string) => {
-			const latest = Object.values(sessionsById)
-				.filter((s) => s.repoId === id)
-				.sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0];
-			navigate(repoRoute(id, latest?.id ?? null));
-			// Only close the mobile sheet when the repo has a session to land
-			// on — otherwise closing dumps the user on an empty state with no
-			// visible "New session" affordance, forcing them to reopen the
-			// sheet just to tap the button that's already right here.
-			if (latest) mobileSheet.close();
+			navigate(repoRoute(id, null));
 		},
-		[sessionsById, repoRoute, navigate, mobileSheet.close],
+		[repoRoute, navigate],
 	);
 
 	const handleSelectSession = useCallback(
@@ -547,7 +546,7 @@ function RepoEmpty({ repo }: { repo: Repo }) {
 			</p>
 			<p className="mt-4 text-balance text-sm text-muted-foreground">
 				Click "New session" in the sidebar to start one, or pick an existing
-				session from the dropdown above.
+				session from its list.
 			</p>
 		</div>
 	);

@@ -453,13 +453,14 @@ function OrchestratorSection({
 }
 
 /**
- * Repos as a single-open accordion: clicking a repo selects it (which — per
- * App's handleSelectRepo — also jumps to its latest Session) and expands its
+ * Repos as a single-open accordion: clicking a repo selects it and expands its
  * Session submenu in place, collapsing whichever repo was expanded before.
- * Re-clicking the already-selected repo's row is a no-op rather than
- * re-running the "jump to latest" logic, so it doesn't clobber a Session the
- * user explicitly picked from the submenu. This replaces the old header
- * dropdown as the only way to switch Sessions (see ChatHeader).
+ * Selecting a repo does not open a Session (see App's handleSelectRepo) — the
+ * submenu's rows are the only way to open one, and on mobile opening a Session
+ * is what dismisses the sheet. Re-clicking the already-selected repo's row is a
+ * no-op rather than collapsing it, so the list stays put under the pointer.
+ * This replaces the old header dropdown as the only way to switch Sessions (see
+ * ChatHeader).
  */
 function ReposSection({
 	repos,
