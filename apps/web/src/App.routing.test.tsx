@@ -252,13 +252,13 @@ describe("Metrics and Settings as real routes", () => {
 			// The reported bug: with the view held in local state, clicking a
 			// repo in the sidebar did nothing *visible* at all — the URL moved
 			// but the page stayed up, and the only way out was its own back
-			// arrow. So assert on what's rendered, not just the URL.
+			// arrow. So assert on what's rendered, not just the URL. Selecting a
+			// repo now lands on the repo itself (`/dilna`), not one of its
+			// Sessions.
 			await user.click(
 				within(sidebar()).getByRole("button", { name: /dilna/ }),
 			);
-			await waitFor(() =>
-				expect(window.location.pathname).toBe("/dilna/sess-1"),
-			);
+			await waitFor(() => expect(window.location.pathname).toBe("/dilna"));
 			expect(pageHeading(view)).not.toBeInTheDocument();
 		});
 
