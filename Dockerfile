@@ -214,19 +214,38 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 	&& rm -rf /var/lib/apt/lists/*
 
 # codegraph: pre-indexes each Session's Worktree into a local code graph
-# (symbols, call graphs, imports) that pi.ts's sandboxed bash tool queries via
-# the `codegraph` CLI instead of grep-only exploration. Wired in as a plain
-# CLI rather than its documented MCP server: pi-agent-core has no MCP client,
-# and pi-coding-agent's README states this is deliberate ("No MCP. Build CLI
-# tools with READMEs, or build an extension that adds MCP support"). Installed
-# via npm rather than the project's shell installer script, since npm's global
-# bin dir is already on PATH from the base node image and the installer
-# script's own target directory isn't documented. `codegraph init --yes`
-# itself is NOT run here — it runs per-Worktree at Session creation
+# (symbols, call graphs, imports) that a Session's Agent queries for
+# "who calls X" / "what does X touch" questions instead of grepping.
+#
+# Wrapped as a native tool (apps/server/src/agents/codegraphTool.ts,
+# ADR-0044) rather than exposed as its documented MCP server: pi-agent-core
+# has no MCP client, and pi-coding-agent's README states this is deliberate
+# ("No MCP. Build CLI tools with READMEs, or build an extension that adds
+# MCP support"). The tool shells out to `codegraph explore`, which prints the
+# same bytes as upstream's single MCP tool.
+#
+# Installed via npm rather than the project's shell installer script, since
+# npm's global bin dir is already on PATH from the base node image and the
+# installer script's own target directory isn't documented. `codegraph init
+# --yes` itself is NOT run here — it runs per-Worktree at Session creation
 # (SessionManager.create, apps/server/src/sessions/manager.ts) since the
 # graph is derived from each Worktree's own checked-out branch, not from the
 # image.
-RUN npm install -g @colbymchenry/codegraph@1.6.0
+#
+# The version is pinned, and the two lines below enforce the pin at build
+# time: this is a subprocess whose CLI surface a type checker cannot see, and
+# upstream ships roughly a release a week (46 versions, 1.6.0 as of
+# 2026-09). `--version` catches an install that silently resolved elsewhere;
+# `explore --help` catches a release that renamed the option the tool passes.
+# Renaming `--max-files` or dropping `explore` degrades every Session to
+# grep silently — the tool would just return "use grep/read instead" with
+# nothing in the logs — so it is worth failing the image build for.
+# codegraphCli.test.ts is the run-time half of this guard (skipped wherever
+# the binary is absent, e.g. a laptop running `pnpm test`).
+ARG CODEGRAPH_VERSION=1.6.0
+RUN npm install -g "@colbymchenry/codegraph@${CODEGRAPH_VERSION}" \
+	&& test "$(codegraph --version)" = "${CODEGRAPH_VERSION}" \
+	&& codegraph explore --help > /dev/null
 
 # mise (ADR-0012): the static binary built in the build stage, copied rather
 # than re-running the installer here. Runtime has a full compile toolchain

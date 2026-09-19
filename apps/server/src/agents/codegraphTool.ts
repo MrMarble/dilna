@@ -125,7 +125,109 @@ const MAX_BUFFER_BYTES = 8 * 1024 * 1024;
  * result text instead of a thrown error.
  */
 function isMissingIndex(stderr: string): boolean {
-	return stderr.includes("CodeGraph isn't available here");
+	return stderr.includes(MISSING_INDEX_MARKER);
+}
+
+/** The exact sentence {@link isMissingIndex} keys on, named so the test that
+ * guards it against an upstream reword cannot drift from the check itself. */
+export const MISSING_INDEX_MARKER = "CodeGraph isn't available here";
+
+/**
+ * The result of probing the installed CLI's surface (see
+ * `codegraphCli.test.ts`). `available: false` means the binary could not be
+ * spawned at all — a laptop running `pnpm test` without codegraph on `PATH`,
+ * or a CI runner — which is *not* a failure: the tool is registered only when
+ * a Worktree has an index, and the binary only exists in the runtime image.
+ * Everything else is read from the binary itself and asserted against what
+ * `createCodegraphTool` actually invokes.
+ */
+export type CodegraphSurface =
+	| { available: false; reason: string }
+	| {
+			available: true;
+			version: string;
+			/** `explore --help`, for asserting the options the tool passes. */
+			exploreHelp: string;
+			/** Top-level `--help`, where `--no-color` is declared. */
+			rootHelp: string;
+			/** Whether a probe run of the *exact* argument shape
+			 * `createCodegraphTool` builds was accepted — see the surface probe. */
+			probeAccepted: boolean;
+			/** Whether an unindexed directory still produces
+			 * {@link MISSING_INDEX_MARKER} on stderr — the string the tool uses to
+			 * tell "not indexed" (routine) apart from "broken" (a real error). */
+			missingIndexMarker: boolean;
+	  };
+
+/**
+ * Probe the installed codegraph CLI for the surface this tool depends on.
+ *
+ * Exists because the dependency is a **pinned subprocess**, which is the one
+ * shape a type checker cannot see through: upstream ships roughly a release a
+ * week (46 versions, `1.6.0` latest as of 2026-09), and a renamed flag or a
+ * dropped subcommand would surface only as the tool returning "use grep/read
+ * instead" in a live Session — silently, and with nothing in the logs. This
+ * is what a test can assert against.
+ *
+ * `binary` is injectable so the caller can exercise the not-found path on a
+ * machine that does have codegraph installed.
+ */
+export async function verifyCodegraphSurface(
+	binary = "codegraph",
+	/** Directory the acceptance probe runs against. Only needs an index for
+	 * the success path to be observable; a lint failure (exit 2) already
+	 * proves the arguments parsed, which is the thing being asserted. */
+	probeDir = process.cwd(),
+): Promise<CodegraphSurface> {
+	const env = { ...process.env, NO_COLOR: "1" };
+	try {
+		const { stdout } = await execFileAsync(binary, ["--version"], { env });
+		const [root, explore, missing, probe] = await Promise.all([
+			execFileAsync(binary, ["--help"], { env }),
+			execFileAsync(binary, ["explore", "--help"], { env }),
+			// Deliberately against a directory with no index: this is the one
+			// response shape the tool branches on, and the only branch whose
+			// wording upstream owns.
+			execFileAsync(binary, ["explore", "anything"], { cwd: "/" })
+				.then(() => ({ stdout: "", stderr: "" }))
+				.catch((err: { stdout?: string; stderr?: string }) => ({
+					stdout: err.stdout ?? "",
+					stderr: err.stderr ?? "",
+				})),
+			// The acceptance probe: byte-for-byte the argv `execute()` builds,
+			// run in a directory that may or may not be indexed. Exit 2 is
+			// commander rejecting an unknown option — anything else means the
+			// shape parsed.
+			execFileAsync(
+				binary,
+				[
+					"explore",
+					"probe",
+					"--no-color",
+					"--path",
+					probeDir,
+					"--max-files",
+					"1",
+				],
+				{ cwd: probeDir, env },
+			)
+				.then(() => 0)
+				.catch((err: { code?: number }) => err.code ?? 1),
+		]);
+		return {
+			available: true,
+			version: stdout.trim().replace(/^v/, ""),
+			rootHelp: root.stdout,
+			exploreHelp: explore.stdout,
+			probeAccepted: probe !== 2,
+			missingIndexMarker: (missing.stderr ?? "").includes(MISSING_INDEX_MARKER),
+		};
+	} catch (err) {
+		return {
+			available: false,
+			reason: err instanceof Error ? err.message : String(err),
+		};
+	}
 }
 
 /**

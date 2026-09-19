@@ -184,4 +184,14 @@ somehow has no index but wants to check (`codegraph status`, `codegraph files`).
   cold start on the first call).
 - The tool's shape is upstream's to change: it is a subprocess against
   `@colbymchenry/codegraph@1.6.0`, pinned in the Dockerfile, and a breaking CLI
-  change there is a dilna bug.
+  change there is a dilna bug. Because that failure is *silent* — `execute()`
+  returns "use grep/read instead" and nothing reaches the logs — the pin is
+  enforced rather than trusted: the Dockerfile asserts
+  `codegraph --version` equals `ARG CODEGRAPH_VERSION` and that `explore`
+  still parses at build time, a dedicated `codegraph-surface` CI job installs
+  that same pinned version (read out of the Dockerfile, so a bump cannot leave
+  the job testing something nothing ships) and runs
+  `codegraphCli.test.ts` against the real binary, and that test skips cleanly
+  wherever codegraph isn't installed. Upstream ships roughly a release a week
+  (46 versions as of 2026-09), so this is the difference between a red build
+  and a feature that quietly stops being used.
