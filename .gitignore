@@ -14,5 +14,10 @@ coverage/
 /data/
 /brag-output/
 .playwright-mcp/
+# CodeGraph's local index (`.codegraph/codegraph.db`, ~14MB). It ships its own
+# `.gitignore` that keeps the database out but still un-ignores that file, so
+# the directory kept reappearing as an untracked entry. Machine-local build
+# output, same category as the caches above.
+.codegraph/
 /apps/web/test-results/
 /apps/web/playwright-report/

@@ -33,19 +33,39 @@ import { artefacts as artefactsTable } from "../db/schema";
  */
 
 /**
- * MIME type per publishable extension — and, by being the only source of
- * truth for what's publishable at all, the enforcement point for ADR-0032's
- * HTML-only v1 scope.
+ * MIME type per publishable extension — and, by being the only source of truth
+ * for what's publishable at all, the enforcement point for which artefacts
+ * dilna accepts.
  *
  * Narrow on purpose: an Artefact that the UI cannot render is worse than a
- * refused publish, because the failure surfaces to the user as an empty
- * panel row long after the turn that produced it. Widening this map is the
- * whole of "support another artefact type" server-side — but see ADR-0032's
- * CSP note before adding anything that executes.
+ * refused publish, because the failure surfaces to the user as an empty panel
+ * row long after the turn that produced it. Widening this map is the whole of
+ * "support another artefact type" server-side — but see the CSP note on the
+ * serve route before adding anything that executes.
+ *
+ * **Not included, deliberately** (ADR-0043):
+ * - `.svg` — executable document markup wearing an image extension. Serving it
+ *   inline is the same hazard as HTML (script, external fetch, `<foreignObject>`)
+ *   with none of HTML's sandboxing, and it renders in an `img`/`embed` context
+ *   where the iframe sandbox cannot be applied. An agent that wants to publish
+ *   vector art should inline it into an HTML artefact, which *is* sandboxed.
+ * - `.htm` is accepted alongside `.html` for the same reason `<table>` is:
+ *   agents emit both and rejecting one is a papercut with no upside.
  */
 const PUBLISHABLE: Record<string, { kind: ArtefactKind; mimeType: string }> = {
 	".html": { kind: "html", mimeType: "text/html; charset=utf-8" },
 	".htm": { kind: "html", mimeType: "text/html; charset=utf-8" },
+	// Served as `text/markdown` and rendered client-side by the web app. The
+	// server never converts these bytes to HTML — see ADR-0043 for why that is
+	// the whole reason markdown is safe to accept from a model.
+	".md": { kind: "markdown", mimeType: "text/markdown; charset=utf-8" },
+	".markdown": { kind: "markdown", mimeType: "text/markdown; charset=utf-8" },
+	".pdf": { kind: "pdf", mimeType: "application/pdf" },
+	".png": { kind: "image", mimeType: "image/png" },
+	".jpg": { kind: "image", mimeType: "image/jpeg" },
+	".jpeg": { kind: "image", mimeType: "image/jpeg" },
+	".gif": { kind: "image", mimeType: "image/gif" },
+	".webp": { kind: "image", mimeType: "image/webp" },
 };
 
 /** Human-readable list for error messages, so a rejection tells the Agent

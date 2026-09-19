@@ -8,6 +8,7 @@ import {
 	type CommitsResponse,
 	commitsQuerySchema,
 	createSessionBodySchema,
+	isSandboxedKind,
 	type ListQueuedResponse,
 	type ListSessionsResponse,
 	listSessionsQuerySchema,
@@ -456,20 +457,37 @@ export function createSessionsRoute(deps: {
 	/**
 	 * Serve a published artefact's bytes — what the UI's iframe points at.
 	 *
-	 * **The header set here is load-bearing security, not hygiene.** The content
-	 * is model-generated HTML served from dilna's own origin, alongside an
-	 * unauthenticated `/api/*` surface. Without a restrictive CSP, a generated
-	 * report could `fetch('/api/sessions/...')` and read or mutate every Session
-	 * on the instance — the classic self-XSS shape, except the attacker-controlled
-	 * input is the Agent's own output. `sandbox` (no token) drops the response
-	 * into a unique opaque origin, so same-origin requests aren't possible even
-	 * if a script did run; `default-src 'none'` plus no `script-src` means none
-	 * does. `style-src 'unsafe-inline'` is the one allowance, because a
-	 * self-contained report is nearly always a `<style>` block — see ADR-0032 for
-	 * why interactivity is deliberately not supported here.
+	 * **The header set here is load-bearing security, not hygiene**, and it is
+	 * chosen per {@link ArtefactKind} (ADR-0032, ADR-0043). Two arms:
 	 *
-	 * Do not relax these without reading that ADR; a change that makes a report
-	 * "work properly" is how this becomes exploitable.
+	 * {@link isSandboxedKind} kinds are model-generated *HTML*: executable
+	 * document markup served from dilna's own origin, alongside an unauthenticated
+	 * `/api/*` surface. Without a restrictive CSP, a generated report could
+	 * `fetch('/api/sessions/...')` and read or mutate every Session on the
+	 * instance — the classic self-XSS shape, except the attacker-controlled input
+	 * is the Agent's own output. `sandbox` (no token) drops the response into a
+	 * unique opaque origin, so same-origin requests aren't possible even if a
+	 * script did run; `default-src 'none'` plus no `script-src` means none does.
+	 * `style-src 'unsafe-inline'` is the one allowance, because a self-contained
+	 * report is nearly always a `<style>` block — see ADR-0032 for why
+	 * interactivity is deliberately not supported here.
+	 *
+	 * Do not relax *that* arm without reading that ADR; a change that makes a
+	 * report "work properly" is how this becomes exploitable.
+	 *
+	 * Every other kind is inert, and the sandbox arm would actively break one of
+	 * them: `sandbox` on a PDF stops the browser handing it to its native viewer,
+	 * and `default-src 'none'` blocks the blob/data URLs that viewer spins up, so
+	 * a PDF served under the HTML headers renders as a blank frame. Those kinds
+	 * therefore get `default-src 'none'` **without** `sandbox`, which still forbids
+	 * this response from fetching anything or executing anything, while leaving
+	 * the browser free to render the bytes it was already given.
+	 *
+	 * The safety of the inert arm rests on the *renderer*, not the header: the
+	 * web app never injects markdown as HTML (react-markdown escapes it), images
+	 * are bitmaps, and SVG — the one image-shaped format that would break that
+	 * claim — is refused at publish time. Widening `PUBLISHABLE` with something
+	 * that executes means revisiting this split, not just adding a map entry.
 	 */
 	sessionsRoute.get("/:id/artefacts/:artefactId", async (c) => {
 		const id = c.req.param("id");
@@ -486,16 +504,25 @@ export function createSessionsRoute(deps: {
 		c.header("Content-Type", artefact.mimeType);
 		c.header(
 			"Content-Security-Policy",
-			"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'",
+			isSandboxedKind(artefact.kind)
+				? "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'"
+				: "default-src 'none'; base-uri 'none'; form-action 'none'",
 		);
 		// Belt and braces with the CSP's `default-src 'none'`: stops a browser
 		// from ignoring the declared type and sniffing the bytes as something
 		// else entirely.
 		c.header("X-Content-Type-Options", "nosniff");
 		c.header("Referrer-Policy", "no-referrer");
+		// One exception to `inline`: `text/markdown` is served as an attachment so
+		// that clicking through to the raw bytes *downloads* the source instead of
+		// rendering as plain text in a tab. The markdown viewer renders it anyway;
+		// this only affects the "open in a new tab" escape hatch, where seeing the
+		// raw `.md` is what the user asked for.
 		c.header(
 			"Content-Disposition",
-			`inline; filename*=UTF-8''${encodeURIComponent(artefact.filename)}`,
+			artefact.kind === "markdown"
+				? `attachment; filename*=UTF-8''${encodeURIComponent(artefact.filename)}`
+				: `inline; filename*=UTF-8''${encodeURIComponent(artefact.filename)}`,
 		);
 		// Immutable by construction (ADR-0032): republishing mints a new id, so a
 		// given artefact's bytes never change.

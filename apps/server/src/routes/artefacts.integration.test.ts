@@ -12,16 +12,15 @@ import { publishArtefact } from "../sessions/artefacts";
 import { createSessionsRoute } from "./sessions";
 
 /**
- * The artefact serve/list routes over real HTTP (issue #194), against a real
- * DB and a real cloned Repo — the same setup `attachments.integration.test.ts`
- * uses.
+ * The artefact serve/list routes over real HTTP (issue #194, ADR-0032;
+ * ADR-0043 for the non-HTML kinds), against a real DB and a real cloned Repo —
+ * the same setup `attachments.integration.test.ts` uses.
  *
  * The header assertions here are the point of this file. The bytes are
- * model-generated HTML served from dilna's own origin, so the CSP and
- * `nosniff` are what stop a generated report from reaching the
- * unauthenticated `/api/*` surface (ADR-0032). A refactor that drops them
- * would look harmless in review and break nothing else — these tests are the
- * tripwire.
+ * model-generated and served from dilna's own origin, so the per-kind CSP and
+ * `nosniff` are what stop a generated document from reaching the
+ * unauthenticated `/api/*` surface. A refactor that drops them would look
+ * harmless in review and break nothing else — these tests are the tripwire.
  */
 
 const execFileAsync = promisify(execFile);
@@ -65,8 +64,11 @@ afterAll(() => {
 	rmSync(fixtureRepo, { recursive: true, force: true });
 });
 
-/** A Session on a real Worktree, with one HTML file published from it. */
-async function sessionWithArtefact(html: string): Promise<{
+/** A Session on a real Worktree, with one file published from it. */
+async function sessionWithArtefact(
+	content: string | Buffer,
+	sourcePath = "report.html",
+): Promise<{
 	sessionId: string;
 	artefact: Artefact;
 }> {
@@ -74,18 +76,18 @@ async function sessionWithArtefact(html: string): Promise<{
 	const session = await sessionManager.create(repo.id);
 	const full = await sessionManager.get(session.id);
 	if (!full) throw new Error("session vanished");
-	writeFileSync(path.join(full.worktreePath, "report.html"), html);
+	writeFileSync(path.join(full.worktreePath, sourcePath), content);
 	const artefact = publishArtefact({
 		sessionId: session.id,
 		worktreePath: full.worktreePath,
-		sourcePath: "report.html",
+		sourcePath,
 		title: "Coverage report",
 	});
 	return { sessionId: session.id, artefact };
 }
 
 describe("artefact routes end to end", () => {
-	it("serves the published bytes under a script-blocking CSP", async () => {
+	it("serves an HTML artefact under the sandboxed, script-blocking CSP", async () => {
 		const html = "<html><body><h1>Coverage</h1></body></html>";
 		const { sessionId, artefact } = await sessionWithArtefact(html);
 
@@ -103,6 +105,74 @@ describe("artefact routes end to end", () => {
 		// a CSP that merely forgot to mention them.
 		expect(csp).not.toContain("script-src");
 		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+	});
+
+	/**
+	 * ADR-0043's other arm. The inert kinds *must not* carry `sandbox`: it makes
+	 * Chrome refuse to hand a PDF to its native viewer, so the artefact becomes a
+	 * blank frame. This asserts both halves of that trade in one place — sandbox
+	 * gone, `default-src 'none'` still there — because the failure mode of a
+	 * "simplify the headers" refactor is dropping the CSP along with the sandbox.
+	 */
+	it("serves a PDF under a permissive-of-viewers but inert CSP", async () => {
+		const { sessionId, artefact } = await sessionWithArtefact(
+			Buffer.from("%PDF-1.4\n%%EOF"),
+			"report.pdf",
+		);
+		expect(artefact.kind).toBe("pdf");
+
+		const res = await app.request(`/${sessionId}/artefacts/${artefact.id}`);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("application/pdf");
+
+		const csp = res.headers.get("Content-Security-Policy") ?? "";
+		expect(csp).not.toContain("sandbox");
+		expect(csp).toContain("default-src 'none'");
+		expect(csp).not.toContain("script-src");
+		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+	});
+
+	it("serves an image artefact inline under the inert CSP", async () => {
+		const { sessionId, artefact } = await sessionWithArtefact(
+			Buffer.from("89504e470d0a1a0a", "hex"),
+			"chart.png",
+		);
+		expect(artefact.kind).toBe("image");
+
+		const res = await app.request(`/${sessionId}/artefacts/${artefact.id}`);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("image/png");
+		expect(res.headers.get("Content-Disposition")).toContain("inline");
+		const csp = res.headers.get("Content-Security-Policy") ?? "";
+		expect(csp).not.toContain("sandbox");
+		expect(csp).toContain("default-src 'none'");
+	});
+
+	/**
+	 * Markdown is served as **raw text**, never as server-rendered HTML, and as
+	 * an *attachment* rather than inline. The first is the security property
+	 * (ADR-0043): the web app is the only thing that turns these bytes into
+	 * markup, and react-markdown escapes what it renders. The second is so
+	 * "open in a new tab" shows the source rather than handing the browser a
+	 * plain-text document it will happily sniff.
+	 */
+	it("serves markdown as raw text, as a download, under the inert CSP", async () => {
+		const body = "# Report\n\n<script>alert(1)</script>\n";
+		const { sessionId, artefact } = await sessionWithArtefact(body, "notes.md");
+		expect(artefact.kind).toBe("markdown");
+
+		const res = await app.request(`/${sessionId}/artefacts/${artefact.id}`);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe(
+			"text/markdown; charset=utf-8",
+		);
+		// The script tag comes back verbatim: nothing here sanitizes or renders
+		// it, which is exactly why the client must not inject it either.
+		expect(await res.text()).toBe(body);
+		expect(res.headers.get("Content-Disposition")).toContain("attachment");
+		const csp = res.headers.get("Content-Security-Policy") ?? "";
+		expect(csp).not.toContain("sandbox");
+		expect(csp).toContain("default-src 'none'");
 	});
 
 	it("lists a session's artefacts", async () => {

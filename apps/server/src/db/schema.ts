@@ -282,8 +282,10 @@ export const artefacts = sqliteTable("artefacts", {
 	 * once the Worktree moves on, this is the only record of which repo file
 	 * produced this snapshot. Never used to locate the bytes. */
 	sourcePath: text("source_path").notNull(),
-	/** `packages/shared`'s `ArtefactKind` — `"html"` today. Stored rather than
-	 * re-derived per read so a later widening of the accepted set can't
+	/** `packages/shared`'s `ArtefactKind` — `"html" | "markdown" | "pdf" |
+	 * "image"` since ADR-0043. Stored rather than re-derived per read, which is
+	 * what let that widening ship without a migration: a row keeps the kind it
+	 * was published with, so a later widening of the accepted set can't
 	 * retroactively reclassify an already-published file. */
 	kind: text("kind").notNull(),
 	mimeType: text("mime_type").notNull(),
