@@ -62,6 +62,7 @@ import {
 	loadSkillsForRepo,
 } from "../skills/loader";
 import { createPublishArtefactTool } from "./artefactTools";
+import { createCodegraphTool } from "./codegraphTool";
 import { createConfinementHook } from "./confinement";
 import { createSendImageTool } from "./imageTools";
 import {
@@ -209,8 +210,17 @@ Everything you write between tool calls lands as a chat message in dilna's UI, r
  * pointed at a tool that isn't there. Kept to one short paragraph: pi.ts's
  * system prompt was already trimmed twice (#115, #117) for overstepping and
  * verbosity, and this shouldn't reopen that.
+ *
+ * Since ADR-0044 the session also carries a real `codegraph` tool whose
+ * description holds the usage playbook, so this note is no longer the only
+ * explanation of the tool — it stays because it reaches the whole session
+ * context, and because it is the one place that can say "this worktree has
+ * an index" at all (a tool description has to be written for every
+ * Session, indexed or not). The closing line is the boundary case the tool
+ * cannot state: how to be sure there is no index here without reaching for
+ * bash to find out.
  */
-const CODEGRAPH_SYSTEM_PROMPT_NOTE = `\n\nCODEGRAPH\nThis worktree has a codegraph index (\`.codegraph/\`, built at Session creation and kept in sync automatically). For "who calls X" / "what does X touch" questions on unfamiliar code, prefer \`codegraph explore <symbol-or-path>\` over grep — one call returns source plus callers/callees instead of several rounds of grep. Fall back to grep/read when codegraph doesn't have what you need.`;
+const CODEGRAPH_SYSTEM_PROMPT_NOTE = `\n\nCODEGRAPH\nThis worktree has a codegraph index (\`.codegraph/\`, built at Session creation and kept in sync automatically). For "who calls X" / "what does X touch" questions on unfamiliar code, prefer \`codegraph explore <symbol-or-path>\` over grep — one call returns source plus callers/callees instead of several rounds of grep. Fall back to grep/read when codegraph doesn't have what you need. An unindexed Worktree carries no \`codegraph\` tool at all, so there is never one to look for.`;
 
 const READ_REPO_MEMORY_TOOL_DESCRIPTION = `Read this Repo's persistent memory — short, durable facts a previous Session recorded (e.g. "tests need FOO_ENV set", "this suite is flaky on CI", "don't hand-edit the generated file, it's overwritten by build"). Scoped to the Repo, not this Worktree: every Session gets an isolated, throwaway Worktree, but memory carries over since it's scoped to the Repo. Returns an empty result if nothing has been saved yet. Call this before \`update_repo_memory\` too — that tool replaces the whole memory, so you need the current content in hand before editing it.`;
 
@@ -528,6 +538,17 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		// domains); see webFetchTool.ts's module doc comment and ADR-0026.
 		createWebFetchTool(),
 	];
+
+	// CodeGraph as a tool rather than a bash incantation (issue #119,
+	// ADR-0044). Gated on the same `hasCodegraph` check as the system-prompt
+	// note above, and for the same reason: a tool that errors on every call
+	// in an unindexed Session is worse than no tool at all. `startPi` is the
+	// only caller that passes this Worktree's own `.codegraph/` — a
+	// sibling Worktree's index is never an option (see the tool's own doc
+	// comment on why `--path` stays inside this worktree).
+	if (hasCodegraph) {
+		tools.push(createCodegraphTool(opts.worktreePath));
+	}
 
 	// Read-only subagents (issue #206, ADR-0034). Registered for ordinary
 	// Sessions only — `startOrchestrator` has no filesystem tools to delegate.
