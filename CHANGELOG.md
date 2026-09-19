@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.32.0](https://github.com/MrMarble/dilna/compare/v0.31.0...v0.32.0) (2026-09-19)
+
+
+### Features
+
+* **agents:** expose codegraph as a tool instead of a bash incantation ([#245](https://github.com/MrMarble/dilna/issues/245)) ([e4b39fd](https://github.com/MrMarble/dilna/commit/e4b39fd211f8ff15a73112bd7325a8f4388741dd))
+* **artefacts:** publish markdown, PDF and images alongside HTML ([#244](https://github.com/MrMarble/dilna/issues/244)) ([1094774](https://github.com/MrMarble/dilna/commit/1094774623d33a688ef208c267daa3548d2911af))
+
+
+### Bug Fixes
+
+* **shared:** stop a mid-turn replay from duplicating the message it re-narrates ([#241](https://github.com/MrMarble/dilna/issues/241)) ([2686c4f](https://github.com/MrMarble/dilna/commit/2686c4fe9e09629fdde7dfeeb4d291f654bb3cb2)), closes [#244](https://github.com/MrMarble/dilna/issues/244)
+* **web:** give icon-only buttons real accessible names ([#235](https://github.com/MrMarble/dilna/issues/235)) ([b1dea72](https://github.com/MrMarble/dilna/commit/b1dea72ab61e8ef26d4974330c773c8eb2049dc0))
+* **web:** keep the mobile drawer open when selecting a repo ([#243](https://github.com/MrMarble/dilna/issues/243)) ([425da70](https://github.com/MrMarble/dilna/commit/425da70fe4438cba9f7eeb42b0dfd9da9bb5965b))
+
 ## [0.31.0](https://github.com/MrMarble/dilna/compare/v0.30.0...v0.31.0) (2026-09-18)
 
 
