@@ -45,6 +45,56 @@ describe("Markdown code blocks", () => {
 	});
 });
 
+describe("Markdown headings", () => {
+	// Regression guard for the defect this scale exists to fix: Tailwind's
+	// preflight resets h1-h6 to `font-size: 1em; font-weight: inherit; margin: 0`,
+	// so a heading with no rule of its own renders exactly like a paragraph.
+	// These assert a heading is *distinguishable*, which is the behaviour that
+	// regressed — not any particular size.
+	it.each([
+		["#", 1],
+		["##", 2],
+		["###", 3],
+		["####", 4],
+	] as const)("gives `%s` a size distinct from body text", (hashes, level) => {
+		render(<Markdown>{`${hashes} Heading\n\nA paragraph.`}</Markdown>);
+		const heading = screen.getByRole("heading", { level });
+		const paragraph = screen.getByText("A paragraph.");
+		// No class assertion: the guard is that *something* separates them.
+		expect(heading.className).toContain("font-semibold");
+		expect(heading.className).not.toBe(paragraph.className);
+	});
+
+	it("weights every level, so none inherits the paragraph's font-weight", () => {
+		render(
+			<Markdown>
+				{
+					"# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six"
+				}
+			</Markdown>,
+		);
+		for (const level of [1, 2, 3, 4, 5, 6] as const) {
+			expect(screen.getByRole("heading", { level }).className).toContain(
+				"font-semibold",
+			);
+		}
+	});
+
+	it("collapses the first heading's top margin so a reply doesn't start indented", () => {
+		render(<Markdown>{"# Heading\n\nBody."}</Markdown>);
+		expect(screen.getByRole("heading", { level: 1 }).className).toContain(
+			"first:mt-0",
+		);
+	});
+});
+
+describe("Markdown links", () => {
+	it("carries the highlight hue rather than relying on the underline alone", () => {
+		render(<Markdown>{"[docs](https://example.com)"}</Markdown>);
+		expect(screen.getByRole("link").className).toContain("text-highlight");
+	});
+});
+
 describe("Markdown code block copying", () => {
 	function stubClipboard() {
 		const writeText = vi.fn(() => Promise.resolve());

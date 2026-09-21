@@ -1,10 +1,10 @@
+import { Highlight, themes } from "prism-react-renderer";
 import * as React from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
-import { Highlight, themes } from "prism-react-renderer";
 import remarkGfm from "remark-gfm";
 import { CopyButton } from "@/components/ui/copy-button";
-import { cn } from "@/lib/utils";
 import { useIsDark } from "@/lib/use-is-dark";
+import { cn } from "@/lib/utils";
 
 const LIGHT_THEME = themes.oneLight;
 const DARK_THEME = themes.oneDark;
@@ -36,13 +36,7 @@ function codeTextFrom(children: React.ReactNode): string {
 
 /** Bodies of a fenced block rendered as prism-colored tokens, wrapped in a
  *  semantic <code> whose container <pre> (below) owns the block chrome. */
-function PrismCode({
-	language,
-	code,
-}: {
-	language: string;
-	code: string;
-}) {
+function PrismCode({ language, code }: { language: string; code: string }) {
 	const dark = useIsDark();
 	const theme = dark ? DARK_THEME : LIGHT_THEME;
 
@@ -67,6 +61,72 @@ function PrismCode({
 }
 
 const components: Components = {
+	// Headings are the one element Tailwind's preflight actively breaks: it resets
+	// h1-h6 to `font-size: 1em; font-weight: inherit; margin: 0`, so without these
+	// rules a `##` in an agent reply renders *identically to a paragraph*. That is
+	// the worst possible default for this app, whose entire content surface is
+	// agent-written markdown.
+	//
+	// The scale is deliberately restrained rather than dramatic: an agent reply is
+	// prose first, and a heading has to organise a conversation without shouting
+	// inside it. h1/h2 are the same size because markdown in a chat reply rarely
+	// uses both, and their distinction is carried by weight and the rule under h1.
+	h1: ({ className, ...props }) => (
+		<h1
+			className={cn(
+				"mt-5 mb-2 border-b border-border pb-1.5 text-lg font-semibold tracking-tight first:mt-0",
+				className,
+			)}
+			{...props}
+		/>
+	),
+	h2: ({ className, ...props }) => (
+		<h2
+			className={cn(
+				"mt-5 mb-2 text-base font-semibold tracking-tight first:mt-0",
+				className,
+			)}
+			{...props}
+		/>
+	),
+	h3: ({ className, ...props }) => (
+		<h3
+			className={cn(
+				"mt-4 mb-1.5 text-[0.9375rem] font-semibold first:mt-0",
+				className,
+			)}
+			{...props}
+		/>
+	),
+	h4: ({ className, ...props }) => (
+		<h4
+			className={cn(
+				"mt-3.5 mb-1.5 text-sm font-semibold first:mt-0",
+				className,
+			)}
+			{...props}
+		/>
+	),
+	// h5/h6 stay at body size but gain weight and a muted tone: past the fourth
+	// level a heading is a label, not a structural break.
+	h5: ({ className, ...props }) => (
+		<h5
+			className={cn(
+				"mt-3 mb-1 text-sm font-semibold text-muted-foreground first:mt-0",
+				className,
+			)}
+			{...props}
+		/>
+	),
+	h6: ({ className, ...props }) => (
+		<h6
+			className={cn(
+				"mt-3 mb-1 text-xs font-semibold text-muted-foreground first:mt-0",
+				className,
+			)}
+			{...props}
+		/>
+	),
 	p: ({ className, ...props }) => (
 		<p className={cn("mb-2 last:mb-0", className)} {...props} />
 	),
@@ -85,14 +145,23 @@ const components: Components = {
 	li: ({ className, ...props }) => (
 		<li className={cn("marker:text-muted-foreground", className)} {...props} />
 	),
+	// Links carry the highlight hue: in a long agent reply a link is the one
+	// thing the reader may want to act on, and an underline alone drowns in prose.
+	// The hue is already budgeted for "something waiting on you".
 	a: ({ className, ...props }) => (
 		<a
 			target="_blank"
 			rel="noreferrer"
 			className={cn(
-				"underline underline-offset-2 hover:no-underline",
+				"font-medium text-highlight underline decoration-highlight-quiet underline-offset-2 hover:decoration-highlight",
 				className,
 			)}
+			{...props}
+		/>
+	),
+	strong: ({ className, ...props }) => (
+		<strong
+			className={cn("font-semibold text-foreground", className)}
 			{...props}
 		/>
 	),
@@ -106,20 +175,20 @@ const components: Components = {
 		/>
 	),
 	hr: ({ className, ...props }) => (
-		<hr
-			className={cn("my-3 border-border", className)}
-			{...props}
-		/>
+		<hr className={cn("my-3 border-border", className)} {...props} />
 	),
 	table: ({ className, ...props }) => (
 		<div className="mb-2 overflow-x-auto last:mb-0">
-			<table className={cn("w-full border-collapse text-xs", className)} {...props} />
+			<table
+				className={cn("w-full border-collapse text-xs", className)}
+				{...props}
+			/>
 		</div>
 	),
 	th: ({ className, ...props }) => (
 		<th
 			className={cn(
-				"border-b border-border px-2 py-1 text-left font-medium",
+				"border-b border-border px-2 py-1.5 text-left font-medium text-muted-foreground",
 				className,
 			)}
 			{...props}
@@ -127,10 +196,7 @@ const components: Components = {
 	),
 	td: ({ className, ...props }) => (
 		<td
-			className={cn(
-				"border-b border-border px-2 py-1",
-				className,
-			)}
+			className={cn("border-b border-border px-2 py-1.5", className)}
 			{...props}
 		/>
 	),
@@ -164,12 +230,11 @@ const components: Components = {
 		// so Prism sees exactly the block's own text.
 		const text =
 			typeof children === "string" ? children.replace(/\n$/, "") : "";
-		if (language)
-			return <PrismCode language={language} code={text} />;
+		if (language) return <PrismCode language={language} code={text} />;
 		return (
 			<code
 				className={cn(
-					"rounded bg-muted/60 px-1 py-0.5 font-mono text-[0.85em]",
+					"rounded-sm border border-border/60 bg-muted px-1 py-0.5 font-mono text-[0.85em]",
 					className,
 				)}
 				{...props}
