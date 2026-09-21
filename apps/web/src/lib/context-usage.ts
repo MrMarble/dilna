@@ -24,9 +24,9 @@ export function contextUsagePct(
  * quantities (account-wide plan usage vs. one Session's context budget)
  * that only happen to share a color convention. */
 export function contextUsageBarColor(pct: number): string {
-	if (pct > 80) return "bg-red-500";
-	if (pct >= 50) return "bg-amber-500";
-	return "bg-zinc-400 dark:bg-zinc-500";
+	if (pct > 80) return "bg-danger";
+	if (pct >= 50) return "bg-warning";
+	return "bg-idle";
 }
 
 /** True once a Session is close enough to its compaction trigger that the

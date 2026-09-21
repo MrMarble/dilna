@@ -84,7 +84,7 @@ export function NewRepoDialog({ open, onOpenChange, onCloned }: Props) {
 							disabled={submitting}
 						/>
 					</div>
-					{error && <p className="text-sm text-red-500">{error}</p>}
+					{error && <p className="text-sm text-destructive">{error}</p>}
 					<DialogFooter>
 						<Button type="submit" disabled={submitting || !url.trim()}>
 							{submitting ? "Cloning…" : "Clone"}

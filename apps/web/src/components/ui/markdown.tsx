@@ -99,7 +99,7 @@ const components: Components = {
 	blockquote: ({ className, ...props }) => (
 		<blockquote
 			className={cn(
-				"mb-2 border-l-2 border-zinc-300 pl-3 text-muted-foreground italic last:mb-0 dark:border-zinc-700",
+				"mb-2 border-l-2 border-border pl-3 text-muted-foreground italic last:mb-0",
 				className,
 			)}
 			{...props}
@@ -107,7 +107,7 @@ const components: Components = {
 	),
 	hr: ({ className, ...props }) => (
 		<hr
-			className={cn("my-3 border-zinc-200 dark:border-zinc-800", className)}
+			className={cn("my-3 border-border", className)}
 			{...props}
 		/>
 	),
@@ -119,7 +119,7 @@ const components: Components = {
 	th: ({ className, ...props }) => (
 		<th
 			className={cn(
-				"border-b border-zinc-300 px-2 py-1 text-left font-medium dark:border-zinc-700",
+				"border-b border-border px-2 py-1 text-left font-medium",
 				className,
 			)}
 			{...props}
@@ -128,7 +128,7 @@ const components: Components = {
 	td: ({ className, ...props }) => (
 		<td
 			className={cn(
-				"border-b border-zinc-200 px-2 py-1 dark:border-zinc-800",
+				"border-b border-border px-2 py-1",
 				className,
 			)}
 			{...props}
@@ -142,7 +142,7 @@ const components: Components = {
 		<div className="group/code relative mb-2 last:mb-0">
 			<pre
 				className={cn(
-					"overflow-x-auto rounded-md border border-zinc-200 bg-muted/60 p-3 font-mono text-xs leading-relaxed text-foreground dark:border-zinc-800",
+					"overflow-x-auto rounded-md border border-border bg-muted/60 p-3 font-mono text-xs leading-relaxed text-foreground",
 					className,
 				)}
 				{...props}

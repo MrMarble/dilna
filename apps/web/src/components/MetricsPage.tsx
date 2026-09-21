@@ -172,7 +172,7 @@ function StatCard({
 	sub?: string;
 }) {
 	return (
-		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+		<div className="rounded-xl border border-border bg-card p-4 shadow-card">
 			<p className="text-xs text-muted-foreground">{label}</p>
 			<p className="mt-1 text-2xl font-semibold tabular-nums tracking-tight">
 				{value}
@@ -297,7 +297,7 @@ function DailyUsageChart({
 	const hoveredModels = hovered ? (byDate.get(hovered.date) ?? []) : [];
 
 	return (
-		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+		<div className="rounded-xl border border-border bg-card p-4 shadow-card">
 			<div className="mb-2 flex items-baseline justify-between text-xs text-muted-foreground">
 				<span>Daily cost</span>
 				<span className="tabular-nums">
@@ -452,7 +452,7 @@ function TokenCompositionChart({ totals }: { totals: UsageTotalsDetailed }) {
 	if (total === 0) return null;
 
 	return (
-		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+		<div className="rounded-xl border border-border bg-card p-4 shadow-card">
 			<div className="mb-3 text-xs text-muted-foreground">
 				Token composition
 			</div>
@@ -506,7 +506,7 @@ function TokenCompositionChart({ totals }: { totals: UsageTotalsDetailed }) {
 function ModelBreakdownTable({ models }: { models: UsageModelBreakdown[] }) {
 	if (models.length === 0) return null;
 	return (
-		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
 			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
 				By model
 			</div>
@@ -570,7 +570,7 @@ function RepoBreakdownTable({
 	repoNameById: Record<string, string>;
 }) {
 	return (
-		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
 			<table className="w-full text-sm">
 				<thead>
 					<tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -617,7 +617,7 @@ function TopSessionsTable({
 }) {
 	if (sessions.length === 0) return null;
 	return (
-		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
 			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
 				Top sessions
 			</div>
@@ -693,11 +693,11 @@ function DiskUsageCard() {
 		usedPct >= 85
 			? "bg-destructive"
 			: usedPct >= 50
-				? "bg-amber-500"
+				? "bg-warning"
 				: "bg-primary";
 
 	return (
-		<div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+		<div className="rounded-xl border border-border bg-card p-4 shadow-card">
 			<div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
 				<span className="flex items-center gap-1.5 font-medium">
 					<HardDrive className="size-3.5" />

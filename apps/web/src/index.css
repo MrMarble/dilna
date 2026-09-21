@@ -5,28 +5,56 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Light palette mirrors the dark one: same faint cool (260) tint on every
- * gray so the two themes read as one family rather than warm/cool mixes. */
+/* Light palette mirrors the dark one: same faint cool (265) tint on every
+ * gray so the two themes read as one family rather than warm/cool mixes, and
+ * the same *structural* roles in both — `--muted` and `--accent` are distinct
+ * values in each, rather than the same value in one theme and two different
+ * ones in the other. */
 :root {
 	color-scheme: light dark;
-	--background: oklch(0.99 0.002 260);
-	--foreground: oklch(0.155 0.008 260);
-	--card: oklch(0.998 0.001 260);
-	--card-foreground: oklch(0.155 0.008 260);
-	--popover: oklch(0.998 0.001 260);
-	--popover-foreground: oklch(0.155 0.008 260);
-	--primary: oklch(0.21 0.012 260);
-	--primary-foreground: oklch(0.985 0.002 260);
-	--secondary: oklch(0.965 0.004 260);
-	--secondary-foreground: oklch(0.21 0.012 260);
-	--muted: oklch(0.965 0.004 260);
-	--muted-foreground: oklch(0.55 0.014 260);
-	--accent: oklch(0.965 0.004 260);
-	--accent-foreground: oklch(0.21 0.012 260);
-	--destructive: oklch(0.577 0.245 27.325);
-	--border: oklch(0.92 0.006 260);
-	--input: oklch(0.92 0.006 260);
-	--ring: oklch(0.71 0.012 260);
+	--background: oklch(0.985 0.003 265);
+	--foreground: oklch(0.19 0.01 265);
+	--card: oklch(1 0 0);
+	--card-foreground: oklch(0.19 0.01 265);
+	--popover: oklch(1 0 0);
+	--popover-foreground: oklch(0.19 0.01 265);
+	/* `--primary` stays neutral: it marks *action* (send, confirm, new
+	 * session), and giving it a hue would compete with `--highlight`, which
+	 * owns "live/needs-attention". */
+	--primary: oklch(0.19 0.01 265);
+	--primary-foreground: oklch(0.99 0.002 265);
+	--secondary: oklch(0.945 0.005 265);
+	--secondary-foreground: oklch(0.19 0.01 265);
+	--muted: oklch(0.945 0.005 265);
+	--muted-foreground: oklch(0.505 0.013 265);
+	--accent: oklch(0.925 0.006 265);
+	--accent-foreground: oklch(0.19 0.01 265);
+	--destructive: oklch(0.55 0.2 25);
+	--border: oklch(0.9 0.006 265);
+	--input: oklch(0.9 0.006 265);
+	--ring: oklch(0.62 0.012 265);
+
+	/* The one accent. Spent only on liveness — something running, new, or
+	 * waiting on the user — so a hue never appears here by decoration.
+	 * `-quiet` is the paired border/underline weight, `-wash` the tinted fill
+	 * behind a live pill. */
+	--highlight: oklch(0.55 0.135 195);
+	--highlight-foreground: oklch(0.99 0.005 195);
+	--highlight-quiet: oklch(0.72 0.07 195);
+	--highlight-wash: oklch(0.955 0.028 195);
+
+	/* Session status. Semantic, so `StatusDot` and the rate-limit meters stop
+	 * reaching for raw Tailwind palette classes. */
+	--success: oklch(0.58 0.13 160);
+	--warning: oklch(0.6 0.12 75);
+	--danger: oklch(0.55 0.2 25);
+	--idle: oklch(0.6 0.012 265);
+
+	/* Elevation. Tokenised so a card's lift is one decision rather than a
+	 * `shadow-sm` repeated at ~15 call sites. */
+	--shadow-card: 0 1px 2px oklch(0 0 0 / 0.05), 0 4px 12px oklch(0 0 0 / 0.06);
+	--shadow-popover: 0 4px 12px oklch(0 0 0 / 0.08), 0 12px 32px oklch(0 0 0 / 0.1);
+
 	/* Categorical series palette (metrics-by-model chart) — fixed hue order,
 	 * validated for CVD-safe adjacency and contrast against this app's card
 	 * surface via the dataviz skill's validate_palette.js. Assign by identity
@@ -40,17 +68,16 @@
 	--chart-6: #008300;
 	--chart-7: #4a3aa7;
 	--chart-8: #e34948;
-	--radius: 0.625rem;
-	--sidebar: oklch(0.978 0.004 260);
-	--sidebar-foreground: oklch(0.155 0.008 260);
-	--sidebar-primary: oklch(0.21 0.012 260);
-	--sidebar-primary-foreground: oklch(0.985 0.002 260);
-	/* One step darker than the default shadcn value so the selected repo row
-	 * reads against the 0.978 sidebar surface. */
-	--sidebar-accent: oklch(0.915 0.008 260);
-	--sidebar-accent-foreground: oklch(0.21 0.012 260);
-	--sidebar-border: oklch(0.92 0.006 260);
-	--sidebar-ring: oklch(0.71 0.012 260);
+	--radius: 0.6875rem;
+	--sidebar: oklch(0.962 0.004 265);
+	--sidebar-foreground: oklch(0.19 0.01 265);
+	--sidebar-primary: oklch(0.19 0.01 265);
+	--sidebar-primary-foreground: oklch(0.99 0.002 265);
+	/* Must read against the 0.962 sidebar surface as a selected-row fill. */
+	--sidebar-accent: oklch(0.905 0.008 265);
+	--sidebar-accent-foreground: oklch(0.19 0.01 265);
+	--sidebar-border: oklch(0.9 0.006 265);
+	--sidebar-ring: oklch(0.62 0.012 265);
 }
 
 @theme inline {
@@ -90,6 +117,16 @@
 	--color-card: var(--card);
 	--color-foreground: var(--foreground);
 	--color-background: var(--background);
+	--color-highlight: var(--highlight);
+	--color-highlight-foreground: var(--highlight-foreground);
+	--color-highlight-quiet: var(--highlight-quiet);
+	--color-highlight-wash: var(--highlight-wash);
+	--color-success: var(--success);
+	--color-warning: var(--warning);
+	--color-danger: var(--danger);
+	--color-idle: var(--idle);
+	--shadow-card: var(--shadow-card);
+	--shadow-popover: var(--shadow-popover);
 	--radius-sm: calc(var(--radius) * 0.6);
 	--radius-md: calc(var(--radius) * 0.8);
 	--radius-lg: var(--radius);
@@ -101,44 +138,67 @@
 
 /* Dark palette follows docs/ui_draft.png: greyish surfaces with a faint
  * cool tint rather than near-black, sidebar darker than the chat canvas,
- * cards one step lighter than their surface. */
+ * cards one step lighter than their surface.
+ *
+ * The three surfaces are deliberately spread further apart than the draft
+ * strictly requires (canvas / card / rail at L 0.175 / 0.225 / 0.142, a spread
+ * of 0.083 rather than the previous 0.05): at the old spread the panes read as
+ * one flat field, which is the thing this pass exists to fix. */
 .dark {
-	--background: oklch(0.215 0.008 260);
-	--foreground: oklch(0.94 0.004 260);
-	/* Cards sit only a shade above their surface (per ui_draft.png) — the
-	 * lift comes from the border plus a subtle tone shift, not brightness. */
-	--card: oklch(0.235 0.009 260);
-	--card-foreground: oklch(0.94 0.004 260);
-	--popover: oklch(0.245 0.009 260);
-	--popover-foreground: oklch(0.94 0.004 260);
-	--primary: oklch(0.922 0.004 260);
-	--primary-foreground: oklch(0.215 0.008 260);
-	--secondary: oklch(0.3 0.01 260);
-	--secondary-foreground: oklch(0.94 0.004 260);
-	--muted: oklch(0.3 0.01 260);
-	--muted-foreground: oklch(0.72 0.008 260);
-	--accent: oklch(0.3 0.01 260);
-	--accent-foreground: oklch(0.94 0.004 260);
-	--destructive: oklch(0.704 0.191 22.216);
-	--border: oklch(1 0 0 / 10%);
+	--background: oklch(0.175 0.008 265);
+	--foreground: oklch(0.945 0.004 265);
+	/* Cards lift by tone *and* border, not brightness — see --shadow-card. */
+	--card: oklch(0.225 0.009 265);
+	--card-foreground: oklch(0.945 0.004 265);
+	--popover: oklch(0.245 0.009 265);
+	--popover-foreground: oklch(0.945 0.004 265);
+	--primary: oklch(0.93 0.004 265);
+	--primary-foreground: oklch(0.175 0.008 265);
+	--secondary: oklch(0.285 0.011 265);
+	--secondary-foreground: oklch(0.945 0.004 265);
+	--muted: oklch(0.268 0.01 265);
+	--muted-foreground: oklch(0.72 0.012 265);
+	--accent: oklch(0.305 0.012 265);
+	--accent-foreground: oklch(0.945 0.004 265);
+	--destructive: oklch(0.68 0.19 25);
+	--border: oklch(1 0 0 / 11%);
 	--input: oklch(1 0 0 / 15%);
-	--ring: oklch(0.556 0.01 260);
+	--ring: oklch(0.556 0.01 265);
+
+	/* See the light block for what --highlight owns. Its dark value is the
+	 * same hue at higher lightness so it stays legible on the dark canvas. */
+	--highlight: oklch(0.78 0.145 195);
+	--highlight-foreground: oklch(0.16 0.02 195);
+	--highlight-quiet: oklch(0.55 0.09 195);
+	--highlight-wash: oklch(0.3 0.055 195);
+
+	--success: oklch(0.78 0.15 160);
+	--warning: oklch(0.8 0.14 75);
+	--danger: oklch(0.68 0.19 25);
+	--idle: oklch(0.62 0.012 265);
+
+	--shadow-card: 0 1px 2px oklch(0 0 0 / 0.4), 0 4px 12px oklch(0 0 0 / 0.25);
+	--shadow-popover: 0 4px 12px oklch(0 0 0 / 0.5), 0 12px 32px oklch(0 0 0 / 0.4);
+
 	--chart-1: #3987e5;
 	--chart-2: #d95926;
 	--chart-3: #199e70;
 	--chart-4: #c98500;
 	--chart-5: #d55181;
-	--chart-6: #008300;
+	/* Lifted from #008300: that value was validated against the old, lighter
+	 * card surface and falls to 3.45:1 against the darker one introduced
+	 * here — under the 3:1 floor for a non-text graphic. */
+	--chart-6: #2fa84f;
 	--chart-7: #9085e9;
 	--chart-8: #e66767;
-	--sidebar: oklch(0.185 0.008 260);
-	--sidebar-foreground: oklch(0.94 0.004 260);
-	--sidebar-primary: oklch(0.922 0.004 260);
-	--sidebar-primary-foreground: oklch(0.215 0.008 260);
-	--sidebar-accent: oklch(0.29 0.01 260);
-	--sidebar-accent-foreground: oklch(0.94 0.004 260);
+	--sidebar: oklch(0.142 0.008 265);
+	--sidebar-foreground: oklch(0.945 0.004 265);
+	--sidebar-primary: oklch(0.93 0.004 265);
+	--sidebar-primary-foreground: oklch(0.175 0.008 265);
+	--sidebar-accent: oklch(0.283 0.011 265);
+	--sidebar-accent-foreground: oklch(0.945 0.004 265);
 	--sidebar-border: oklch(1 0 0 / 8%);
-	--sidebar-ring: oklch(0.556 0.01 260);
+	--sidebar-ring: oklch(0.556 0.01 265);
 }
 
 @layer base {

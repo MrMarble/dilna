@@ -248,21 +248,21 @@ describe("Sidebar", () => {
 			const { container } = renderSidebar({
 				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 30 })],
 			});
-			expect(container.querySelector(".bg-zinc-400")).not.toBeNull();
+			expect(container.querySelector(".bg-idle")).not.toBeNull();
 		});
 
-		it("color-codes 50-80% as yellow", () => {
+		it("color-codes 50-80% as warning", () => {
 			const { container } = renderSidebar({
 				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 65 })],
 			});
-			expect(container.querySelector(".bg-amber-500")).not.toBeNull();
+			expect(container.querySelector(".bg-warning")).not.toBeNull();
 		});
 
-		it("color-codes above 80% as red", () => {
+		it("color-codes above 80% as danger", () => {
 			const { container } = renderSidebar({
 				rateLimitWindows: [makeRateLimitWindow({ utilizationPct: 95 })],
 			});
-			expect(container.querySelector(".bg-red-500")).not.toBeNull();
+			expect(container.querySelector(".bg-danger")).not.toBeNull();
 		});
 	});
 
