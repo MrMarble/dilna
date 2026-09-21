@@ -91,7 +91,7 @@ describe("PUT /api/config", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				provider: "deepseek",
-				model: "deepseek-v4-flash",
+				model: "deepseek-flash",
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -103,11 +103,11 @@ describe("PUT /api/config", () => {
 		};
 		expect(body.override).toEqual({
 			provider: "deepseek",
-			model: "deepseek-v4-flash",
+			model: "deepseek-flash",
 		});
 		expect(body.effective).toEqual({
 			provider: "deepseek",
-			model: "deepseek-v4-flash",
+			model: "deepseek-flash",
 		});
 	});
 
@@ -130,7 +130,7 @@ describe("DELETE /api/config", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				provider: "deepseek",
-				model: "deepseek-v4-flash",
+				model: "deepseek-flash",
 			}),
 		});
 		expect(put.status).toBe(200);
