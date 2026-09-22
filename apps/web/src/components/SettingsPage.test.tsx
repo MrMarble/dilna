@@ -16,7 +16,7 @@ const state = vi.hoisted(() => {
 			{ id: "claude-opus-4-5", name: "Claude Opus 4.5" },
 			{ id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
 		],
-		deepseek: [{ id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }],
+		deepseek: [{ id: "deepseek-flash", name: "DeepSeek V4.1 Flash" }],
 	} as unknown as LlmConfig["modelsByProvider"];
 
 	function make(over: LlmConfig["override"]): LlmConfig {
@@ -134,13 +134,13 @@ describe("SettingsPage", () => {
 		state.reset();
 		state.setOverrideConfig({
 			provider: "deepseek",
-			model: "deepseek-v4-flash",
+			model: "deepseek-flash",
 		});
 		render(<SettingsPage onBack={() => {}} />);
 		await screen.findByText(/override set/i);
 		// Appears in both the "currently in effect" summary and the model
 		// dropdown's selected option.
-		expect(screen.getAllByText(/deepseek-v4-flash/).length).toBeGreaterThan(0);
+		expect(screen.getAllByText(/deepseek-flash/).length).toBeGreaterThan(0);
 		expect(screen.getByLabelText("Provider")).toHaveValue("deepseek");
 		expect(
 			screen.getByText(/no api key is configured in the environment/i),

@@ -16,11 +16,13 @@ import {
 	type AgentEvent,
 	type AgentMessage,
 	type AgentTool,
+	BACKGROUND_CONTEXT,
 	generateSummary,
 } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
 	Context,
+	JsonObject,
 	Model,
 	Models,
 	SimpleStreamOptions,
@@ -1275,7 +1277,12 @@ export function dilnaMessagesToInitialState(
 					type: "toolCall",
 					id: part.callId,
 					name: part.tool,
-					arguments: (part.input as Record<string, unknown>) ?? {},
+					// `ToolCall.arguments` narrowed from `Record<string, unknown>` to
+					// pi-ai's `JsonObject` in 0.87, so the cast has to name the
+					// stronger shape. The persisted `part.input` is a tool call's
+					// arguments, which were JSON on the wire; `JsonObject` is the
+					// honest type for them, not a loosened one.
+					arguments: (part.input as JsonObject) ?? {},
 				});
 			} else if (part.type === "attachment") {
 				// An image the Agent sent with `dilna_send_image` (issue #222,
@@ -1400,8 +1407,11 @@ export async function summarizeMessages(opts: {
 		opts.model,
 		opts.reserveTokens,
 		undefined,
-		undefined,
 		opts.previousSummary,
+		undefined,
+		undefined,
+		undefined,
+		BACKGROUND_CONTEXT,
 	);
 	if (!result.ok) {
 		// Logged here, where the error is still in pi's native shape; both

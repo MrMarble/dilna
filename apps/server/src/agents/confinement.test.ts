@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BeforeToolCallContext } from "@earendil-works/pi-agent-core";
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConfinementHook, isContained } from "./confinement";
 
@@ -91,10 +92,7 @@ describe("confinement", () => {
 		});
 	});
 
-	function ctx(
-		toolName: string,
-		args: Record<string, unknown>,
-	): BeforeToolCallContext {
+	function ctx(toolName: string, args: JsonObject): BeforeToolCallContext {
 		return {
 			assistantMessage: {
 				role: "assistant",
@@ -120,7 +118,7 @@ describe("confinement", () => {
 				arguments: args,
 			},
 			args,
-			context: { systemPrompt: "", messages: [] },
+			context: { messages: [] },
 		};
 	}
 

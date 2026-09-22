@@ -67,25 +67,25 @@ describe("provider config override store", () => {
 	});
 
 	it("persists a valid override and makes it take effect immediately", async () => {
-		const res = await setOverride("deepseek", "deepseek-v4-flash");
+		const res = await setOverride("deepseek", "deepseek-flash");
 		expect(res.ok).toBe(true);
 		expect(effectiveProvider()).toBe("deepseek");
-		expect(effectiveModel()).toBe("deepseek-v4-flash");
+		expect(effectiveModel()).toBe("deepseek-flash");
 	});
 
 	it("persists to the DB so it survives restart (override survives close/re-prime)", async () => {
-		await setOverride("moonshotai", "kimi-k2.5");
+		await setOverride("moonshotai", "kimi-k2.6");
 		// Simulate a server restart: close the DB connection, then re-prime the
 		// module cache from the on-disk row. The override must come back from
 		// SQLite rather than from the module's in-memory cache.
 		closeDb();
 		primeOverrideFromDb();
 		expect(effectiveProvider()).toBe("moonshotai");
-		expect(effectiveModel()).toBe("kimi-k2.5");
+		expect(effectiveModel()).toBe("kimi-k2.6");
 	});
 
 	it("clearing the override returns effective values to the env fallback", async () => {
-		await setOverride("deepseek", "deepseek-v4-flash");
+		await setOverride("deepseek", "deepseek-flash");
 		clearOverride();
 		expect(effectiveProvider()).toBe("anthropic");
 		expect(effectiveModel()).toBe("claude-opus-5");
@@ -109,7 +109,7 @@ describe("provider config override store", () => {
 
 	it("rejects when the matching API key env var is absent", async () => {
 		delete process.env.DEEPSEEK_API_KEY;
-		const res = await setOverride("deepseek", "deepseek-v4-flash");
+		const res = await setOverride("deepseek", "deepseek-flash");
 		expect(res.ok).toBe(false);
 		if (res.ok) throw new Error("unreachable");
 		expect(res.error).toContain("No API key configured");

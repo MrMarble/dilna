@@ -1,4 +1,8 @@
-import { loadSkills, type Skill } from "@earendil-works/pi-agent-core";
+import {
+	BACKGROUND_CONTEXT,
+	loadSkills,
+	type Skill,
+} from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv } from "@earendil-works/pi-agent-core/node";
 import { logger } from "../logger";
 import { getEnabledSkillDirs } from "./store";
@@ -41,7 +45,11 @@ export async function loadSkillsForRepo(
 
 	try {
 		const env = new NodeExecutionEnv({ cwd: process.cwd() });
-		const { skills, diagnostics } = await loadSkills(env, dirs);
+		const { skills, diagnostics } = await loadSkills(
+			env,
+			dirs,
+			BACKGROUND_CONTEXT,
+		);
 		for (const d of diagnostics) {
 			log.warn(
 				{ code: d.code, path: d.path, repoId },
