@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.33.0](https://github.com/MrMarble/dilna/compare/v0.32.0...v0.33.0) (2026-09-22)
+
+
+### Features
+
+* **web:** rework theme tokens around a live highlight, and fix markdown headings ([#248](https://github.com/MrMarble/dilna/issues/248)) ([17f0096](https://github.com/MrMarble/dilna/commit/17f00964443f8f0b7240f20bccb34df36315e935))
+
+
+### Dependencies
+
+* **agents:** upgrade the pi stack to 0.87 ([#247](https://github.com/MrMarble/dilna/issues/247)) ([548377b](https://github.com/MrMarble/dilna/commit/548377b9200f2b984a62d6da33dcd729df8d4d86))
+
 ## [0.32.0](https://github.com/MrMarble/dilna/compare/v0.31.0...v0.32.0) (2026-09-19)
 
 
