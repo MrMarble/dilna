@@ -531,7 +531,7 @@ export function SettingsPage({ onBack }: Props) {
 							</div>
 
 							{/* Active-now summary */}
-							<div className="rounded-xl border border-border bg-card p-3 text-sm shadow-sm">
+							<div className="rounded-xl border border-border bg-card p-3 text-sm shadow-card">
 								<p className="text-xs text-muted-foreground">
 									Currently in effect
 								</p>

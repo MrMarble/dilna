@@ -12,12 +12,13 @@ export const RATE_LIMIT_LABELS: Record<RateLimitWindowKind, string> = {
 	seven_day: "7d",
 };
 
-/** Neutral below 50%, yellow 50-80% (inclusive), red above 80% — per the
- * issue's acceptance criteria exactly. */
+/** Neutral below 50%, warning 50-80% (inclusive), danger above 80% — per the
+ * issue's acceptance criteria exactly. Semantic tokens, not raw palette
+ * classes, so the meters follow the theme (_cf._ `StatusDot`). */
 export function rateLimitBarColor(utilizationPct: number): string {
-	if (utilizationPct > 80) return "bg-red-500";
-	if (utilizationPct >= 50) return "bg-amber-500";
-	return "bg-zinc-400 dark:bg-zinc-500";
+	if (utilizationPct > 80) return "bg-danger";
+	if (utilizationPct >= 50) return "bg-warning";
+	return "bg-idle";
 }
 
 /** True while `window`'s reset time is still in the future relative to

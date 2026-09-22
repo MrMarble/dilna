@@ -9,18 +9,18 @@ import {
 
 describe("rateLimitBarColor", () => {
 	it("is neutral below 50%", () => {
-		expect(rateLimitBarColor(0)).toBe("bg-zinc-400 dark:bg-zinc-500");
-		expect(rateLimitBarColor(49)).toBe("bg-zinc-400 dark:bg-zinc-500");
+		expect(rateLimitBarColor(0)).toBe("bg-idle");
+		expect(rateLimitBarColor(49)).toBe("bg-idle");
 	});
 
-	it("is yellow from 50% up to and including 80%", () => {
-		expect(rateLimitBarColor(50)).toBe("bg-amber-500");
-		expect(rateLimitBarColor(80)).toBe("bg-amber-500");
+	it("is warning from 50% up to and including 80%", () => {
+		expect(rateLimitBarColor(50)).toBe("bg-warning");
+		expect(rateLimitBarColor(80)).toBe("bg-warning");
 	});
 
-	it("is red above 80%", () => {
-		expect(rateLimitBarColor(81)).toBe("bg-red-500");
-		expect(rateLimitBarColor(100)).toBe("bg-red-500");
+	it("is danger above 80%", () => {
+		expect(rateLimitBarColor(81)).toBe("bg-danger");
+		expect(rateLimitBarColor(100)).toBe("bg-danger");
 	});
 });
 

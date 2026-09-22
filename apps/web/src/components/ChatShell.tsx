@@ -1363,10 +1363,10 @@ function ToolCallMarker({
 				<div className="flex flex-col gap-1 border-t border-border px-2.5 py-1.5">
 					{isEdit && (
 						<>
-							<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-red-500/10 px-2 py-1 text-xs text-red-700 dark:text-red-300">
+							<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-danger/10 px-2 py-1 text-xs text-danger">
 								{String(input.old_string)}
 							</pre>
-							<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-emerald-500/10 px-2 py-1 text-xs text-emerald-700 dark:text-emerald-300">
+							<pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-success/10 px-2 py-1 text-xs text-success">
 								{String(input.new_string)}
 							</pre>
 						</>

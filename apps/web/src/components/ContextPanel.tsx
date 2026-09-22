@@ -291,7 +291,7 @@ function SectionCard({
 	children: React.ReactNode;
 }) {
 	return (
-		<section className="rounded-xl border border-sidebar-border bg-card p-3 shadow-sm">
+		<section className="rounded-xl border border-sidebar-border bg-card p-3 shadow-card">
 			<div className="mb-2 flex items-center gap-2">
 				<h3 className="text-xs font-medium text-muted-foreground">{title}</h3>
 				{badge}
@@ -411,7 +411,7 @@ function SessionContextRow({ sessionId }: { sessionId: string }) {
 				/>
 			</div>
 			{isNearCompaction(pct) && (
-				<span className="text-xs text-red-600 dark:text-red-500">
+				<span className="text-xs text-danger">
 					Nearing context limit — will compact soon
 				</span>
 			)}
@@ -458,12 +458,8 @@ function ChangedFilesSection({
 					)}
 					{(totalAdditions > 0 || totalDeletions > 0) && (
 						<span className="ml-auto shrink-0 font-mono text-xs tabular-nums">
-							<span className="text-emerald-600 dark:text-emerald-400">
-								+{totalAdditions}
-							</span>{" "}
-							<span className="text-red-600 dark:text-red-400">
-								-{totalDeletions}
-							</span>
+							<span className="text-success">+{totalAdditions}</span>{" "}
+							<span className="text-danger">-{totalDeletions}</span>
 						</span>
 					)}
 				</>
@@ -490,17 +486,17 @@ const STATUS_META: Record<
 > = {
 	added: {
 		icon: FilePlus,
-		className: "text-emerald-600 dark:text-emerald-400",
+		className: "text-success",
 		label: "Added",
 	},
 	modified: {
 		icon: Pencil,
-		className: "text-amber-600 dark:text-amber-400",
+		className: "text-warning",
 		label: "Modified",
 	},
 	deleted: {
 		icon: FileX,
-		className: "text-red-600 dark:text-red-400",
+		className: "text-danger",
 		label: "Deleted",
 	},
 };
@@ -521,15 +517,11 @@ function ChangedFileRow({ file }: { file: ChangedFile }) {
 			<span className="truncate font-mono text-xs">{file.path}</span>
 			<span className="ml-auto shrink-0 whitespace-nowrap font-mono text-xs tabular-nums">
 				{file.additions > 0 && (
-					<span className="text-emerald-600 dark:text-emerald-400">
-						+{file.additions}
-					</span>
+					<span className="text-success">+{file.additions}</span>
 				)}
 				{file.additions > 0 && file.deletions > 0 && " "}
 				{file.deletions > 0 && (
-					<span className="text-red-600 dark:text-red-400">
-						-{file.deletions}
-					</span>
+					<span className="text-danger">-{file.deletions}</span>
 				)}
 			</span>
 		</li>

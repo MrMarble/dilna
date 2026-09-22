@@ -775,7 +775,7 @@ function BackgroundAgentsSection({
 	if (sessions.length === 0) return null;
 
 	return (
-		<div className="mx-2 mb-2 flex max-h-64 flex-col overflow-hidden rounded-xl border border-sidebar-border bg-card shadow-sm">
+		<div className="mx-2 mb-2 flex max-h-64 flex-col overflow-hidden rounded-xl border border-sidebar-border bg-card shadow-card">
 			<div className="flex items-center justify-between px-3 py-2">
 				<span className="text-xs font-medium text-muted-foreground">
 					Background Agents
