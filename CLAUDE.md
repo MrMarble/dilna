@@ -12,7 +12,7 @@ Every non-obvious design decision has an ADR in `docs/adr/` (agent adapters, ses
 - `pnpm typecheck` / `pnpm test` / `pnpm lint` / `pnpm format`
 - Single package: `pnpm --filter @dilna/server run <script>` (or `--filter ./apps/web`)
 - Single test file: `pnpm vitest run path/to/file.test.ts`; `apps/server/src/{sessions,repos}/*.test.ts` and `apps/web/src/components/*.test.tsx` are the existing ones
-- DB schema changes: edit `apps/server/src/db/schema.ts`, then `pnpm --filter @dilna/server run db:generate` (drizzle-kit) and `db:migrate`
+- DB schema changes: edit `apps/server/src/db/schema.ts`, then `pnpm --filter @dilna/server run db:generate` (drizzle-kit) and `db:migrate`. Commit the generated SQL **and** its `drizzle/meta/*_snapshot.json` — never hand-write a migration without a snapshot; `src/db/migrations.test.ts` fails if the snapshot or the SQL drifts from `schema.ts`. Rename the generated SQL file freely, but keep the journal `tag` in step
 
 ## Architecture
 
