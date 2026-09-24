@@ -36,6 +36,9 @@ const state = vi.hoisted(() => {
 
 	const current = { value: make(null) };
 	return {
+		get current() {
+			return current.value;
+		},
 		// Seed each test: start with no override (env fallback in effect).
 		reset: () => {
 			current.value = make(null);
@@ -125,8 +128,9 @@ describe("SettingsPage", () => {
 		render(<SettingsPage onBack={() => {}} />);
 		expect(await screen.findByText(/currently in effect/i)).toBeInTheDocument();
 		// Form is prefilled from the env default (no override yet).
-		expect(screen.getByLabelText("Provider")).toHaveValue("anthropic");
-		expect(screen.getByLabelText("Model")).toHaveValue("claude-opus-4-5");
+		expect(screen.getByLabelText("Model")).toHaveValue(
+			"anthropic/claude-opus-4-5",
+		);
 		expect(screen.getByText(/from env/i)).toBeInTheDocument();
 	});
 
@@ -141,10 +145,10 @@ describe("SettingsPage", () => {
 		// Appears in both the "currently in effect" summary and the model
 		// dropdown's selected option.
 		expect(screen.getAllByText(/deepseek-flash/).length).toBeGreaterThan(0);
-		expect(screen.getByLabelText("Provider")).toHaveValue("deepseek");
-		expect(
-			screen.getByText(/no api key is configured in the environment/i),
-		).toBeInTheDocument();
+		expect(screen.getByLabelText("Model")).toHaveValue(
+			"deepseek/deepseek-flash",
+		);
+		expect(screen.getByText(/saving will be rejected/i)).toBeInTheDocument();
 	});
 
 	it("save persists an override and confirms", async () => {
@@ -155,7 +159,7 @@ describe("SettingsPage", () => {
 
 		await user.selectOptions(
 			screen.getByLabelText("Model"),
-			"claude-haiku-4-5",
+			"anthropic/claude-haiku-4-5",
 		);
 		await user.click(
 			screen.getByRole("button", { name: /save provider\/model/i }),
@@ -172,18 +176,42 @@ describe("SettingsPage", () => {
 		expect(screen.getByText(/override set/i)).toBeInTheDocument();
 	});
 
-	it("surfaces the server validation error when saving a provider with no key", async () => {
+	it("lists models from every keyed provider, prefixed with the provider", async () => {
 		state.reset();
+		state.current.apiKeysConfigured.deepseek = true;
 		const user = userEvent.setup();
 		render(<SettingsPage onBack={() => {}} />);
 		await screen.findByText(/currently in effect/i);
-		await user.selectOptions(screen.getByLabelText("Provider"), "deepseek");
+
+		expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
+		expect(
+			screen.getAllByRole("option").map((o) => o.getAttribute("value")),
+		).toEqual([
+			"anthropic/claude-opus-4-5",
+			"anthropic/claude-haiku-4-5",
+			"deepseek/deepseek-flash",
+		]);
+
+		await user.selectOptions(
+			screen.getByLabelText("Model"),
+			"deepseek/deepseek-flash",
+		);
 		await user.click(
 			screen.getByRole("button", { name: /save provider\/model/i }),
 		);
+		expect(state.api.get().override).toEqual({
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+	});
+
+	it("leaves providers without a key out of the model list", async () => {
+		state.reset();
+		render(<SettingsPage onBack={() => {}} />);
+		await screen.findByText(/currently in effect/i);
 		expect(
-			await screen.findByText(/no api key configured for provider/i),
-		).toBeInTheDocument();
+			screen.queryByRole("option", { name: "deepseek/deepseek-flash" }),
+		).not.toBeInTheDocument();
 	});
 
 	it("disables the env-default reset while no override is set", async () => {
@@ -217,10 +245,10 @@ describe("SettingsPage", () => {
 			expect(
 				await screen.findByText(/custom provider added/i),
 			).toBeInTheDocument();
-			// Appears both as a management-list row and a provider dropdown option.
-			expect(screen.getAllByText("ollama").length).toBeGreaterThanOrEqual(2);
+			// Appears both as a management-list row and a model dropdown option.
+			expect(screen.getByText("ollama")).toBeInTheDocument();
 			expect(
-				screen.getByRole("option", { name: /^ollama/ }),
+				screen.getByRole("option", { name: "ollama/llama3.1:8b" }),
 			).toBeInTheDocument();
 		});
 
