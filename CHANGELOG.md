@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.34.0](https://github.com/MrMarble/dilna/compare/v0.33.0...v0.34.0) (2026-09-24)
+
+
+### Features
+
+* score a turn with a judge model against criteria (ADR-0046) ([#253](https://github.com/MrMarble/dilna/issues/253)) ([f3212c8](https://github.com/MrMarble/dilna/commit/f3212c862ffc7ab916246976ce3689f5e0c08b92))
+* **web:** list every keyed provider's models in one provider/model selector ([#252](https://github.com/MrMarble/dilna/issues/252)) ([97f07a9](https://github.com/MrMarble/dilna/commit/97f07a972a8f41ec069e5091fd1e69f844c5dc32))
+
+
+### Bug Fixes
+
+* **server:** restore the drizzle snapshot chain so db:generate works again ([#255](https://github.com/MrMarble/dilna/issues/255)) ([1b3e4ff](https://github.com/MrMarble/dilna/commit/1b3e4ff755cacf485aaab0c493ef675b9f7afdd3))
+
 ## [0.33.0](https://github.com/MrMarble/dilna/compare/v0.32.0...v0.33.0) (2026-09-22)
 
 
