@@ -1,5 +1,6 @@
 import { relations } from "drizzle-orm";
 import {
+	index,
 	integer,
 	primaryKey,
 	real,
@@ -144,31 +145,35 @@ export const customProviders = sqliteTable("custom_providers", {
 	updatedAt: integer("updated_at").notNull().$defaultFn(now),
 });
 
-export const messages = sqliteTable("messages", {
-	id: text("id").primaryKey(),
-	sessionId: text("session_id").notNull(),
-	role: text("role").notNull(),
-	partsJson: text("parts_json").notNull(),
-	/** Groups the rows one user turn produced (ADR-0026 §3 persists one row
-	 * per pi-agent-core round, so a tool-heavy turn is several rows). Null for
-	 * user rows, boot-time `"system"` notices, and pre-migration rows —
-	 * consumers treat null as "never grouped". See
-	 * `packages/shared`'s `Message.turnId`. */
-	turnId: text("turn_id"),
-	/** Display timestamp, epoch **seconds** — deliberately not the sort key.
-	 * At one-second resolution rows tie constantly (sub-agents writing in
-	 * parallel land several rows in the same second), and a tie has no defined
-	 * order in SQL. Order by {@link seq}; render this. */
-	createdAt: integer("created_at").notNull().$defaultFn(now),
-	/** Monotonic write order within a Session — the column every read orders
-	 * by. Assigned by `messageStore.persistMessage` as `max(seq) + 1` for the
-	 * Session, inside the caller's transaction, so concurrent turns can't mint
-	 * the same value. Backfilled from `rowid` for pre-migration rows, which
-	 * preserves the insertion order SQLite happened to be returning before.
-	 * Nullable only so the backfill migration can run; every row written since
-	 * has one. */
-	seq: integer("seq"),
-});
+export const messages = sqliteTable(
+	"messages",
+	{
+		id: text("id").primaryKey(),
+		sessionId: text("session_id").notNull(),
+		role: text("role").notNull(),
+		partsJson: text("parts_json").notNull(),
+		/** Groups the rows one user turn produced (ADR-0026 §3 persists one row
+		 * per pi-agent-core round, so a tool-heavy turn is several rows). Null for
+		 * user rows, boot-time `"system"` notices, and pre-migration rows —
+		 * consumers treat null as "never grouped". See
+		 * `packages/shared`'s `Message.turnId`. */
+		turnId: text("turn_id"),
+		/** Display timestamp, epoch **seconds** — deliberately not the sort key.
+		 * At one-second resolution rows tie constantly (sub-agents writing in
+		 * parallel land several rows in the same second), and a tie has no defined
+		 * order in SQL. Order by {@link seq}; render this. */
+		createdAt: integer("created_at").notNull().$defaultFn(now),
+		/** Monotonic write order within a Session — the column every read orders
+		 * by. Assigned by `messageStore.persistMessage` as `max(seq) + 1` for the
+		 * Session, inside the caller's transaction, so concurrent turns can't mint
+		 * the same value. Backfilled from `rowid` for pre-migration rows, which
+		 * preserves the insertion order SQLite happened to be returning before.
+		 * Nullable only so the backfill migration can run; every row written since
+		 * has one. */
+		seq: integer("seq"),
+	},
+	(t) => [index("messages_session_seq_idx").on(t.sessionId, t.seq)],
+);
 
 /**
  * A message the user submitted while the Session's Agent was busy
@@ -420,20 +425,24 @@ export const usageEvents = sqliteTable("usage_events", {
  * re-scoring a turn adds a row. No FK, same as `artefacts`; pruned with the
  * Session by `SessionManager.delete`.
  */
-export const turnScores = sqliteTable("turn_scores", {
-	id: text("id").primaryKey(),
-	sessionId: text("session_id").notNull(),
-	turnId: text("turn_id").notNull(),
-	metric: text("metric").notNull(),
-	criteria: text("criteria"),
-	provider: text("provider").notNull(),
-	model: text("model").notNull(),
-	score: real("score").notNull(),
-	threshold: real("threshold").notNull(),
-	passed: integer("passed", { mode: "boolean" }).notNull(),
-	reason: text("reason").notNull(),
-	createdAt: integer("created_at").notNull().$defaultFn(now),
-});
+export const turnScores = sqliteTable(
+	"turn_scores",
+	{
+		id: text("id").primaryKey(),
+		sessionId: text("session_id").notNull(),
+		turnId: text("turn_id").notNull(),
+		metric: text("metric").notNull(),
+		criteria: text("criteria"),
+		provider: text("provider").notNull(),
+		model: text("model").notNull(),
+		score: real("score").notNull(),
+		threshold: real("threshold").notNull(),
+		passed: integer("passed", { mode: "boolean" }).notNull(),
+		reason: text("reason").notNull(),
+		createdAt: integer("created_at").notNull().$defaultFn(now),
+	},
+	(t) => [index("turn_scores_session_idx").on(t.sessionId)],
+);
 
 /**
  * A deleted ordinary Session's final summary (ADR-0024), written by
