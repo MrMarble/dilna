@@ -2,6 +2,8 @@ import type {
 	ListReposResponse,
 	PushKeyResponse,
 	SessionResponse,
+	TurnScoreResponse,
+	TurnScoresResponse,
 } from "@dilna/shared";
 import { describe, expectTypeOf, it } from "vitest";
 import { api } from "./client";
@@ -55,5 +57,14 @@ describe("api client response envelopes", () => {
 		expectTypeOf(
 			api.repos.list,
 		).returns.resolves.toEqualTypeOf<ListReposResponse>();
+	});
+
+	it("types turn scoring as its shared envelopes", () => {
+		expectTypeOf(
+			api.sessions.scores,
+		).returns.resolves.toEqualTypeOf<TurnScoresResponse>();
+		expectTypeOf(
+			api.sessions.scoreTurn,
+		).returns.resolves.toEqualTypeOf<TurnScoreResponse>();
 	});
 });

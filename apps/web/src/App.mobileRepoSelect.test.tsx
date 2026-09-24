@@ -79,6 +79,7 @@ vi.mock("@/api/client", () => ({
 			changedFiles: async () => ({ files: [] }),
 			commits: async () => ({ commits: [] }),
 			artefacts: async () => ({ artefacts: [] }),
+			scores: async () => ({ scores: [] }),
 		},
 		skills: { forRepo: async () => ({ skills: [] }) },
 		sessionList: {
@@ -105,6 +106,7 @@ vi.mock("@/api/client", () => ({
 					byRepo: [],
 					byModel: [],
 					topSessions: [],
+					byPurpose: [],
 				},
 			}),
 			disk: async () => ({ disk: { totalBytes: 10_000, freeBytes: 4_000 } }),

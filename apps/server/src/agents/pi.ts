@@ -1430,6 +1430,61 @@ export async function summarizeMessages(opts: {
 	return result.value;
 }
 
+// ---- Output scoring support (ADR-0046) --------------------------------------
+
+/**
+ * One judge round-trip for `sessions/scoring.ts` (issue #251): a system
+ * prompt and a single user prompt, no tools, no history, on `model` — the
+ * same bare `completeSimple` + stored-key lookup the summarization shim above
+ * uses. Like {@link summarizeMessages}, this is the only part of scoring that
+ * needs pi; which prompts to send and what a reply means is policy and lives
+ * in `sessions/`.
+ *
+ * Returns the reply text and its usage (the caller records it as `"judge"`
+ * spend) or `null` on any provider failure, logged here in pi's native shape.
+ * Never throws.
+ */
+export async function judgeComplete(opts: {
+	model: Model<Api>;
+	systemPrompt: string;
+	prompt: string;
+}): Promise<{ text: string; usage: UsageTotals | null } | null> {
+	try {
+		const apiKey = await providerApiKey(opts.model.provider);
+		const reply = await completeSimple(
+			opts.model,
+			{
+				systemPrompt: opts.systemPrompt,
+				messages: [
+					{ role: "user", content: opts.prompt, timestamp: Date.now() },
+				],
+			},
+			{ apiKey },
+		);
+		if (reply.stopReason === "error" || reply.stopReason === "aborted") {
+			log.error(
+				{
+					provider: opts.model.provider,
+					model: opts.model.id,
+					err: reply.errorMessage,
+				},
+				"judge call failed",
+			);
+			return null;
+		}
+		return {
+			text: contentBlocksToText(reply.content),
+			usage: extractUsageTotals(reply.usage),
+		};
+	} catch (err) {
+		log.error(
+			{ provider: opts.model.provider, model: opts.model.id, err },
+			"judge call failed",
+		);
+		return null;
+	}
+}
+
 // ---- Session title derivation -----------------------------------------------
 
 /**

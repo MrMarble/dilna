@@ -406,6 +406,32 @@ export const usageEvents = sqliteTable("usage_events", {
 	cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
 	reasoningTokens: integer("reasoning_tokens").notNull().default(0),
 	costUsd: real("cost_usd").notNull().default(0),
+	/** `packages/shared`'s `UsagePurpose`: `"turn"` for an Agent turn,
+	 * `"judge"` for an output-scoring call (ADR-0046). Existing rows are all
+	 * turns, hence the default. */
+	purpose: text("purpose").notNull().default("turn"),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+});
+
+/**
+ * One judged score of one turn (issue #251, ADR-0046) — `packages/shared`'s
+ * `TurnScore`. Keyed by `turnId` (the `messages.turn_id` a turn's rows share),
+ * not a message id, since the judge reads the turn as a whole. Append-only:
+ * re-scoring a turn adds a row. No FK, same as `artefacts`; pruned with the
+ * Session by `SessionManager.delete`.
+ */
+export const turnScores = sqliteTable("turn_scores", {
+	id: text("id").primaryKey(),
+	sessionId: text("session_id").notNull(),
+	turnId: text("turn_id").notNull(),
+	metric: text("metric").notNull(),
+	criteria: text("criteria"),
+	provider: text("provider").notNull(),
+	model: text("model").notNull(),
+	score: real("score").notNull(),
+	threshold: real("threshold").notNull(),
+	passed: integer("passed", { mode: "boolean" }).notNull(),
+	reason: text("reason").notNull(),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 

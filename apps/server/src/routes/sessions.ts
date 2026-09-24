@@ -19,7 +19,10 @@ import {
 	type SendMessageResponse,
 	type SessionMessagesResponse,
 	type SessionResponse,
+	scoreTurnBodySchema,
 	sendMessageBodySchema,
+	type TurnScoreResponse,
+	type TurnScoresResponse,
 } from "@dilna/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -42,6 +45,13 @@ import {
 	SessionNotFoundError,
 	TurnInProgressError,
 } from "../sessions/manager";
+import {
+	JudgeFailedError,
+	JudgeUnavailableError,
+	listScores,
+	scoreTurn,
+	TurnNotFoundError,
+} from "../sessions/scoring";
 import { toView } from "../sessions/sessionStore";
 import { renderTranscript } from "../sessions/transcript";
 import { validate } from "./factory";
@@ -453,6 +463,56 @@ export function createSessionsRoute(deps: {
 		};
 		return c.json(body);
 	});
+
+	/** Every judged turn score in the Session (issue #251, ADR-0046) — the
+	 * chat's initial snapshot; new ones come back from the `POST` below. */
+	guarded.get("/:id/scores", (c) => {
+		const body: TurnScoresResponse = {
+			scores: listScores(c.get("session").id),
+		};
+		return c.json(body);
+	});
+
+	/**
+	 * Judge one finished turn on demand (ADR-0046). Synchronous: the several
+	 * small judge calls run inside the request and the score comes back in the
+	 * response — no stream event, since only the client that asked is waiting
+	 * on it. 422 for an unusable judge (not in the catalog / no key), 502 when
+	 * the judge ran but its replies were unusable.
+	 */
+	guarded.post(
+		"/:id/turns/:turnId/scores",
+		validate("json", scoreTurnBodySchema),
+		async (c) => {
+			const session = c.get("session");
+			const { metric, criteria, threshold, provider, model } =
+				c.req.valid("json");
+			try {
+				const score = await scoreTurn({
+					session,
+					history: await deps.sessions.getMessages(session.id),
+					turnId: c.req.param("turnId"),
+					metric,
+					criteria,
+					threshold,
+					judgeOverride: provider && model ? { provider, model } : undefined,
+				});
+				const body: TurnScoreResponse = { score };
+				return c.json(body, 201);
+			} catch (err) {
+				if (err instanceof TurnNotFoundError) {
+					throw new HTTPException(404, { message: err.message });
+				}
+				if (err instanceof JudgeUnavailableError) {
+					throw new HTTPException(422, { message: err.message });
+				}
+				if (err instanceof JudgeFailedError) {
+					throw new HTTPException(502, { message: err.message });
+				}
+				throw err;
+			}
+		},
+	);
 
 	/**
 	 * Serve a published artefact's bytes — what the UI's iframe points at.

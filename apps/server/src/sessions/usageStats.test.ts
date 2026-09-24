@@ -31,6 +31,7 @@ function seedRow(overrides: {
 	inputTokens?: number;
 	outputTokens?: number;
 	costUsd?: number;
+	purpose?: string;
 }) {
 	getDb()
 		.insert(usageEventsTable)
@@ -128,5 +129,28 @@ describe("getUsageSummary", () => {
 	it("since=0 includes every row regardless of age", () => {
 		const summary = getUsageSummary(0);
 		expect(summary.totals.inputTokens).toBeGreaterThanOrEqual(400);
+	});
+
+	it("counts judge spend in the totals and splits it out by purpose", () => {
+		const now = Math.floor(Date.now() / 1000);
+		const before = getUsageSummary(0);
+		seedRow({
+			id: "judge-1",
+			repoId: "repo-a",
+			createdAt: now,
+			costUsd: 0.5,
+			purpose: "judge",
+		});
+		const summary = getUsageSummary(0);
+		expect(summary.totals.costUsd).toBeCloseTo(before.totals.costUsd + 0.5, 6);
+		expect(summary.byPurpose).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ purpose: "judge", costUsd: 0.5 }),
+				expect.objectContaining({
+					purpose: "turn",
+					costUsd: expect.closeTo(before.totals.costUsd, 6),
+				}),
+			]),
+		);
 	});
 });

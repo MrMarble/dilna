@@ -186,9 +186,20 @@ function SummaryCards({ summary }: { summary: UsageSummary }) {
 	const { totals } = summary;
 	const totalTokens = totals.inputTokens + totals.outputTokens;
 	const cacheTokens = totals.cacheReadTokens + totals.cacheWriteTokens;
+	// Judge calls (ADR-0046) are real spend and already in the totals; the
+	// card just says how much of it went on scoring rather than on turns.
+	const judge = summary.byPurpose.find((p) => p.purpose === "judge");
 	return (
 		<div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-			<StatCard label="Total cost" value={formatUsd(totals.costUsd)} />
+			<StatCard
+				label="Total cost"
+				value={formatUsd(totals.costUsd)}
+				sub={
+					judge && judge.costUsd > 0
+						? `incl. ${formatUsd(judge.costUsd)} on scoring`
+						: undefined
+				}
+			/>
 			<StatCard
 				label="Tokens"
 				value={formatTokenCount(totalTokens)}

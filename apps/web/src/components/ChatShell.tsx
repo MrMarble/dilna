@@ -5,6 +5,7 @@ import {
 	type MessagePart,
 	type QueuedMessage,
 	type SessionView,
+	type TurnScore,
 } from "@dilna/shared";
 import {
 	AlertCircle,
@@ -32,6 +33,11 @@ import {
 } from "react";
 import { ApiError, api, attachmentUrl } from "@/api/client";
 import { SlashCommandMenu } from "@/components/SlashCommandMenu";
+import {
+	ScoreTurnButton,
+	TurnScoreList,
+	useTurnScores,
+} from "@/components/TurnScores";
 import { CopyButton } from "@/components/ui/copy-button";
 import { Markdown } from "@/components/ui/markdown";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
@@ -508,6 +514,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 		() => mergeRenderedMessages(messages, live, sessionId),
 		[messages, live, sessionId],
 	);
+	const turnScores = useTurnScores(sessionId);
 
 	return (
 		<div className="flex h-full flex-col">
@@ -539,6 +546,14 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 												<MessageScrollerItem key={m.id} messageId={m.id}>
 													<ChatMessageRow
 														id={m.id}
+														sessionId={sessionId}
+														turnId={m.turnId}
+														scores={
+															m.turnId
+																? turnScores.byTurn.get(m.turnId)
+																: undefined
+														}
+														onScored={turnScores.add}
 														role={m.role}
 														parts={m.parts}
 														createdAt={m.createdAt}
@@ -1002,6 +1017,10 @@ function ThinkingMarker({ word }: { word: string }) {
 
 function ChatMessageRow({
 	id,
+	sessionId,
+	turnId,
+	scores,
+	onScored,
 	role,
 	parts,
 	createdAt,
@@ -1014,6 +1033,12 @@ function ChatMessageRow({
 	turnActivity,
 }: {
 	id: string;
+	sessionId: string;
+	/** Set only on persisted assistant turns (live entries are `null`), which
+	 * is exactly when a turn is finished enough to score (ADR-0046). */
+	turnId: string | null;
+	scores?: TurnScore[];
+	onScored: (score: TurnScore) => void;
 	role: "user" | "assistant";
 	parts: MessagePart[];
 	createdAt: number;
@@ -1102,6 +1127,17 @@ function ChatMessageRow({
 		/>
 	);
 
+	const scoreButton = role === "assistant" && turnId && !isStreaming && (
+		<ScoreTurnButton
+			sessionId={sessionId}
+			turnId={turnId}
+			sessionProvider={provider}
+			sessionModel={modelName}
+			onScored={onScored}
+			className="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/message:opacity-100"
+		/>
+	);
+
 	const avatar = showAttribution && (
 		<span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted">
 			{role === "user" ? (
@@ -1136,11 +1172,13 @@ function ChatMessageRow({
 							{formatClockTime(createdAt)}
 						</span>
 						{copyText}
+						{scoreButton}
 					</MessageHeader>
 				) : (
 					<MessageHeader className="gap-1.5 px-0 invisible text-xs tabular-nums group-hover/message:visible">
 						<span>{formatClockTime(createdAt)}</span>
 						{copyText}
+						{scoreButton}
 					</MessageHeader>
 				)}
 				{isStreaming && role === "assistant" && (
@@ -1161,6 +1199,7 @@ function ChatMessageRow({
 				) : attached.length > 0 ? null : (
 					<span className="text-xs text-muted-foreground">{id}</span>
 				)}
+				{scores && <TurnScoreList scores={scores} />}
 			</MessageContent>
 		</Message>
 	);

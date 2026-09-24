@@ -21,6 +21,7 @@ let nextSummary: UsageSummary = {
 	byRepo: [],
 	byModel: [],
 	topSessions: [],
+	byPurpose: [],
 };
 
 vi.mock("@/api/client", () => ({
@@ -43,6 +44,7 @@ describe("MetricsPage", () => {
 			byRepo: [],
 			byModel: [],
 			topSessions: [],
+			byPurpose: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		expect(
@@ -124,6 +126,7 @@ describe("MetricsPage", () => {
 					costUsd: 1.2345,
 				},
 			],
+			byPurpose: [],
 		};
 		render(
 			<MetricsPage
@@ -161,6 +164,7 @@ describe("MetricsPage", () => {
 			byRepo: [],
 			byModel: [],
 			topSessions: [],
+			byPurpose: [],
 		};
 		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);
 		await screen.findByText(/no usage recorded yet/i);

@@ -96,6 +96,8 @@ describe("server route addresses", () => {
 		expectDeclared("POST", paths.sessions.attachments("__p__"));
 		expectDeclared("GET", paths.sessions.attachment("__p__", "__p__"));
 		expectDeclared("GET", paths.sessions.artefacts("__p__"));
+		expectDeclared("GET", paths.sessions.scores("__p__"));
+		expectDeclared("POST", paths.sessions.turnScores("__p__", "__p__"));
 		expectDeclared("GET", paths.sessions.artefact("__p__", "__p__"));
 		expectDeclared("POST", paths.sessions.stop("__p__"));
 		expectDeclared("GET", paths.sessions.stream("__p__"));

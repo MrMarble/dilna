@@ -63,6 +63,11 @@ export const paths = {
 			`/api/sessions/${enc(sessionId)}/artefacts`,
 		artefact: (sessionId: string, artefactId: string) =>
 			`/api/sessions/${enc(sessionId)}/artefacts/${enc(artefactId)}`,
+		/** `GET` every turn score in the Session. */
+		scores: (sessionId: string) => `/api/sessions/${enc(sessionId)}/scores`,
+		/** `POST` to judge one turn. */
+		turnScores: (sessionId: string, turnId: string) =>
+			`/api/sessions/${enc(sessionId)}/turns/${enc(turnId)}/scores`,
 	},
 	config: {
 		/** `GET`, `PUT` (set override), `DELETE` (clear). */
