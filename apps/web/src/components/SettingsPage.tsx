@@ -62,8 +62,8 @@ function newCustomModelRow(): CustomModelRow {
  *
  * Historically dilna authenticated every provider purely through env vars
  * (`DILNA_PROVIDER`/`DILNA_MODEL` plus the matching `*_API_KEY` host
- * passthrough, ADR-0005). The "Model provider" form still picks one
- * provider/model the way it always did — an *override* persisted in the
+ * passthrough, ADR-0005). The "Model" form still picks one provider/model
+ * pair — an *override* persisted in the
  * `llm_config` table and served by `/api/config`, with env as the fallback
  * when the override is cleared.
  *
@@ -71,8 +71,9 @@ function newCustomModelRow(): CustomModelRow {
  * once (multi-provider support): each row is a provider whose API key you've
  * stored in Settings (providerCredentials.ts), taking precedence over that
  * provider's env var. Typing a key into "Add a provider" doesn't pick the
- * running model — it just makes that provider selectable — so you configure
- * several providers, then choose which one new sessions run on above. New
+ * running model — it just adds that provider's models to the one flat
+ * `provider/model` list above, so every keyed provider is selectable at once
+ * without a separate provider picker. New
  * sessions snapshot that choice at create time; existing sessions keep the
  * model they started on.
  */
@@ -160,27 +161,32 @@ export function SettingsPage({ onBack }: Props) {
 		};
 	}, []);
 
-	// Persisted-override or env-default source of the current form selection —
-	// toggling the provider keeps model selection scoped to that provider by
-	// re-picking the first (or effective) model for it. The user always ends
-	// on a concrete, valid combo rather than a provider with no model.
-	const selectedProvider = provider || config?.effective.provider || "";
+	// One flat model list across every provider that has a key, each option
+	// keyed `provider/model` — so with several providers configured at once,
+	// picking a model *is* picking its provider. Splitting on the first `/`
+	// is unambiguous: provider ids are allowlisted or match customProviders.ts's
+	// `[a-z0-9-]` id pattern, while model ids may themselves contain `/`.
+	const selected = provider && model ? `${provider}/${model}` : "";
 
-	const modelOptions = useMemo(
-		() =>
-			config && selectedProvider
-				? (config.modelsByProvider[selectedProvider] ?? [])
-				: [],
-		[config, selectedProvider],
-	);
+	const modelOptions = useMemo(() => {
+		if (!config) return [];
+		const opts = Object.entries(config.modelsByProvider)
+			.filter(([p]) => config.apiKeysConfigured[p])
+			.flatMap(([p, models]) =>
+				models.map((m) => ({ value: `${p}/${m.id}`, name: m.name })),
+			);
+		// Keep a current selection whose provider lost (or never had) a key
+		// visible, rather than silently showing some other model as selected.
+		if (selected && !opts.some((o) => o.value === selected)) {
+			opts.unshift({ value: selected, name: `${selected} (no API key)` });
+		}
+		return opts;
+	}, [config, selected]);
 
-	function handleProviderChange(value: string) {
-		setProvider(value);
-		const opts = config?.modelsByProvider[value] ?? [];
-		// Keep the current model if it's valid for the new provider, else jump
-		// to the provider's first model.
-		if (opts.some((m) => m.id === model)) return;
-		setModel(opts[0]?.id ?? "");
+	function handleModelChange(value: string) {
+		const slash = value.indexOf("/");
+		setProvider(value.slice(0, slash));
+		setModel(value.slice(slash + 1));
 	}
 
 	async function handleSave(e: React.FormEvent) {
@@ -246,12 +252,7 @@ export function SettingsPage({ onBack }: Props) {
 			await api.config.setCredential(addProvider, addKey.trim());
 			setAddOpen(false);
 			// Refresh so the list + the model selector reflect the new key.
-			const cfg = await api.config.get();
-			setConfig(cfg);
-			// Point at the newly-added provider's first model as a convenience.
-			setProvider(addProvider);
-			const opts = cfg.modelsByProvider[addProvider] ?? [];
-			setModel(opts[0]?.id ?? "");
+			setConfig(await api.config.get());
 			setMessage({ kind: "ok", text: "API key saved for this provider." });
 		} catch (err) {
 			setAddError(err instanceof Error ? err.message : "failed to save key");
@@ -477,9 +478,7 @@ export function SettingsPage({ onBack }: Props) {
 
 	const hasOverride = Boolean(config?.override);
 	const providerHasKey =
-		!!config &&
-		!!selectedProvider &&
-		config.apiKeysConfigured[selectedProvider] === true;
+		!!config && !!provider && config.apiKeysConfigured[provider] === true;
 
 	// Which provider actually runs current sessions (override ?? env).
 	const activeProvider = config?.effective.provider || "";
@@ -520,13 +519,11 @@ export function SettingsPage({ onBack }: Props) {
 					<>
 						<form onSubmit={handleSave} className="space-y-5">
 							<div>
-								<h2 className="text-lg font-semibold tracking-tight">
-									Model provider
-								</h2>
+								<h2 className="text-lg font-semibold tracking-tight">Model</h2>
 								<p className="mt-0.5 text-sm text-muted-foreground">
-									dilna runs every session on one provider/model. Pick the one
-									to use going forward — this saves an instance-wide override
-									and applies to any new session immediately.
+									Every provider with a key below is available at once. Pick the
+									model new sessions start on — this saves an instance-wide
+									override and applies immediately.
 								</p>
 							</div>
 
@@ -564,56 +561,40 @@ export function SettingsPage({ onBack }: Props) {
 							</div>
 
 							<div className="space-y-1.5">
-								<Label htmlFor="settings-provider">Provider</Label>
-								<select
-									id="settings-provider"
-									value={provider || ""}
-									onChange={(e) => handleProviderChange(e.target.value)}
-									className={cn(
-										"h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm transition-[color,box-shadow] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-									)}
-								>
-									<option value="" disabled>
-										Select a provider…
-									</option>
-									{Object.keys(config.modelsByProvider).map((p) => (
-										<option key={p} value={p}>
-											{p}
-											{config.apiKeysConfigured[p]
-												? ""
-												: " (no API key in env)"}
-										</option>
-									))}
-								</select>
-								{selectedProvider && !providerHasKey && (
-									<p className="text-xs text-muted-foreground">
-										No API key is configured in the environment for{" "}
-										<span className="font-mono">{selectedProvider}</span> —
-										saving will be rejected until one is set.
-									</p>
-								)}
-							</div>
-
-							<div className="space-y-1.5">
 								<Label htmlFor="settings-model">Model</Label>
 								<select
 									id="settings-model"
-									value={model || ""}
-									onChange={(e) => setModel(e.target.value)}
-									disabled={!selectedProvider || modelOptions.length === 0}
+									value={selected}
+									onChange={(e) => handleModelChange(e.target.value)}
+									disabled={modelOptions.length === 0}
 									className={cn(
-										"h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+										"h-9 w-full rounded-md border border-input bg-transparent px-3 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 									)}
 								>
-									{modelOptions.length === 0 && (
-										<option value="">No model loaded</option>
+									{modelOptions.length === 0 ? (
+										<option value="">
+											No models — add a provider key below
+										</option>
+									) : (
+										!selected && (
+											<option value="" disabled>
+												Select a model…
+											</option>
+										)
 									)}
 									{modelOptions.map((m) => (
-										<option key={m.id} value={m.id}>
-											{m.name} ({m.id})
+										<option key={m.value} value={m.value} title={m.name}>
+											{m.value}
 										</option>
 									))}
 								</select>
+								{provider && !providerHasKey && (
+									<p className="text-xs text-muted-foreground">
+										No API key is configured for{" "}
+										<span className="font-mono">{provider}</span> — saving will
+										be rejected until one is added.
+									</p>
+								)}
 							</div>
 
 							{message && (
