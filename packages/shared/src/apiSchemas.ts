@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_ATTACHMENTS_PER_MESSAGE } from "./messages";
+import { SCORE_METRICS } from "./scoring";
 
 /**
  * Request schemas for dilna's HTTP API, owned here rather than per-route so
@@ -57,6 +58,30 @@ export const sendMessageBodySchema = z
 		message: "a message needs text or at least one attachment",
 	});
 export type SendMessageBody = z.infer<typeof sendMessageBodySchema>;
+
+/**
+ * `POST /api/sessions/:id/turns/:turnId/scores` (issue #251, ADR-0046).
+ * `provider`/`model` pick the judge and travel together or not at all —
+ * omitted, the Session's own model judges. `criteria` is required exactly
+ * when the metric reads it.
+ */
+export const scoreTurnBodySchema = z
+	.object({
+		metric: z.enum(SCORE_METRICS),
+		criteria: z.string().trim().max(4_000).optional(),
+		threshold: z.number().min(0).max(1).optional(),
+		provider: z.string().min(1).optional(),
+		model: z.string().min(1).optional(),
+	})
+	.refine((b) => (b.provider === undefined) === (b.model === undefined), {
+		message: "provider and model must be given together",
+		path: ["model"],
+	})
+	.refine((b) => b.metric !== "criteria" || !!b.criteria, {
+		message: "the criteria metric needs criteria to score against",
+		path: ["criteria"],
+	});
+export type ScoreTurnBody = z.infer<typeof scoreTurnBodySchema>;
 
 /** `GET /api/sessions` — `repoId` was previously only checked for truthiness. */
 export const listSessionsQuerySchema = z.object({

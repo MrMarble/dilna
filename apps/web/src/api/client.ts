@@ -47,6 +47,7 @@ import type {
 	RepoStatsResponse,
 	RepoSyncResponse,
 	RepoSyncStatus,
+	ScoreTurnBody,
 	SearchSkillsResponse,
 	SendMessageBody,
 	SendMessageResponse,
@@ -60,6 +61,8 @@ import type {
 	SetSkillEnabledBody,
 	Skill,
 	SkillSearchResult,
+	TurnScoreResponse,
+	TurnScoresResponse,
 	UsageSummary,
 	UsageSummaryResponse,
 } from "@dilna/shared";
@@ -352,6 +355,16 @@ export const api = {
 			request<CommitsResponse>(paths.sessions.commits(id)),
 		artefacts: (id: string) =>
 			request<ArtefactsResponse>(paths.sessions.artefacts(id)),
+		/** Every judged turn score in the Session (ADR-0046). */
+		scores: (id: string) =>
+			request<TurnScoresResponse>(paths.sessions.scores(id)),
+		/** Judge one finished turn on demand. Resolves once the judge calls are
+		 * done — several model round-trips, so seconds, not milliseconds. */
+		scoreTurn: (id: string, turnId: string, body: ScoreTurnBody) =>
+			request<TurnScoreResponse>(paths.sessions.turnScores(id, turnId), {
+				method: "POST",
+				body: JSON.stringify(body),
+			}),
 		send: (id: string, text: string, attachmentIds?: string[]) =>
 			request<SendMessageResponse>(paths.sessions.messages(id), {
 				method: "POST",

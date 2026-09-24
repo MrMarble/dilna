@@ -42,6 +42,7 @@ vi.mock("@/api/client", () => ({
 			changedFiles: vi.fn(),
 			commits: vi.fn(),
 			artefacts: vi.fn(),
+			scores: async () => ({ scores: [] }),
 			get: vi.fn(),
 		},
 		// The composer reads the Repo's Skills for its slash-command menu.

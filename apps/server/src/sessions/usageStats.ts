@@ -2,6 +2,7 @@ import type {
 	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
+	UsagePurposeBreakdown,
 	UsageRepoBreakdown,
 	UsageSessionBreakdown,
 	UsageSummary,
@@ -101,6 +102,16 @@ export function getUsageSummary(since: number): UsageSummary {
 
 	const topSessions = getTopSessions(where);
 
+	// Judge spend (ADR-0046) is folded into every aggregate above — it's real
+	// spend on a real model — and split out only here, so the dashboard can say
+	// how much of the total went on scoring rather than on Agent turns.
+	const byPurpose = db
+		.select({ purpose: usageEventsTable.purpose, ...SUM_COLUMNS })
+		.from(usageEventsTable)
+		.where(where)
+		.groupBy(usageEventsTable.purpose)
+		.all() as UsagePurposeBreakdown[];
+
 	return {
 		totals: totals ?? { ...ZERO_TOTALS },
 		daily,
@@ -108,6 +119,7 @@ export function getUsageSummary(since: number): UsageSummary {
 		byRepo,
 		byModel,
 		topSessions,
+		byPurpose,
 	};
 }
 

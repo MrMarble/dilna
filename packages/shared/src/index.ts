@@ -34,6 +34,9 @@ export * from "./notification";
 // for every route address both sides must agree on.
 export * from "./paths";
 export type * from "./repo";
+// Not type-only: the metric list and default threshold are runtime values
+// the server validates against and the web offers as choices.
+export * from "./scoring";
 export type * from "./session";
 // Not type-only like its neighbors: skill.ts also exports the
 // encodeSkillId/decodeSkillId runtime functions both server and web need.

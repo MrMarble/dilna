@@ -93,6 +93,7 @@ vi.mock("@/api/client", () => ({
 			changedFiles: async () => ({ files: [] }),
 			commits: async () => ({ commits: [] }),
 			artefacts: async () => ({ artefacts: [] }),
+			scores: async () => ({ scores: [] }),
 		},
 		// The composer reads the Repo's Skills for its slash-command menu.
 		skills: {
@@ -122,6 +123,7 @@ vi.mock("@/api/client", () => ({
 					byRepo: [],
 					byModel: [],
 					topSessions: [],
+					byPurpose: [],
 				},
 			}),
 			disk: async () => ({ disk: { totalBytes: 10_000, freeBytes: 4_000 } }),

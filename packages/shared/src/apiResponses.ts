@@ -3,6 +3,7 @@ import type { ChangedFile } from "./diff";
 import type { ContextUsageEstimate } from "./events";
 import type { Attachment, Message, QueuedMessage } from "./messages";
 import type { CommitInfo, Repo, RepoStats, RepoSyncStatus } from "./repo";
+import type { TurnScore } from "./scoring";
 import type { SessionView } from "./session";
 import type { RepoSkill, Skill, SkillSearchResult } from "./skill";
 import type { DiskUsage, UsageSummary } from "./usage";
@@ -110,6 +111,12 @@ export type CommitsResponse = { commits: CommitInfo[] };
 
 /** `GET /api/sessions/:id/artefacts` */
 export type ArtefactsResponse = { artefacts: Artefact[] };
+
+/** `GET /api/sessions/:id/scores` — every score in the Session, oldest first. */
+export type TurnScoresResponse = { scores: TurnScore[] };
+
+/** `POST /api/sessions/:id/turns/:turnId/scores` — the score just judged. */
+export type TurnScoreResponse = { score: TurnScore };
 
 /** `POST /api/sessions/:id/messages` — 202, the turn is claimed but not done. */
 export type SendMessageResponse = { ok: boolean; message: Message };

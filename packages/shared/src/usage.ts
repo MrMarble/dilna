@@ -42,6 +42,19 @@ export type UsageSessionBreakdown = {
 	title: string | null;
 } & UsageTotalsDetailed;
 
+/**
+ * What a `usage_events` row paid for. `"turn"` is an ordinary Agent turn;
+ * `"judge"` is an output-scoring call (ADR-0046) — real spend, so it counts
+ * toward the totals, but kept apart here and out of the Session's own
+ * `input_tokens`/`output_tokens` so a scored Session's numbers still
+ * describe the work it did.
+ */
+export type UsagePurpose = "turn" | "judge";
+
+export type UsagePurposeBreakdown = {
+	purpose: UsagePurpose;
+} & UsageTotalsDetailed;
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
@@ -49,6 +62,7 @@ export type UsageSummary = {
 	byRepo: UsageRepoBreakdown[];
 	byModel: UsageModelBreakdown[];
 	topSessions: UsageSessionBreakdown[];
+	byPurpose: UsagePurposeBreakdown[];
 };
 
 /**

@@ -47,6 +47,7 @@ vi.mock("@/api/client", () => ({
 			changedFiles: vi.fn(),
 			commits: vi.fn(),
 			artefacts: vi.fn(),
+			scores: async () => ({ scores: [] }),
 			get: vi.fn(),
 		},
 		skills: { forRepo: vi.fn(async () => ({ skills: [] })) },

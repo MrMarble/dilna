@@ -78,6 +78,7 @@ import * as messageQueue from "./messageQueue";
 import * as messageStore from "./messageStore";
 import { notifyTurnComplete } from "./pushSender";
 import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
+import { deleteScoresForSession } from "./scoring";
 import {
 	defaultSessionTitle,
 	rowToSession,
@@ -612,6 +613,8 @@ export class SessionManager {
 		deleteAttachmentsForSession(id);
 		// Same reasoning for the Session's published artefacts (issue #194).
 		deleteArtefactsForSession(id);
+		// Its turn scores (ADR-0046) too; the judge spend stays in `usage_events`.
+		deleteScoresForSession(id);
 		// A deleted Session's queued-but-never-sent messages go with it
 		// (ADR-0033) — there is no Session left for them to dispatch into.
 		messageQueue.deleteQueueForSession(id);
