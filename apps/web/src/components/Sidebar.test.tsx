@@ -42,6 +42,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			backgroundSessions={[]}
 			repoSlugById={{}}
 			onSelectSession={noop}
+			onNewComparison={noop}
 			rateLimitWindows={[]}
 			primaryLanguageByRepoId={{}}
 			syncStatusByRepoId={{}}

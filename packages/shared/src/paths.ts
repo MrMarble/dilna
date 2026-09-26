@@ -71,6 +71,12 @@ export const paths = {
 		turnScores: (sessionId: string, turnId: string) =>
 			`/api/sessions/${enc(sessionId)}/turns/${enc(turnId)}/scores`,
 	},
+	comparisons: {
+		/** `POST` to create a Comparison (N arms + the initial prompt). */
+		create: () => "/api/comparisons",
+		/** `GET` one Comparison's arms. */
+		get: (groupId: string) => `/api/comparisons/${enc(groupId)}`,
+	},
 	config: {
 		/** `GET`, `PUT` (set override), `DELETE` (clear). */
 		get: () => "/api/config",

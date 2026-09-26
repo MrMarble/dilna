@@ -40,6 +40,7 @@ import {
 	storeAttachment,
 } from "../sessions/attachments";
 import {
+	InvalidModelError,
 	type SessionManager,
 	SessionManagerDrainingError,
 	SessionNotFoundError,
@@ -173,13 +174,24 @@ export function createSessionsRoute(deps: {
 				});
 			}
 			try {
-				const session = await deps.sessions.create(body.repoId, body.agentType);
+				// Optional provider/model pin (issue #250) — both or neither,
+				// validated against the provider catalog inside `create`.
+				const session = await deps.sessions.create(
+					body.repoId,
+					body.agentType,
+					"session",
+					null,
+					{ provider: body.provider, model: body.model },
+				);
 				// A brand-new Session has no turns yet — nothing to estimate.
 				const res: SessionResponse = { session, contextUsage: null };
 				return c.json(res, 201);
 			} catch (err) {
 				if (err instanceof RepoNotFoundError) {
 					throw new HTTPException(404, { message: err.message });
+				}
+				if (err instanceof InvalidModelError) {
+					throw new HTTPException(400, { message: err.message });
 				}
 				const msg = err instanceof Error ? err.message : "create failed";
 				throw new HTTPException(500, { message: msg });

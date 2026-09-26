@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `comparison_group_id` text;

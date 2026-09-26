@@ -24,6 +24,7 @@ import {
 	X,
 } from "lucide-react";
 import {
+	type ReactNode,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -86,6 +87,10 @@ type Props = {
 	 * mobile keyboards don't reliably expose Shift, so Enter inserts a
 	 * newline there instead and the Send button submits. */
 	isDesktop: boolean;
+	/** Rendered inside the composer box, directly above the text area —
+	 * the injection point for the comparison view's mobile model pill
+	 * (issue #250), which sits on top of the input it switches. */
+	composerHeader?: ReactNode;
 };
 
 /** Rotating gerunds shown while the agent works (composer placeholder and
@@ -135,7 +140,12 @@ const PHASE_LABEL: Record<string, string> = {
 	retrying: "Retrying…",
 };
 
-export function ChatShell({ sessionId, session, isDesktop }: Props) {
+export function ChatShell({
+	sessionId,
+	session,
+	isDesktop,
+	composerHeader,
+}: Props) {
 	// The whole stream fold — messages, live overlay, status, queue, thinking,
 	// turn activity and the flags around them — held as one value and reduced
 	// through `chatReducer` (issue #237). Every transition that used to be a
@@ -689,6 +699,7 @@ export function ChatShell({ sessionId, session, isDesktop }: Props) {
 							onSelect={acceptSlashCommand}
 						/>
 					)}
+					{composerHeader}
 					<textarea
 						ref={textareaRef}
 						value={input}

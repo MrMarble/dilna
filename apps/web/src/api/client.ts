@@ -11,7 +11,10 @@ import type {
 	CloneRepoBody,
 	CommitInfo,
 	CommitsResponse,
+	ComparisonResponse,
+	ComparisonView,
 	CompleteOAuthBody,
+	CreateComparisonBody,
 	CreateCustomProviderBody,
 	CreateSessionBody,
 	CreateWorkspaceBody,
@@ -88,6 +91,7 @@ export type {
 	AgentType,
 	ChangedFile,
 	CommitInfo,
+	ComparisonView,
 	CustomProviderApi,
 	CustomProviderView,
 	DiskUsage,
@@ -330,6 +334,17 @@ export const api = {
 			request<OkIdResponse>(paths.repos.get(id), {
 				method: "DELETE",
 			}),
+	},
+	comparisons: {
+		/** Create a Comparison (issue #250): N model-pinned arms on one Repo,
+		 * initial prompt fanned out server-side. */
+		create: (input: CreateComparisonBody) =>
+			request<ComparisonResponse>(paths.comparisons.create(), {
+				method: "POST",
+				body: JSON.stringify(input),
+			}),
+		get: (groupId: string) =>
+			request<ComparisonResponse>(paths.comparisons.get(groupId)),
 	},
 	sessions: {
 		listByRepo: (repoId: string) =>

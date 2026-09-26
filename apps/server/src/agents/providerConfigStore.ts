@@ -106,10 +106,50 @@ export type SetOverrideResult = { ok: true } | { ok: false; error: string };
 /** Model ids selectable for `provider` — the builtin catalog for an
  * allowlisted provider, or a stored custom provider's own model list
  * (customProviders.ts). Empty for an unknown provider id. */
-function modelIdsForProvider(provider: string): string[] {
+export function modelIdsForProvider(provider: string): string[] {
 	if (isDilnaProvider(provider)) return catalogModelIds(provider);
 	const custom = getCustomProvider(provider);
 	return custom ? customProviderModelIds(custom.id) : [];
+}
+
+export type ModelChoiceResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Validate a concrete provider/model pair the way {@link setOverride} always
+ * has — known provider, model in that provider's catalog, API key resolvable
+ * — so every path that pins a Session to a caller-chosen model (the Settings
+ * override, `POST /api/sessions`' optional provider/model, a Comparison arm,
+ * issue #250) enforces the same invariant: the DB never holds a combination
+ * the agent startup path couldn't resolve, keeping pi.ts's "should not
+ * happen" guards genuinely unreachable.
+ */
+export async function validateModelChoice(
+	provider: string,
+	model: string,
+): Promise<ModelChoiceResult> {
+	if (!isDilnaProvider(provider) && !isCustomProvider(provider)) {
+		return {
+			ok: false,
+			error: `${provider || "(empty)"} is not a supported provider. Valid values: ${PROVIDER_ALLOWLIST.join(", ")}, or a configured custom provider.`,
+		};
+	}
+	if (!model) {
+		return { ok: false, error: "Choose a model for the selected provider." };
+	}
+	if (!modelIdsForProvider(provider).includes(model)) {
+		return {
+			ok: false,
+			error: `${model} is not a known model for provider "${provider}".`,
+		};
+	}
+	const apiKey = await resolveApiKey(provider);
+	if (!apiKey) {
+		return {
+			ok: false,
+			error: `No API key configured for provider "${provider}" — set its matching env var (e.g. ANTHROPIC_API_KEY for "anthropic") or add the provider's key in Settings.`,
+		};
+	}
+	return { ok: true };
 }
 
 /**
@@ -132,29 +172,8 @@ export async function setOverride(
 			error: "Nothing to set — provider and model are both empty.",
 		};
 	}
-	if (!isDilnaProvider(p) && !isCustomProvider(p)) {
-		return {
-			ok: false,
-			error: `${p || "(empty)"} is not a supported provider. Valid values: ${PROVIDER_ALLOWLIST.join(", ")}, or a configured custom provider.`,
-		};
-	}
-	if (!m) {
-		return { ok: false, error: "Choose a model for the selected provider." };
-	}
-	const catalog = modelIdsForProvider(p);
-	if (!catalog.includes(m)) {
-		return {
-			ok: false,
-			error: `${m} is not a known model for provider "${p}".`,
-		};
-	}
-	const apiKey = await resolveApiKey(p);
-	if (!apiKey) {
-		return {
-			ok: false,
-			error: `No API key configured for provider "${p}" — set its matching env var (e.g. ANTHROPIC_API_KEY for "anthropic") or add the provider's key in Settings.`,
-		};
-	}
+	const choice = await validateModelChoice(p, m);
+	if (!choice.ok) return choice;
 
 	const override: Override = { provider: p, model: m };
 	const db = getDb();

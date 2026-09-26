@@ -11,6 +11,7 @@ import {
 	Bell,
 	BellOff,
 	ChevronRight,
+	Columns2,
 	FolderGit2,
 	LoaderCircle,
 	PanelLeftClose,
@@ -112,6 +113,9 @@ type Props = {
 	onCollapse?: () => void;
 	/** Opens the Metrics dashboard (`MetricsPage`) in place of the chat. */
 	onOpenMetrics: () => void;
+	/** Opens the model-comparison modal (issue #250). Repo is chosen inside
+	 * the modal, so unlike "New session" this needs no selected repo. */
+	onNewComparison: () => void;
 	/** Opens the LLM provider/model Settings view in place of the chat. */
 	onOpenSettings: () => void;
 	/** Opens the Skills management view in place of the chat. */
@@ -161,6 +165,7 @@ export function Sidebar({
 	rateLimitWindows,
 	primaryLanguageByRepoId,
 	syncStatusByRepoId,
+	onNewComparison,
 	variant = "panel",
 	currentSession,
 	onDeleteCurrentSession,
@@ -245,6 +250,15 @@ export function Sidebar({
 						<span className="ml-auto hidden text-xs font-normal text-primary-foreground/60 md:inline">
 							{NEW_SESSION_SHORTCUT}
 						</span>
+					</button>
+					<button
+						type="button"
+						onClick={onNewComparison}
+						title="Run one prompt against two models side by side"
+						className="mt-1 flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-muted-foreground transition-colors hover:bg-sidebar-accent/40 hover:text-foreground active:bg-sidebar-accent/70"
+					>
+						<Columns2 className="size-3.5 shrink-0" />
+						Compare models
 					</button>
 					<button
 						type="button"

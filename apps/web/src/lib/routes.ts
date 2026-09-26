@@ -20,6 +20,7 @@
  *   /metrics                       → { kind: "metrics" }
  *   /settings                      → { kind: "settings" }
  *   /skills                        → { kind: "skills" }
+ *   /compare/<group-id>            → { kind: "comparison", groupId }
  *   /orchestrator                  → { kind: "orchestrator", sessionId: null }
  *   /orchestrator/<session-id>     → { kind: "orchestrator", sessionId }
  *   /<repo-slug>                   → { kind: "repo", repoSlug, sessionId: null }
@@ -27,7 +28,10 @@
  *
  * Orchestrator Sessions are global rather than repo-scoped (ADR-0021), so they
  * get a top-level segment instead of nesting under the hidden meta-repo they
- * technically belong to — the same treatment Metrics and Settings get.
+ * technically belong to — the same treatment Metrics and Settings get. A
+ * Comparison (ADR-0047) is a group id, not a Session id, so it gets one too:
+ * the group is deleted when its last arm is, so there's no repo-scoped path
+ * to outlive it.
  */
 import { isReservedSlug } from "@dilna/shared";
 
@@ -36,6 +40,7 @@ export type Route =
 	| { kind: "metrics" }
 	| { kind: "settings" }
 	| { kind: "skills" }
+	| { kind: "comparison"; groupId: string }
 	| { kind: "orchestrator"; sessionId: string | null }
 	| { kind: "repo"; repoSlug: string; sessionId: string | null };
 
@@ -45,6 +50,10 @@ export function parseRoute(pathname: string): Route {
 	if (first === "metrics") return { kind: "metrics" };
 	if (first === "settings") return { kind: "settings" };
 	if (first === "skills") return { kind: "skills" };
+	if (first === "compare")
+		// `/compare` with no group id has nothing to show — home, like an
+		// unresolved repo slug.
+		return second ? { kind: "comparison", groupId: second } : { kind: "home" };
 	if (first === "orchestrator")
 		return { kind: "orchestrator", sessionId: second ?? null };
 	return { kind: "repo", repoSlug: first, sessionId: second ?? null };
@@ -60,6 +69,8 @@ export function routePath(route: Route): string {
 			return "/settings";
 		case "skills":
 			return "/skills";
+		case "comparison":
+			return `/compare/${route.groupId}`;
 		case "orchestrator":
 			return route.sessionId
 				? `/orchestrator/${route.sessionId}`

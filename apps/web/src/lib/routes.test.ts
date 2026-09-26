@@ -46,6 +46,18 @@ describe("parseRoute", () => {
 		});
 	});
 
+	it("maps the comparison route to its group id", () => {
+		// ADR-0047: a Comparison is addressed by group id, not session id —
+		// same top-level treatment as the orchestrator, for the same reason.
+		expect(parseRoute("/compare/grp-1")).toEqual({
+			kind: "comparison",
+			groupId: "grp-1",
+		});
+		// `/compare` with no id has nothing to show — home, like an
+		// unresolved repo slug.
+		expect(parseRoute("/compare")).toEqual({ kind: "home" });
+	});
+
 	it("ignores trailing slashes and empty segments", () => {
 		expect(parseRoute("/dilna/")).toEqual({
 			kind: "repo",
@@ -61,6 +73,8 @@ describe("routePath", () => {
 		[{ kind: "home" }, "/"],
 		[{ kind: "metrics" }, "/metrics"],
 		[{ kind: "settings" }, "/settings"],
+		[{ kind: "skills" }, "/skills"],
+		[{ kind: "comparison", groupId: "grp-1" }, "/compare/grp-1"],
 		[{ kind: "orchestrator", sessionId: null }, "/orchestrator"],
 		[{ kind: "orchestrator", sessionId: "s1" }, "/orchestrator/s1"],
 		[{ kind: "repo", repoSlug: "dilna", sessionId: null }, "/dilna"],

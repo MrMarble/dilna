@@ -107,6 +107,25 @@ export type SessionMessagesResponse = { messages: Message[] };
 /** `GET /api/sessions/:id/changed-files` */
 export type ChangedFilesResponse = { files: ChangedFile[] };
 
+// ---- Comparisons (issue #250, ADR-0047) -------------------------------------
+
+/**
+ * A Comparison as the UI reads it: the group id (also the `/compare/<id>`
+ * route param), the Repo every arm shares, and the arms in creation order
+ * (the order the columns render in). A grouping over Sessions, not an entity
+ * of its own — see ADR-0047 for why there is no `comparisons` table and no
+ * prompt field here (each arm's first user message *is* the prompt).
+ */
+export type ComparisonView = {
+	id: string;
+	repoId: string;
+	createdAt: number;
+	sessions: SessionView[];
+};
+
+/** `GET /api/comparisons/:id`, `POST /api/comparisons` */
+export type ComparisonResponse = { comparison: ComparisonView };
+
 /** `GET /api/sessions/:id/commits` */
 export type CommitsResponse = { commits: CommitInfo[] };
 

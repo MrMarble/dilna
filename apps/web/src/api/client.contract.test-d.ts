@@ -1,4 +1,5 @@
 import type {
+	ComparisonResponse,
 	ListReposResponse,
 	PushKeyResponse,
 	SessionResponse,
@@ -57,6 +58,17 @@ describe("api client response envelopes", () => {
 		expectTypeOf(
 			api.repos.list,
 		).returns.resolves.toEqualTypeOf<ListReposResponse>();
+	});
+
+	it("types the comparison endpoints as their shared envelope", () => {
+		// Issue #250: the arms list rides in `comparison.sessions` — a client
+		// that narrowed to `{ comparison }` would compile and lose it.
+		expectTypeOf(
+			api.comparisons.create,
+		).returns.resolves.toEqualTypeOf<ComparisonResponse>();
+		expectTypeOf(
+			api.comparisons.get,
+		).returns.resolves.toEqualTypeOf<ComparisonResponse>();
 	});
 
 	it("types turn scoring as its shared envelopes", () => {

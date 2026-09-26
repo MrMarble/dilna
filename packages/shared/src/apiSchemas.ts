@@ -42,8 +42,39 @@ export type CreateWorkspaceBody = z.infer<typeof createWorkspaceBodySchema>;
 export const createSessionBodySchema = z.object({
 	repoId: z.string().min(1),
 	agentType: z.enum(["pi", "openai"]).optional(),
+	/** Pin the Session's provider/model instead of the instance default
+	 * (issue #250). Both or neither — one alone can't resolve; the server
+	 * validates the pair against the provider catalog so the DB can't hold a
+	 * combination the agent startup path couldn't. */
+	provider: z.string().min(1).optional(),
+	model: z.string().min(1).optional(),
 });
 export type CreateSessionBody = z.infer<typeof createSessionBodySchema>;
+
+// ---- Comparisons (issue #250, ADR-0047) -------------------------------------
+
+/** Upper bound on a Comparison's arms — one shared constant read by the
+ * schema below and surfaced in UI copy, the same precedent as
+ * `MAX_ATTACHMENTS_PER_MESSAGE`. */
+export const MAX_COMPARISON_ARMS = 4;
+
+/** One arm's pinned model. Provider and model travel together — a Session is
+ * created against one concrete combination, never a provider alone. */
+export const comparisonArmSchema = z.object({
+	provider: z.string().min(1),
+	model: z.string().min(1),
+});
+export type ComparisonArm = z.infer<typeof comparisonArmSchema>;
+
+/** Create a Comparison: N arms on one Repo, plus the initial prompt to run
+ * on every arm at once. At least two — a one-model "comparison" is just an
+ * ordinary Session. */
+export const createComparisonBodySchema = z.object({
+	repoId: z.string().min(1),
+	prompt: z.string().min(1),
+	models: z.array(comparisonArmSchema).min(2).max(MAX_COMPARISON_ARMS),
+});
+export type CreateComparisonBody = z.infer<typeof createComparisonBodySchema>;
 
 export const sendMessageBodySchema = z
 	.object({

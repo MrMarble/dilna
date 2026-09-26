@@ -77,6 +77,14 @@ export const sessions = sqliteTable("sessions", {
 	 * Sessions always used). */
 	provider: text("provider"),
 	model: text("model"),
+	/** Issue #250 (ADR-0047): the Comparison this Session is an arm of, when
+	 * it was created via `POST /api/comparisons` — null for every Session
+	 * created outside a Comparison. No FK (same dangling-id tolerance as
+	 * `spawnedBy`): the group is deleted when its last arm is, and a grouping
+	 * over Sessions needs no cascade semantics of its own. Not exposed on
+	 * SessionView — the UI reaches a Comparison's arms through
+	 * `GET /api/comparisons/:id`, which filters on this column. */
+	comparisonGroupId: text("comparison_group_id"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 	lastActiveAt: integer("last_active_at").notNull().$defaultFn(now),
 });
