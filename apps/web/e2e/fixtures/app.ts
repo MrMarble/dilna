@@ -99,13 +99,20 @@ export class CloneRepoDialog {
 		return this.root.getByLabel("Git URL");
 	}
 
-	/** The label reads `Slug (optional, defaults to repo name)`, hence the prefix match. */
-	get slug(): Locator {
-		return this.root.getByLabel(/^Slug/);
+	/** The label reads `Name (optional when cloning, …)`, hence the prefix match.
+	 * The Repo's slug when cloning; the workspace's name for an empty one. */
+	get name(): Locator {
+		return this.root.getByLabel(/^Name/);
 	}
 
 	get submit(): Locator {
 		return this.root.getByRole("button", { name: /^Clon/ }); // "Clone" / "Cloning…"
+	}
+
+	get createWorkspace(): Locator {
+		return this.root.getByRole("button", {
+			name: /^(Create empty workspace|Creating…)$/,
+		});
 	}
 
 	/** Rendered by the dialog primitive as an icon plus an `sr-only` "Close". */
@@ -122,9 +129,9 @@ export class CloneRepoDialog {
 	}
 
 	/** Fill and submit in one step — the common path for setting up state. */
-	async cloneFrom(url: string, slug?: string): Promise<void> {
+	async cloneFrom(url: string, name?: string): Promise<void> {
 		await this.gitUrl.fill(url);
-		if (slug) await this.slug.fill(slug);
+		if (name) await this.name.fill(name);
 		await this.submit.click();
 	}
 }

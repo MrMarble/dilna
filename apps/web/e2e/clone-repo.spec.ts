@@ -49,9 +49,27 @@ test.describe("clone repository dialog", () => {
 		await dialog.expectClosed();
 	});
 
-	test("accepts an optional slug", async ({ app }) => {
+	test("accepts an optional name", async ({ app }) => {
 		const dialog = await app.openCloneDialog();
-		await dialog.slug.fill("my-repo");
-		await expect(dialog.slug).toHaveValue("my-repo");
+		await dialog.name.fill("my-repo");
+		await expect(dialog.name).toHaveValue("my-repo");
+	});
+
+	// Stops short of creating one, like the clone specs above: this instance is
+	// shared, and a new Repo would end the empty state every other spec here
+	// relies on. RepoManager's tests cover the creation itself.
+	test("keeps the workspace button disabled until a name is entered", async ({
+		app,
+	}) => {
+		const dialog = await app.openCloneDialog();
+		await expect(dialog.createWorkspace).toBeDisabled();
+
+		await dialog.name.fill("   ");
+		await expect(dialog.createWorkspace).toBeDisabled();
+
+		// No Git URL needed — the name is the only input an empty workspace has.
+		await dialog.name.fill("my-idea");
+		await expect(dialog.createWorkspace).toBeEnabled();
+		await expect(dialog.submit).toBeDisabled();
 	});
 });
