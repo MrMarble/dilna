@@ -18,6 +18,7 @@ import {
 	bearerAuthMiddleware,
 	hostAllowlistMiddleware,
 } from "./middleware/security";
+import { createComparisonsRoute } from "./routes/comparisons";
 import { configRoute } from "./routes/config";
 import { pushRoute } from "./routes/push";
 import { createReposRoute } from "./routes/repos";
@@ -108,6 +109,7 @@ app.use("/api/*", bodyLimit({ maxSize: 5 * 1024 * 1024 }));
 const { repos, sessions } = createServerContext();
 
 app.route("/api/config", configRoute);
+app.route("/api/comparisons", createComparisonsRoute({ sessions }));
 app.route("/api/push", pushRoute);
 app.route("/api/repos", createReposRoute({ repos }));
 app.route("/api/sessions", createSessionsRoute({ sessions, repos }));

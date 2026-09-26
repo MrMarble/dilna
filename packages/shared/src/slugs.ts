@@ -2,8 +2,9 @@
  * Repo slugs that a standalone view's URL path would shadow — a URL contract
  * *both* sides need.
  *
- * The web's router claims `/metrics`, `/settings`, `/skills` and
- * `/orchestrator` as top-level pages, so a Repo whose slug is one of those can
+ * The web's router claims `/metrics`, `/settings`, `/skills`,
+ * `/orchestrator` and `/compare` (issue #250's comparison view) as top-level
+ * pages, so a Repo whose slug is one of those can
  * never be addressed: `/<slug>` parses straight back to the standalone view.
  * The web handled that by refusing to navigate to it — but the *server* knew
  * nothing about the list, so it would happily mint the slug in the first
@@ -19,6 +20,7 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
 	"settings",
 	"skills",
 	"orchestrator",
+	"compare",
 ]);
 
 /** Whether a slug would be shadowed by a standalone view's path. */

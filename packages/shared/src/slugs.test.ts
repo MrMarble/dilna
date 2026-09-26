@@ -4,7 +4,7 @@ import { isReservedSlug, RESERVED_SLUGS } from "./slugs";
 describe("RESERVED_SLUGS", () => {
 	it("holds the top-level path segments the web's router claims", () => {
 		expect([...RESERVED_SLUGS].sort()).toEqual(
-			["metrics", "orchestrator", "settings", "skills"].sort(),
+			["compare", "metrics", "orchestrator", "settings", "skills"].sort(),
 		);
 	});
 });

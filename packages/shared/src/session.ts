@@ -27,6 +27,10 @@ export type Session = {
 	 * created via `dilna_create_session` — null otherwise. Internal to the
 	 * server (absent from SessionView), same as the compaction fields above. */
 	spawnedBy: string | null;
+	/** ADR-0047: the Comparison this Session is an arm of, when it was created
+	 * via `POST /api/comparisons` — null otherwise. Internal to the server
+	 * (absent from SessionView), same as the fields above. */
+	comparisonGroupId?: string | null;
 	/** The concrete provider/model this Session runs on (multi-provider support).
 	 * Present once resolved (rowToSession always reads these columns), but kept
 	 * Optional so legacy Session-shaping factory sites don't have to populate it

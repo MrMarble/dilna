@@ -1,6 +1,11 @@
 import { FolderGit2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type Repo, type SessionView } from "@/api/client";
+import {
+	api,
+	type ComparisonView as ComparisonData,
+	type Repo,
+	type SessionView,
+} from "@/api/client";
 import { AppVersion } from "@/components/AppVersion";
 import {
 	ChatHeader,
@@ -8,8 +13,10 @@ import {
 	MobileMenuButton,
 } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
+import { ComparisonView } from "@/components/ComparisonView";
 import { ContextPanel } from "@/components/ContextPanel";
 import { MetricsPage } from "@/components/MetricsPage";
+import { NewComparisonDialog } from "@/components/NewComparisonDialog";
 import { NewRepoDialog } from "@/components/NewRepoDialog";
 import { SettingsPage } from "@/components/SettingsPage";
 import { Sidebar } from "@/components/Sidebar";
@@ -66,6 +73,7 @@ export function App() {
 				: null;
 
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
+	const [newComparisonOpen, setNewComparisonOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
 	// Below 768px the desktop Sidebar/ContextPanel aren't rendered at all
 	// (rather than just hidden via CSS) so their SSE subscriptions don't run
@@ -328,6 +336,20 @@ export function App() {
 		mobileSheet.close();
 	}, [navigate, mobileSheet.close]);
 
+	// Issue #250: the comparison modal resolved — put the arms into the
+	// session map (so the sidebar shows them without waiting for their
+	// broadcasts to round-trip), refresh the repo list (the modal may have
+	// minted a workspace), and land on the comparison view.
+	const handleComparisonCreated = useCallback(
+		(comparison: ComparisonData) => {
+			for (const session of comparison.sessions) upsertSession(session);
+			void reloadRepos();
+			navigate({ kind: "comparison", groupId: comparison.id });
+			mobileSheet.close();
+		},
+		[upsertSession, reloadRepos, navigate, mobileSheet.close],
+	);
+
 	const handleOpenSettings = useCallback(() => {
 		navigate({ kind: "settings" });
 		mobileSheet.close();
@@ -375,6 +397,10 @@ export function App() {
 		rateLimitWindows,
 		primaryLanguageByRepoId,
 		syncStatusByRepoId,
+		onNewComparison: () => {
+			mobileSheet.close();
+			setNewComparisonOpen(true);
+		},
 		orchestratorSessions,
 		onNewOrchestratorSession: handleNewOrchestratorSession,
 		creatingOrchestrator,
@@ -414,6 +440,13 @@ export function App() {
 						<SettingsPage onBack={handleBackFromStandalone} />
 					) : route.kind === "skills" ? (
 						<SkillsPage repos={repos} onBack={handleBackFromStandalone} />
+					) : route.kind === "comparison" ? (
+						<ComparisonView
+							groupId={route.groupId}
+							repos={repos}
+							isDesktop={isDesktop}
+							onBack={handleBackFromStandalone}
+						/>
 					) : (
 						<>
 							{selectedRepo ? (
@@ -479,6 +512,12 @@ export function App() {
 				open={newRepoOpen}
 				onOpenChange={setNewRepoOpen}
 				onCloned={reloadRepos}
+			/>
+			<NewComparisonDialog
+				open={newComparisonOpen}
+				onOpenChange={setNewComparisonOpen}
+				repos={repos}
+				onCreated={handleComparisonCreated}
 			/>
 			<Drawer
 				open={mobileSheet.active !== null}

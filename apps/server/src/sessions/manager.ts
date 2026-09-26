@@ -36,6 +36,7 @@ import {
 import {
 	effectiveModel,
 	effectiveProvider,
+	validateModelChoice,
 } from "../agents/providerConfigStore";
 import {
 	type AgentImageInput,
@@ -150,6 +151,32 @@ export class TurnInProgressError extends Error {
 		this.name = "TurnInProgressError";
 	}
 }
+
+/** Thrown by `create` when a caller-pinned provider/model pair fails
+ * validation (unknown provider, model not in that provider's catalog, no
+ * API key, or only one half of the pair) — issue #250. Its own class so the
+ * route maps it to 400 instead of the generic "create failed" 500. */
+export class InvalidModelError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "InvalidModelError";
+	}
+}
+
+/** Caller-pinned overrides for {@link SessionManager.create} — the "create a
+ * Session on a specific model" primitive (issue #250) that the
+ * instance-default path couldn't express. */
+export type CreateOptions = {
+	/** Pin the provider/model this Session runs on, instead of resolving the
+	 * effective override/env config at create time. Both or neither; the pair
+	 * is validated against the provider catalog (and its API key) before any
+	 * worktree exists, so a bad choice can't leave a half-built Session. */
+	provider?: string;
+	model?: string;
+	/** ADR-0047: the Comparison group id tying this Session to its sibling
+	 * arms. Omitted (null) for every Session created outside a Comparison. */
+	comparisonGroupId?: string;
+};
 
 type TurnFailedClass = Extract<
 	AgentStreamEvent,
@@ -465,6 +492,7 @@ export class SessionManager {
 		 * from `dilna_create_session` — omitted (null) for every other
 		 * caller. */
 		spawnedBy: string | null = null,
+		options: CreateOptions = {},
 	): Promise<SessionView> {
 		// Anything other than "pi" is rejected outright — including a legacy
 		// "claude" value on a pre-migration row passed in by a caller that
@@ -477,6 +505,22 @@ export class SessionManager {
 		}
 		const repo = await this.repos.get(repoId);
 		if (!repo) throw new RepoNotFoundError(repoId);
+
+		// Which model this Session runs on: a caller-pinned pair (issue #250)
+		// wins over the instance default, validated — provider known, model in
+		// its catalog, key resolvable — *before* the worktree below is created,
+		// so a bad choice can't leave a half-built Session behind.
+		let provider = effectiveProvider() || null;
+		let model = effectiveModel() || null;
+		if (options.provider || options.model) {
+			if (!options.provider || !options.model) {
+				throw new InvalidModelError("provider and model must be set together");
+			}
+			const choice = await validateModelChoice(options.provider, options.model);
+			if (!choice.ok) throw new InvalidModelError(choice.error);
+			provider = options.provider;
+			model = options.model;
+		}
 
 		const id = nanoid();
 		const branchName = `dilna/${id}`;
@@ -515,14 +559,16 @@ export class SessionManager {
 			compactedSummary: null,
 			compactedThroughMessageId: null,
 			spawnedBy,
+			comparisonGroupId: options.comparisonGroupId ?? null,
 			// Settings snapshot of the model this Session was created to run on
-			// (multi-provider support): resolve the effective override/env config
-			// now, at create time, so this Session is pinned to *that* model rather
+			// (multi-provider support): a caller-pinned pair when one was given
+			// (above), else the effective override/env config resolved now, at
+			// create time, so this Session is pinned to *that* model rather
 			// than whatever the instance default becomes later. A gap in coverage
 			// (override not yet resolvable because env/keys aren't set) stores
 			// null and lets startAgent lazily resolve when it first runs instead.
-			provider: effectiveProvider() || null,
-			model: effectiveModel() || null,
+			provider,
+			model,
 			createdAt: now,
 			lastActiveAt: now,
 		};
@@ -541,6 +587,7 @@ export class SessionManager {
 					title: session.title,
 					status: session.status,
 					spawnedBy: session.spawnedBy,
+					comparisonGroupId: session.comparisonGroupId,
 					provider: session.provider,
 					model: session.model,
 					createdAt: session.createdAt,
@@ -573,6 +620,92 @@ export class SessionManager {
 	async createOrchestrator(): Promise<SessionView> {
 		const metaRepo = await this.repos.ensureOrchestratorRepo();
 		return this.create(metaRepo.id, "pi", "orchestrator");
+	}
+
+	/**
+	 * Issue #250 (ADR-0047): create a Comparison — N ordinary Sessions on one
+	 * Repo, each pinned to a caller-chosen provider/model and sharing a group
+	 * id — and run `prompt` on every arm through the same begin/run/track
+	 * path the send route uses, so each arm is just a Session whose first
+	 * turn started on its own.
+	 *
+	 * Arms are created first, then the prompt fans out. If an arm's create
+	 * fails midway (a bad model choice, a worktree error), the arms that did
+	 * land are deleted again — a half-formed group with silent members would
+	 * be worse than a clean error. Model validation happens inside `create`,
+	 * before any worktree exists, so the common failure mode (a bad pair)
+	 * costs nothing to roll back.
+	 */
+	async createComparison(
+		repoId: string,
+		prompt: string,
+		arms: { provider: string; model: string }[],
+	): Promise<{ groupId: string; sessions: SessionView[] }> {
+		const groupId = nanoid();
+		const created: SessionView[] = [];
+		try {
+			for (const arm of arms) {
+				created.push(
+					await this.create(repoId, "pi", "session", null, {
+						provider: arm.provider,
+						model: arm.model,
+						comparisonGroupId: groupId,
+					}),
+				);
+			}
+		} catch (err) {
+			for (const view of created) {
+				await this.delete(view.id).catch((deleteErr) => {
+					log.error(
+						{ sessionId: view.id, err: deleteErr },
+						"comparison rollback delete failed",
+					);
+				});
+			}
+			throw err;
+		}
+
+		// Fan out. A brand-new Session cannot have a turn in progress, so a
+		// TurnInProgressError here is defensive only — the group rule is that
+		// one arm refusing must not stop the others. Draining means no arm can
+		// run at all: the group exists empty and the caller can send the prompt
+		// itself (the response still carries the sessions).
+		for (const view of created) {
+			try {
+				this.beginTurn(view.id, prompt);
+			} catch (err) {
+				if (err instanceof SessionManagerDrainingError) break;
+				if (err instanceof TurnInProgressError) continue;
+				throw err;
+			}
+			const turnPromise = this.runTurn(view.id, prompt);
+			this.trackRunningTurn(view.id, turnPromise);
+			turnPromise.catch((err) => {
+				log.error({ sessionId: view.id, err }, "comparison arm runTurn failed");
+			});
+		}
+		return { groupId, sessions: created };
+	}
+
+	/**
+	 * The arms of the Comparison with group id `groupId`, in creation order —
+	 * the order the comparison view renders its columns in. Null when the id
+	 * names no group, or its last arm was deleted: a group exists only while
+	 * its members do.
+	 *
+	 * Arms created in the same second share a `createdAt` (1s granularity);
+	 * the tie falls through to SQLite's scan order, which is insertion order
+	 * for this table — the order `createComparison` made them in.
+	 */
+	async getComparison(groupId: string): Promise<SessionView[] | null> {
+		const rows = this.db
+			.select()
+			.from(sessionsTable)
+			.where(eq(sessionsTable.comparisonGroupId, groupId))
+			.orderBy(asc(sessionsTable.createdAt))
+			.all();
+		if (rows.length === 0) return null;
+		return rows.map((row) => toView(rowToSession(row)));
 	}
 
 	async delete(id: string): Promise<void> {
