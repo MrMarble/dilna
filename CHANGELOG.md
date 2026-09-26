@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.36.1](https://github.com/MrMarble/dilna/compare/v0.36.0...v0.36.1) (2026-09-26)
+
+
+### Bug Fixes
+
+* confirm before deleting a session ([#260](https://github.com/MrMarble/dilna/issues/260)) ([3ea6c8c](https://github.com/MrMarble/dilna/commit/3ea6c8c3288e5c0dfa90d1dac7734bf0c6a61ff4))
+* link comparison arms back to their comparison view ([#261](https://github.com/MrMarble/dilna/issues/261)) ([f9dcaf5](https://github.com/MrMarble/dilna/commit/f9dcaf5288ca42d189517524b3a1011eed1ec042))
+
 ## [0.36.0](https://github.com/MrMarble/dilna/compare/v0.35.0...v0.36.0) (2026-09-26)
 
 
