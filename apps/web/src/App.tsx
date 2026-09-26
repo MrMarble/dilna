@@ -14,6 +14,7 @@ import {
 } from "@/components/ChatHeader";
 import { ChatShell } from "@/components/ChatShell";
 import { ComparisonView } from "@/components/ComparisonView";
+import { ConfirmDeleteSessionDialog } from "@/components/ConfirmDeleteSessionDialog";
 import { ContextPanel } from "@/components/ContextPanel";
 import { MetricsPage } from "@/components/MetricsPage";
 import { NewComparisonDialog } from "@/components/NewComparisonDialog";
@@ -256,6 +257,10 @@ export function App() {
 
 	// Sessions with a DELETE in flight — see handleDeleteSession.
 	const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
+	// The Session whose trash icon was clicked, awaiting confirmation. Every
+	// delete affordance goes through this rather than straight to
+	// handleDeleteSession — see ConfirmDeleteSessionDialog.
+	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
 	const [creatingOrchestrator, setCreatingOrchestrator] = useState(false);
 	const handleNewOrchestratorSession = useCallback(async () => {
@@ -350,6 +355,16 @@ export function App() {
 		[upsertSession, reloadRepos, navigate, mobileSheet.close],
 	);
 
+	// Asks before deleting (see confirmDeleteId). The mobile sheet closes
+	// first so the dialog isn't stacked on top of it.
+	const handleRequestDeleteSession = useCallback(
+		(id: string) => {
+			mobileSheet.close();
+			setConfirmDeleteId(id);
+		},
+		[mobileSheet.close],
+	);
+
 	const handleOpenSettings = useCallback(() => {
 		navigate({ kind: "settings" });
 		mobileSheet.close();
@@ -413,7 +428,7 @@ export function App() {
 		pushSubscribed,
 		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
 		currentSession: selectedSession,
-		onDeleteCurrentSession: handleDeleteSession,
+		onDeleteCurrentSession: handleRequestDeleteSession,
 		onOpenMetrics: handleOpenMetrics,
 		onOpenSettings: handleOpenSettings,
 		onOpenSkills: handleOpenSkills,
@@ -453,7 +468,7 @@ export function App() {
 								<ChatHeader
 									repo={selectedRepo}
 									selectedSession={selectedSession}
-									onDeleteSession={handleDeleteSession}
+									onDeleteSession={handleRequestDeleteSession}
 									deletingSession={
 										selectedSession !== null &&
 										deletingSessionIds.includes(selectedSession.id)
@@ -512,6 +527,16 @@ export function App() {
 				open={newRepoOpen}
 				onOpenChange={setNewRepoOpen}
 				onCloned={reloadRepos}
+			/>
+			<ConfirmDeleteSessionDialog
+				session={
+					confirmDeleteId ? (sessionsById[confirmDeleteId] ?? null) : null
+				}
+				onCancel={() => setConfirmDeleteId(null)}
+				onConfirm={(id) => {
+					setConfirmDeleteId(null);
+					void handleDeleteSession(id);
+				}}
 			/>
 			<NewComparisonDialog
 				open={newComparisonOpen}
