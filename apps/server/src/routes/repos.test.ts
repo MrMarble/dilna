@@ -45,6 +45,15 @@ describe("reposRoute validation", () => {
 		});
 		expect(res.status).toBe(422);
 	});
+
+	it("rejects POST /workspace with a blank name", async () => {
+		const res = await app.request("/workspace", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "   " }),
+		});
+		expect(res.status).toBe(422);
+	});
 });
 
 const REPO: Repo = {
@@ -117,6 +126,20 @@ describe("reposRoute :id resolution", () => {
 			expect(res.status).toBe(200);
 		});
 	}
+
+	it("POST /workspace reaches its handler, not requireRepo's 404", async () => {
+		const createWorkspace = vi.fn(async () => ({ ...REPO, remoteUrl: "" }));
+		const repos = stubRepos({ createWorkspace });
+		const app = mountRepos(repos);
+		const res = await app.request("/workspace", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ name: "scratch" }),
+		});
+		expect(res.status).toBe(201);
+		expect(createWorkspace).toHaveBeenCalledWith("scratch");
+		expect(repos.get).not.toHaveBeenCalled();
+	});
 
 	it("resolves the Repo once per request, not once per handler", async () => {
 		const repos = stubRepos();

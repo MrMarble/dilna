@@ -66,7 +66,8 @@ export type OkIdResponse = { ok: boolean; id: string };
 /** `GET /api/repos` */
 export type ListReposResponse = { repos: Repo[] };
 
-/** `GET /api/repos/:id`, `POST /api/repos`, `POST /api/repos/:id/pull` */
+/** `GET /api/repos/:id`, `POST /api/repos`, `POST /api/repos/workspace`,
+ * `POST /api/repos/:id/pull` */
 export type RepoResponse = { repo: Repo };
 
 /** `GET /api/repos/:id/stats` */

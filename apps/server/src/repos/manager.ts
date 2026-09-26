@@ -212,18 +212,41 @@ export class RepoManager {
 			createdAt: now,
 		};
 
-		const db = this.db;
-		db.insert(reposTable)
-			.values({
-				id: repo.id,
-				slug: repo.slug,
-				path: repo.path,
-				defaultBranch: repo.defaultBranch,
-				remoteUrl: repo.remoteUrl,
-				createdAt: repo.createdAt,
-			})
-			.run();
+		this.insert(repo);
+		return repo;
+	}
 
+	/**
+	 * Create a Repo from nothing, for work that doesn't start from an existing
+	 * codebase: an empty bare repo with no `origin`, whose `name` becomes its
+	 * slug. Sessions branch off it exactly as they would off a clone; the user
+	 * can have the agent add a remote later. `pull`/`syncStatus` no-op on it
+	 * (see {@link hasRemote}).
+	 */
+	async createWorkspace(name: string): Promise<Repo> {
+		name = name.trim();
+		if (!name) throw new Error("name is required");
+
+		const existing = await this.list();
+		// `list()` hides the orchestrator meta-repo, but its slug is still taken.
+		const usedSlugs = new Set([
+			ORCHESTRATOR_REPO_SLUG,
+			...existing.map((r) => r.slug),
+		]);
+		const slug = uniqueSlug(usedSlugs, deriveSlug(name));
+		const repoPath = this.repoPath(slug);
+
+		await this.initEmptyBareRepo(repoPath, `create workspace ${name}`);
+
+		const repo: Repo = {
+			id: nanoid(),
+			slug,
+			path: repoPath,
+			defaultBranch: "main",
+			remoteUrl: "",
+			createdAt: Math.floor(Date.now() / 1000),
+		};
+		this.insert(repo);
 		return repo;
 	}
 
@@ -231,18 +254,40 @@ export class RepoManager {
 	 * Idempotent: creates the orchestrator meta-repo (see
 	 * {@link ORCHESTRATOR_REPO_SLUG}) on first call, returns the existing row
 	 * on every call after. Unlike `clone()`, there's no remote to clone from —
-	 * `git init --bare` plus a plumbed-in empty root commit (no worktree
-	 * needed to create one: `hash-object`/`commit-tree`/`update-ref` write
-	 * directly into the bare repo's object store) gives `defaultBranch` a
-	 * real ref to branch Sessions' Worktrees off of, matching what
-	 * `SessionManager.create`'s `git worktree add -b <branch> -- <path>
-	 * <defaultBranch>` requires.
+	 * see {@link initEmptyBareRepo}, which gives `defaultBranch` a real ref
+	 * matching what `SessionManager.create`'s `git worktree add -b <branch>
+	 * -- <path> <defaultBranch>` requires.
 	 */
 	async ensureOrchestratorRepo(): Promise<Repo> {
 		const existing = await this.getBySlug(ORCHESTRATOR_REPO_SLUG);
 		if (existing) return existing;
 
 		const repoPath = this.repoPath(ORCHESTRATOR_REPO_SLUG);
+		await this.initEmptyBareRepo(repoPath, "orchestrator meta-repo");
+
+		const now = Math.floor(Date.now() / 1000);
+		const repo: Repo = {
+			id: nanoid(),
+			slug: ORCHESTRATOR_REPO_SLUG,
+			path: repoPath,
+			defaultBranch: "main",
+			remoteUrl: "",
+			createdAt: now,
+		};
+		this.insert(repo);
+		return repo;
+	}
+
+	/**
+	 * `git init --bare` plus a plumbed-in empty root commit on `main` (no
+	 * worktree needed to create one: `hash-object`/`commit-tree`/`update-ref`
+	 * write directly into the bare repo's object store), so `defaultBranch`
+	 * is a real ref Sessions' Worktrees can branch off of.
+	 */
+	private async initEmptyBareRepo(
+		repoPath: string,
+		message: string,
+	): Promise<void> {
 		mkdirSync(this.reposDir, { recursive: true });
 		mkdirSync(this.worktreesDir, { recursive: true });
 		await git(["init", "--bare", "--initial-branch=main", "--", repoPath]);
@@ -257,7 +302,7 @@ export class RepoManager {
 		// running dilna may have no global user.name/user.email configured at
 		// all (git requires one to commit).
 		const { stdout: commit } = await git(
-			["commit-tree", emptyTree.trim(), "-m", "orchestrator meta-repo"],
+			["commit-tree", emptyTree.trim(), "-m", message],
 			{
 				cwd: repoPath,
 				env: {
@@ -272,18 +317,11 @@ export class RepoManager {
 		await git(["update-ref", "refs/heads/main", commit.trim()], {
 			cwd: repoPath,
 		});
+	}
 
-		const now = Math.floor(Date.now() / 1000);
-		const repo: Repo = {
-			id: nanoid(),
-			slug: ORCHESTRATOR_REPO_SLUG,
-			path: repoPath,
-			defaultBranch: "main",
-			remoteUrl: "",
-			createdAt: now,
-		};
-		const db = this.db;
-		db.insert(reposTable)
+	private insert(repo: Repo): void {
+		this.db
+			.insert(reposTable)
 			.values({
 				id: repo.id,
 				slug: repo.slug,
@@ -293,7 +331,12 @@ export class RepoManager {
 				createdAt: repo.createdAt,
 			})
 			.run();
-		return repo;
+	}
+
+	/** Whether the Repo has an `origin` to fetch from — false for a workspace
+	 * created empty (and the orchestrator meta-repo). */
+	private hasRemote(repo: Repo): boolean {
+		return repo.remoteUrl !== "";
 	}
 
 	/**
@@ -372,6 +415,7 @@ export class RepoManager {
 	 * never touched by this call.
 	 */
 	async pull(repo: Repo): Promise<void> {
+		if (!this.hasRemote(repo)) return;
 		try {
 			await git(
 				[
@@ -397,6 +441,7 @@ export class RepoManager {
 	 * what's new upstream without changing what any Session branches off of.
 	 */
 	async syncStatus(repo: Repo): Promise<RepoSyncStatus> {
+		if (!this.hasRemote(repo)) return { ahead: 0, behind: 0 };
 		try {
 			await git(
 				[

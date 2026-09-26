@@ -14,6 +14,7 @@ import type {
 	CompleteOAuthBody,
 	CreateCustomProviderBody,
 	CreateSessionBody,
+	CreateWorkspaceBody,
 	CustomModelDef,
 	CustomProviderApi,
 	CustomProviderFields,
@@ -310,6 +311,11 @@ export const api = {
 		get: (id: string) => request<RepoResponse>(paths.repos.get(id)),
 		clone: (input: CloneRepoBody) =>
 			request<RepoResponse>(paths.repos.list(), {
+				method: "POST",
+				body: JSON.stringify(input),
+			}),
+		createWorkspace: (input: CreateWorkspaceBody) =>
+			request<RepoResponse>(paths.repos.workspace(), {
 				method: "POST",
 				body: JSON.stringify(input),
 			}),

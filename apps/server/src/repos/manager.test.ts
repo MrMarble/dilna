@@ -123,6 +123,28 @@ describe("RepoManager", () => {
 		await repoManager.delete(repo.id);
 	});
 
+	it("creates an empty remote-less workspace a Session can branch off", async () => {
+		const repo = await repoManager.createWorkspace("My New Thing");
+		expect(repo.slug).toBe("my-new-thing");
+		expect(repo.remoteUrl).toBe("");
+		expect(repo.defaultBranch).toBe("main");
+		// A real root commit on `main`, so `git worktree add ... main` works.
+		const { stdout } = await git(["rev-parse", "--verify", "refs/heads/main"], {
+			cwd: repo.path,
+		});
+		expect(stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
+		expect((await repoManager.stats(repo)).fileCount).toBe(0);
+
+		// No origin: pull and the sidebar's sync check are no-ops, not failures.
+		await expect(repoManager.pull(repo)).resolves.toBeUndefined();
+		await expect(repoManager.syncStatus(repo)).resolves.toEqual({
+			ahead: 0,
+			behind: 0,
+		});
+
+		await repoManager.delete(repo.id);
+	});
+
 	it("computes file count and language breakdown from the bare clone", async () => {
 		writeFileSync(path.join(fixtureRepo, "app.ts"), "const x: number = 1;\n");
 		writeFileSync(path.join(fixtureRepo, "style.css"), "body { margin: 0 }\n");

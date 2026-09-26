@@ -1,5 +1,6 @@
 import {
 	cloneRepoBodySchema,
+	createWorkspaceBodySchema,
 	type ListReposResponse,
 	type OkIdResponse,
 	type RepoResponse,
@@ -61,6 +62,25 @@ export function createReposRoute(deps: { repos: RepoManager }): Hono {
 			throw new HTTPException(500, { message: msg });
 		}
 	});
+
+	// Registered on `reposRoute` ahead of the `guarded` mount, so this handler
+	// answers before `requireRepo` could read "workspace" as a Repo id.
+	reposRoute.post(
+		"/workspace",
+		validate("json", createWorkspaceBodySchema),
+		async (c) => {
+			const body = c.req.valid("json");
+			try {
+				const repo = await deps.repos.createWorkspace(body.name);
+				const res: RepoResponse = { repo };
+				return c.json(res, 201);
+			} catch (err) {
+				const msg =
+					err instanceof Error ? err.message : "workspace creation failed";
+				throw new HTTPException(500, { message: msg });
+			}
+		},
+	);
 
 	guarded.post("/:id/pull", async (c) => {
 		const repo = c.get("repo");

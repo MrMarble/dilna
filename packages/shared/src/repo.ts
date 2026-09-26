@@ -3,6 +3,8 @@ export type Repo = {
 	slug: string;
 	path: string;
 	defaultBranch: string;
+	/** `""` for a Repo with no `origin` — a workspace created empty, or the
+	 * orchestrator meta-repo — which pull/sync then treat as always in sync. */
 	remoteUrl: string;
 	createdAt: number;
 };

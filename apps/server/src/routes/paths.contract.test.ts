@@ -71,6 +71,7 @@ describe("server route addresses", () => {
 		expect(paths.repos.list()).toBe("/api/repos");
 		expectDeclared("GET", paths.repos.list());
 		expectDeclared("POST", paths.repos.list());
+		expectDeclared("POST", paths.repos.workspace());
 		expectDeclared("GET", paths.repos.get("__p__"));
 		expectDeclared("GET", paths.repos.stats("__p__"));
 		expectDeclared("POST", paths.repos.pull("__p__"));
