@@ -11,6 +11,15 @@ export type UsageTotalsDetailed = {
 	cacheWriteTokens: number;
 	reasoningTokens: number;
 	costUsd: number;
+	/** Cache hit rate over this slice (issue #266): `cacheRead / (cacheRead
+	 * + cacheWrite + uncached input)` — the baseline instrument for the
+	 * prefix-freeze work, so the effect of any prompt-change is measured
+	 * rather than asserted. Computed server-side (`usageStats.ts`) so the
+	 * formula and its empty-slice policy live in one place; `null` when the
+	 * slice has no input-side tokens at all. Callers render "—" for null,
+	 * never 0% — 0 would read as "every turn missed" rather than "nothing to
+	 * measure". */
+	cacheHitRate: number | null;
 };
 
 /** `date` is a UTC `YYYY-MM-DD` bucket (SQLite `date(created_at, 'unixepoch')`). */
