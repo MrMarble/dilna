@@ -46,6 +46,7 @@ export function toView(s: Session): SessionView {
 		kind: s.kind,
 		provider: s.provider,
 		model: s.model,
+		comparisonGroupId: s.comparisonGroupId ?? null,
 		status: s.status,
 		usage: s.usage,
 		createdAt: s.createdAt,

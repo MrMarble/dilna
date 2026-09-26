@@ -365,6 +365,16 @@ export function App() {
 		[mobileSheet.close],
 	);
 
+	// An arm opened as a plain Session (ADR-0047) links back to its
+	// comparison view from the chat header.
+	const handleOpenComparison = useCallback(
+		(groupId: string) => {
+			navigate({ kind: "comparison", groupId });
+			mobileSheet.close();
+		},
+		[navigate, mobileSheet.close],
+	);
+
 	const handleOpenSettings = useCallback(() => {
 		navigate({ kind: "settings" });
 		mobileSheet.close();
@@ -469,6 +479,7 @@ export function App() {
 									repo={selectedRepo}
 									selectedSession={selectedSession}
 									onDeleteSession={handleRequestDeleteSession}
+									onOpenComparison={handleOpenComparison}
 									deletingSession={
 										selectedSession !== null &&
 										deletingSessionIds.includes(selectedSession.id)
