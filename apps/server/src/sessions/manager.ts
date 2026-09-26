@@ -82,6 +82,7 @@ import { freshRateLimitWindows, type RateLimitSnapshot } from "./rateLimits";
 import { deleteScoresForSession } from "./scoring";
 import {
 	defaultSessionTitle,
+	fallbackSessionTitle,
 	rowToSession,
 	sessionCompactionOf,
 	toView,
@@ -814,25 +815,27 @@ export class SessionManager {
 
 	/**
 	 * Replace a Session's generic placeholder title with a short, meaningful one
-	 * derived from its very first prompt — best-effort, and only for the first
-	 * turn of an ordinary (non-orchestrator) pi Session.
+	 * derived from its very first turn.
 	 *
 	 * This closes the title gap left when the retired Claude backend (which
 	 * auto-derived a title from its transcript summary) was replaced with the
 	 * pi stack (no CLI, no transcript summary — see ADR-0020): the framework
 	 * still only ever writes the generic placeholder at creation time, so
-	 * without this the title would stay generic forever. Rather than have the
-	 * framework invent a title from rules, it calls the pi agent itself via
-	 * `generateSessionTitle` — a small, isolated model round-trip on the
-	 * Session's own provider/model.
+	 * without this the title would stay generic forever.
+	 *
+	 * Two tiers, so the title never depends on the provider behaving:
+	 *
+	 * 1. `generateSessionTitle` — a small, isolated model round-trip on the
+	 *    Session's own provider/model.
+	 * 2. `fallbackSessionTitle` — when that yields nothing (a provider that
+	 *    rejects the tiny no-tools request, errors out, or replies empty —
+	 *    all logged inside pi.ts), a deterministic title from the first
+	 *    prompt's own text.
 	 *
 	 * Guarded so it only fires once: it's a no-op for anything that isn't a
 	 * `session`-kind Session (an orchestrator Session keeps its fixed
 	 * "Orchestrator" title) and for any Session whose title has already been
 	 * replaced (i.e. is no longer the `defaultSessionTitle` placeholder).
-	 * Because the placeholder guard is what makes it idempotent, a failed
-	 * derivation on the first turn naturally retries on a later turn — it merely
-	 * stays on the placeholder until one succeeds.
 	 */
 	private async maybeDeriveTitle(
 		session: Session,
@@ -840,12 +843,13 @@ export class SessionManager {
 	): Promise<void> {
 		if (session.kind !== "session") return;
 		if (session.title !== defaultSessionTitle(session.id)) return;
-		const title = await generateSessionTitle(
-			session.id,
-			firstPrompt,
-			session.provider,
-			session.model,
-		);
+		const title =
+			(await generateSessionTitle(
+				session.id,
+				firstPrompt,
+				session.provider,
+				session.model,
+			)) ?? fallbackSessionTitle(firstPrompt);
 		if (!title) return;
 		await this.setTitle(session.id, title);
 	}

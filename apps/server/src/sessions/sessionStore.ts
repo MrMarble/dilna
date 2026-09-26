@@ -65,6 +65,44 @@ export function defaultSessionTitle(id: string): string {
 	return `Session ${id.slice(0, 4)}`;
 }
 
+/** Longest fallback title, chosen so a truncated prompt still reads as a
+ * phrase rather than cutting mid-word without warning. */
+const FALLBACK_TITLE_MAX_CHARS = 48;
+
+/**
+ * Deterministic Session title derived straight from the first prompt — the
+ * fallback when the model call behind `generateSessionTitle` yields nothing
+ * (provider rejects the tiny no-tools request, errors, or replies empty).
+ * Title derivation must not depend on the provider behaving: without this,
+ * a provider that won't answer the title call leaves every Session on the
+ * generic placeholder forever.
+ *
+ * Takes the first non-empty line (where `describeAttachmentsForTitle` puts
+ * the user's own text), collapses whitespace, and truncates at a word
+ * boundary. An attachment-only first turn titles itself after the first
+ * attachment's filename. Returns `null` when there is nothing at all to
+ * derive from — the caller keeps the placeholder, which a later turn's
+ * derivation can still replace.
+ */
+export function fallbackSessionTitle(prompt: string): string | null {
+	const line = prompt
+		.split("\n")
+		.map((part) => part.trim())
+		.find((part) => part.length > 0);
+	if (!line) return null;
+	// `describeAttachmentsForTitle` wraps filenames in `[attached: …]` when
+	// the turn carried no text — keep the filename, drop the marker.
+	const bare = line
+		.replace(/^\[attached:\s*(.*?)\]$/, "$1")
+		.replace(/^[-*+]\s+/, "");
+	if (bare.length <= FALLBACK_TITLE_MAX_CHARS) return bare;
+	const cut = bare.slice(0, FALLBACK_TITLE_MAX_CHARS);
+	const lastSpace = cut.lastIndexOf(" ");
+	const truncated =
+		lastSpace > FALLBACK_TITLE_MAX_CHARS / 2 ? cut.slice(0, lastSpace) : cut;
+	return `${truncated.trimEnd()}…`;
+}
+
 /** `Session`'s two compaction columns (ADR-0023), reshaped into
  * `context.ts`'s `SessionCompaction` — the one place that pairing happens, so every caller
  * (the turn-end check, the idle-session REST estimate) treats "only one of
