@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.0](https://github.com/MrMarble/dilna/compare/v0.34.0...v0.35.0) (2026-09-26)
+
+
+### Features
+
+* create an empty workspace Repo from the new-repo dialog ([#256](https://github.com/MrMarble/dilna/issues/256)) ([0c33126](https://github.com/MrMarble/dilna/commit/0c331262ab5013c6752579475bf445d952ecb29e))
+
 ## [0.34.0](https://github.com/MrMarble/dilna/compare/v0.33.0...v0.34.0) (2026-09-24)
 
 
