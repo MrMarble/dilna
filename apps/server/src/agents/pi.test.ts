@@ -1,4 +1,4 @@
-import type { Message } from "@dilna/shared";
+import type { AgentStreamEvent, Message } from "@dilna/shared";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -740,6 +740,119 @@ describe("normalizePiEvent", () => {
 		);
 		expect(state.currentMessageId).toBeNull();
 		expect(state.toolCallMessageId.size).toBe(0);
+	});
+
+	// Issue #267: the turn's usage_events row must carry the context occupancy
+	// the provider itself reported — `input + output + cacheRead + cacheWrite`
+	// of the turn's final assistant round.
+	const reportedUsage = {
+		input: 100,
+		output: 20,
+		cacheRead: 300,
+		cacheWrite: 50,
+		cost: {
+			input: 0.01,
+			output: 0.02,
+			cacheRead: 0,
+			cacheWrite: 0,
+			total: 0.03,
+		},
+	};
+
+	function runTurnWithRounds(
+		usages: Array<Record<string, unknown>>,
+	): AgentStreamEvent[] {
+		const state = createNormalizeState();
+		const out: AgentStreamEvent[] = [];
+		for (const usage of usages) {
+			// One message_start per round — only the first opens a dilna message,
+			// the rest are no-ops, matching a real multi-round turn.
+			out.push(
+				...normalizePiEvent(
+					{
+						type: "message_start",
+						message: { role: "assistant", content: [] },
+					} as unknown as AgentEvent,
+					state,
+				),
+			);
+			out.push(
+				...normalizePiEvent(
+					{
+						type: "message_end",
+						message: { role: "assistant", content: [], usage },
+					} as unknown as AgentEvent,
+					state,
+				),
+			);
+		}
+		out.push(
+			...normalizePiEvent(
+				{ type: "agent_end", messages: [] } as unknown as AgentEvent,
+				state,
+			),
+		);
+		return out;
+	}
+
+	it("stamps the provider-reported context tokens onto the turn-end usage_update", () => {
+		const events = runTurnWithRounds([reportedUsage]);
+		const turnEnd = events.find(
+			(e) => e.type === "usage_update" && e.cumulative,
+		);
+		expect(turnEnd).toBeDefined();
+		// The acceptance formula, spelled out: input + output + cacheRead + cacheWrite.
+		expect(
+			turnEnd && "providerContextTokens" in turnEnd
+				? turnEnd.providerContextTokens
+				: undefined,
+		).toBe(100 + 20 + 300 + 50);
+	});
+
+	it("reports the final round's occupancy, not the sum across a turn's rounds", () => {
+		// Round 2's input re-includes everything round 1 saw, so the turn's
+		// context occupancy is the last report — summing would double-count the
+		// shared prefix.
+		const events = runTurnWithRounds([
+			{ ...reportedUsage, input: 100, output: 10 }, // occupancy 460
+			{ ...reportedUsage, input: 200, output: 5 }, // occupancy 570
+		]);
+		const turnEnd = events.find(
+			(e) => e.type === "usage_update" && e.cumulative,
+		);
+		expect(
+			turnEnd && "providerContextTokens" in turnEnd
+				? turnEnd.providerContextTokens
+				: undefined,
+		).toBe(200 + 5 + 300 + 50);
+		// ...while the billing fields below keep summing across rounds.
+		expect(
+			turnEnd && "usage" in turnEnd ? turnEnd.usage.inputTokens : undefined,
+		).toBe(300);
+	});
+
+	it("omits providerContextTokens from per-round usage_update events", () => {
+		const state = createNormalizeState();
+		normalizePiEvent(
+			{
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentEvent,
+			state,
+		);
+		const perRound = normalizePiEvent(
+			{
+				type: "message_end",
+				message: { role: "assistant", content: [], usage: reportedUsage },
+			} as unknown as AgentEvent,
+			state,
+		);
+		expect(perRound).toHaveLength(1);
+		const [perRoundEvent] = perRound;
+		expect(perRoundEvent).toBeDefined();
+		expect("providerContextTokens" in (perRoundEvent as AgentStreamEvent)).toBe(
+			false,
+		);
 	});
 });
 

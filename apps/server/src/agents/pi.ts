@@ -17,6 +17,7 @@ import {
 	type AgentMessage,
 	type AgentTool,
 	BACKGROUND_CONTEXT,
+	calculateContextTokens,
 	generateSummary,
 } from "@earendil-works/pi-agent-core";
 import type {
@@ -829,6 +830,18 @@ export type NormalizeState = {
 	 * dashboard. Reset on `agent_end`.
 	 */
 	turnUsage: UsageTotals;
+	/**
+	 * Context occupancy the provider reported for the most recent assistant
+	 * round of this turn — `calculateContextTokens` over that round's usage
+	 * (issue #267). Kept per-round rather than summed: every round's input
+	 * already re-includes the whole conversation, so the *final* round's
+	 * report is the turn's true context occupancy, while summing would
+	 * double-count the shared prefix (the billing fields in `turnUsage` above
+	 * want the sum; occupancy wants the last). Emitted on the turn-end
+	 * reconciling `usage_update` and persisted onto
+	 * `usage_events.provider_context_tokens`. Reset on `agent_end`.
+	 */
+	turnProviderContextTokens: number | null;
 };
 
 const ZERO_TURN_USAGE: UsageTotals = {
@@ -845,6 +858,7 @@ export function createNormalizeState(): NormalizeState {
 		currentMessageId: null,
 		toolCallMessageId: new Map(),
 		turnUsage: { ...ZERO_TURN_USAGE },
+		turnProviderContextTokens: null,
 	};
 }
 
@@ -972,6 +986,10 @@ export function normalizePiEvent(
 					(state.turnUsage.reasoningTokens ?? 0) + (usage.reasoningTokens ?? 0),
 				costUsd: (state.turnUsage.costUsd ?? 0) + (usage.costUsd ?? 0),
 			};
+			// Last report wins — see `turnProviderContextTokens`'s doc comment.
+			state.turnProviderContextTokens = calculateContextTokens(
+				event.message.usage,
+			);
 			return [
 				{ type: "usage_update", messageId: state.currentMessageId, usage },
 			];
@@ -981,6 +999,8 @@ export function normalizePiEvent(
 			// this turn's total usage, in `cumulative` position so
 			// SessionManager.accumulateSessionUsage folds it into the session's
 			// persisted lifetime total — the only place it looks for that field.
+			// `providerContextTokens` rides along so the same event also stamps
+			// the provider's context report onto the turn's `usage_events` row.
 			const events: AgentStreamEvent[] =
 				state.currentMessageId &&
 				(state.turnUsage.inputTokens > 0 || state.turnUsage.outputTokens > 0)
@@ -990,12 +1010,18 @@ export function normalizePiEvent(
 								messageId: state.currentMessageId,
 								usage: state.turnUsage,
 								cumulative: state.turnUsage,
+								...(state.turnProviderContextTokens !== null
+									? {
+											providerContextTokens: state.turnProviderContextTokens,
+										}
+									: {}),
 							},
 						]
 					: [];
 			state.currentMessageId = null;
 			state.toolCallMessageId.clear();
 			state.turnUsage = { ...ZERO_TURN_USAGE };
+			state.turnProviderContextTokens = null;
 			return events;
 		}
 		default:
