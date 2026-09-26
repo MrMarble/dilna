@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.2](https://github.com/MrMarble/dilna/compare/v0.36.1...v0.36.2) (2026-09-26)
+
+
+### Bug Fixes
+
+* **sessions:** always land a first-turn title, whatever the provider does ([#263](https://github.com/MrMarble/dilna/issues/263)) ([669b50e](https://github.com/MrMarble/dilna/commit/669b50e38b6e08ffe48c2084854eee19f75ef181))
+
 ## [0.36.1](https://github.com/MrMarble/dilna/compare/v0.36.0...v0.36.1) (2026-09-26)
 
 
