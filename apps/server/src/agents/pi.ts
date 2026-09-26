@@ -1524,7 +1524,11 @@ const TITLE_SYSTEM_PROMPT =
  *
  * Best-effort: any failure (no model configured, a provider error, a non-
  * assistant reply) resolves `null`, which the caller treats as "keep the
- * current title". Never rejects.
+ * current title" (and derive a deterministic one from the prompt — see
+ * `fallbackSessionTitle`). Never rejects: every failure is logged here with
+ * its provider/model so a provider that rejects this tiny no-tools request
+ * (which pi-agent-core reports as an errored assistant message rather than a
+ * thrown error) is diagnosable instead of silently leaving the placeholder.
  */
 export async function generateSessionTitle(
 	sessionId: string,
@@ -1532,7 +1536,7 @@ export async function generateSessionTitle(
 	provider?: string | null,
 	modelId?: string | null,
 ): Promise<string | null> {
-	let resolved = resolveConfiguredModel();
+	let resolved: ReturnType<typeof resolveConfiguredModel>;
 	try {
 		resolved = resolveConfiguredModel(provider, modelId);
 	} catch {
@@ -1541,7 +1545,10 @@ export async function generateSessionTitle(
 		} catch {
 			// No usable provider/model anywhere (nothing pinned to the Session and
 			// no override/env default) — best-effort per the doc comment: keep the
-			// placeholder title.
+			// placeholder title. Note the whole lookup is inside try/catch: an
+			// earlier version called `resolveConfiguredModel()` once unguarded
+			// first, which rejected — despite "never rejects" — on instances with
+			// neither an override nor DILNA_PROVIDER/DILNA_MODEL set.
 			return null;
 		}
 	}
@@ -1569,15 +1576,62 @@ export async function generateSessionTitle(
 		getApiKey: (p) => providerApiKey(p),
 	});
 
-	await titleAgent.prompt(
-		`The user's first prompt:\n\n"""\n${userPrompt}\n"""\n\nWrite the Session title now.`,
-	);
+	try {
+		await titleAgent.prompt(
+			`The user's first prompt:\n\n"""\n${userPrompt}\n"""\n\nWrite the Session title now.`,
+		);
+	} catch (err) {
+		log.error(
+			{ provider: resolved.provider, model: resolved.modelId, err },
+			"session title derivation call failed",
+		);
+		return null;
+	}
 
 	const last = titleAgent.state.messages.at(-1);
-	if (last?.role !== "assistant") return null;
+	if (last?.role !== "assistant") {
+		log.error(
+			{ provider: resolved.provider, model: resolved.modelId },
+			"session title derivation got no assistant reply",
+		);
+		return null;
+	}
+	// pi-agent-core resolves the turn — it does not throw — when the provider
+	// rejects the request, surfacing the failure as an assistant message with
+	// stopReason "error"/"aborted" and empty content. Without this check the
+	// provider's behavior would silently discard the title (empty extraction,
+	// no log anywhere).
+	if (last.stopReason === "error" || last.stopReason === "aborted") {
+		log.error(
+			{
+				provider: resolved.provider,
+				model: resolved.modelId,
+				stopReason: last.stopReason,
+				err: last.errorMessage,
+			},
+			"session title derivation model call failed",
+		);
+		return null;
+	}
 	// Don't trust the model to have obeyed "no quotes": strip enclosing
 	// quotes/curly quotes in case it wrapped the title anyway.
-	return extractTitleFromReply(contentBlocksToText(last.content));
+	const title = extractTitleFromReply(contentBlocksToText(last.content));
+	if (!title) {
+		log.error(
+			{
+				provider: resolved.provider,
+				model: resolved.modelId,
+				stopReason: last.stopReason,
+			},
+			"session title derivation produced no usable text",
+		);
+		return null;
+	}
+	log.info(
+		{ provider: resolved.provider, model: resolved.modelId, title },
+		"session title derived",
+	);
+	return title;
 }
 
 /**
@@ -1588,6 +1642,9 @@ export async function generateSessionTitle(
  * an empty result to `null` ("no title produced").
  */
 export function extractTitleFromReply(reply: string): string | null {
-	const title = reply.trim().replace(/^["'“”]+|["'“”]+$/g, "");
+	const title = reply
+		.trim()
+		// GLM models in particular like to bold their one-line answer.
+		.replace(/^["'“”*]+|["'“”*]+$/g, "");
 	return title || null;
 }

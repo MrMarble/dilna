@@ -1,14 +1,29 @@
 import type { Message } from "@dilna/shared";
 import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createNormalizeState,
 	dilnaMessagesToInitialState,
 	extractTitleFromReply,
+	generateSessionTitle,
 	normalizePiEvent,
 	piMessagesToDilna,
 	piRoundToDilnaMessage,
 } from "./pi";
+
+/**
+ * `generateSessionTitle` resolves the model through `effectiveProvider`/
+ * `effectiveModel` when the caller pins nothing. The mock keeps that path
+ * deterministic: tests that pin an explicit provider/model never consult
+ * it, and the no-config test gets a guaranteed-empty answer instead of
+ * whatever the surrounding environment happens to export.
+ */
+const providerConfigState = { provider: "", model: "" };
+vi.mock("./providerConfigStore", async (importOriginal) => ({
+	...(await importOriginal<Record<string, unknown>>()),
+	effectiveProvider: () => providerConfigState.provider,
+	effectiveModel: () => providerConfigState.model,
+}));
 
 const EMPTY_USAGE = {
 	input: 0,
@@ -570,6 +585,12 @@ describe("extractTitleFromReply", () => {
 		);
 	});
 
+	it("strips surrounding markdown bold — GLM's favorite wrapper", () => {
+		expect(extractTitleFromReply("**Fix the login flow**")).toBe(
+			"Fix the login flow",
+		);
+	});
+
 	it("preserves the body when the reply is already clean", () => {
 		expect(extractTitleFromReply("Fix the login flow")).toBe(
 			"Fix the login flow",
@@ -719,5 +740,110 @@ describe("normalizePiEvent", () => {
 		);
 		expect(state.currentMessageId).toBeNull();
 		expect(state.toolCallMessageId.size).toBe(0);
+	});
+});
+
+/** A minimal-but-real GLM-style SSE body — the same shape the real z.ai
+ * endpoint streams for a short completion, parsed here through pi-ai's
+ * genuine openai-completions stream implementation. */
+function sseResponse(text: string): Response {
+	const chunks = [
+		{
+			id: "chatcmpl-test",
+			choices: [{ index: 0, delta: { role: "assistant", content: "" } }],
+		},
+		{
+			id: "chatcmpl-test",
+			choices: [{ index: 0, delta: { content: text } }],
+		},
+		{
+			id: "chatcmpl-test",
+			choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+			usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+		},
+	];
+	const body =
+		chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") +
+		"data: [DONE]\n\n";
+	return new Response(body, {
+		status: 200,
+		headers: { "content-type": "text/event-stream" },
+	});
+}
+
+describe("generateSessionTitle", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		delete process.env.ZAI_API_KEY;
+		providerConfigState.provider = "";
+		providerConfigState.model = "";
+	});
+
+	it("derives a title on the Session's own provider/model and sends the bare no-tools request", async () => {
+		process.env.ZAI_API_KEY = "test-key";
+		const bodies: Array<Record<string, unknown>> = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url: unknown, init?: { body?: string }) => {
+				bodies.push(JSON.parse(init?.body ?? "{}"));
+				return sseResponse("Fix the login redirect bug");
+			}),
+		);
+
+		const title = await generateSessionTitle(
+			"sess-1",
+			"please fix the login redirect bug",
+			"zai",
+			"glm-4.7",
+		);
+
+		expect(title).toBe("Fix the login redirect bug");
+		expect(bodies).toHaveLength(1);
+		// The title call is a bare chat completion: no tools, no tool_stream —
+		// exactly the request shape some providers (zai's coding endpoint among
+		// them) handle differently from the main agent's tool-bearing one.
+		expect(bodies[0]?.model).toBe("glm-4.7");
+		expect(bodies[0]?.tools).toBeUndefined();
+		expect(bodies[0]?.tool_stream).toBeUndefined();
+	});
+
+	it("resolves null — never rejects — when the provider rejects the call", async () => {
+		process.env.ZAI_API_KEY = "test-key";
+		// A provider 4xx (zai's coding endpoint answers like this for requests
+		// it dislikes) surfaces as an errored assistant message, not a throw.
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							error: {
+								code: "1210",
+								message: "API 调用参数有误，请检查文档。",
+							},
+						}),
+						{ status: 400, headers: { "content-type": "application/json" } },
+					),
+			),
+		);
+
+		await expect(
+			generateSessionTitle("sess-1", "prompt", "zai", "glm-4.7"),
+		).resolves.toBeNull();
+	});
+
+	it("resolves null — never rejects — when no provider/model is configured anywhere", async () => {
+		providerConfigState.provider = "";
+		providerConfigState.model = "";
+		const fetchSpy = vi.fn();
+		vi.stubGlobal("fetch", fetchSpy);
+
+		// The earlier implementation called resolveConfiguredModel() once
+		// unguarded before its try/catch, so this case THREW despite the doc
+		// comment promising "never rejects" — breaking pinned-only setups.
+		await expect(
+			generateSessionTitle("sess-1", "prompt", null, null),
+		).resolves.toBeNull();
+		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });
