@@ -126,6 +126,33 @@ export function buildInitialMessages(
 }
 
 /**
+ * Fold pi-agent-core's raw `estimateContextTokens` result into dilna's
+ * shared `ContextUsageEstimate` (issue #268): keep both numbers the library
+ * returns — the provider-derived `usageTokens` and the `chars/4`
+ * `trailingTokens` estimate for the tail after the last reported round —
+ * instead of collapsing them into the headline `tokens`, and flag which one
+ * the figure actually is. Exported for tests (context.test.ts exercises both
+ * `source` branches through it); `estimateFor` is the only production
+ * caller.
+ */
+export function toContextUsageEstimate(
+	raw: ReturnType<typeof estimateContextTokens>,
+	contextWindow: number,
+): ContextUsageEstimate {
+	return {
+		tokens: raw.tokens,
+		usageTokens: raw.usageTokens,
+		trailingTokens: raw.trailingTokens,
+		contextWindow,
+		reserveTokens: DEFAULT_COMPACTION_SETTINGS.reserveTokens,
+		// No usable usage block anywhere in the measured history → the whole
+		// figure is the chars/4 sum; otherwise the headline is grounded in the
+		// provider's report (plus the estimated tail after it).
+		source: raw.lastUsageIndex === null ? "estimated" : "provider",
+	};
+}
+
+/**
  * Estimate against `contextWindow`, folding in `compaction` the same way
  * {@link buildInitialMessages} would seed a fresh `Agent` — so the number
  * reported always matches what the model actually sees, not dilna's raw
@@ -136,12 +163,10 @@ function estimateFor(
 	history: Message[],
 	compaction: SessionCompaction,
 ): ContextUsageEstimate {
-	return {
-		tokens: estimateContextTokens(buildInitialMessages(history, compaction))
-			.tokens,
+	return toContextUsageEstimate(
+		estimateContextTokens(buildInitialMessages(history, compaction)),
 		contextWindow,
-		reserveTokens: DEFAULT_COMPACTION_SETTINGS.reserveTokens,
-	};
+	);
 }
 
 /**
@@ -268,11 +293,10 @@ export async function checkSessionContext(
 	// number that triggered this — the whole point of compacting was to
 	// bring it back down.
 	return {
-		estimate: {
-			tokens: estimateContextTokens(newContext).tokens,
-			contextWindow: estimate.contextWindow,
-			reserveTokens: estimate.reserveTokens,
-		},
+		estimate: toContextUsageEstimate(
+			estimateContextTokens(newContext),
+			estimate.contextWindow,
+		),
 		compaction,
 		newContext,
 	};

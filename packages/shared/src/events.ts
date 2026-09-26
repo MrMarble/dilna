@@ -233,8 +233,19 @@ export type UsageTotals = {
  * Session stands.
  */
 export type ContextUsageEstimate = {
-	/** Estimated tokens the Session's context currently occupies. */
+	/** Estimated tokens the Session's context currently occupies — the
+	 * headline figure the meter shows. `usageTokens + trailingTokens` when a
+	 * provider report is in reach, else the pure `chars/4` estimate. */
 	tokens: number;
+	/** Tokens the provider itself reported for the most recent assistant
+	 * round in the measured history (`input + output + cacheRead +
+	 * cacheWrite`) — the ground-truth portion of `tokens`. 0 when no round
+	 * carries a usable report. */
+	usageTokens: number;
+	/** Estimated tokens for everything *after* that last reported round — a
+	 * `chars/4` heuristic, the error-prone part of `tokens`. 0 when the
+	 * history ends on the reported round itself. */
+	trailingTokens: number;
 	/** The resolved model's context window — fixed for this Session's live
 	 * Agent (see `PiHandle`'s doc comment on why it can't just be read from
 	 * the currently-configured provider/model instead). */
@@ -243,4 +254,12 @@ export type ContextUsageEstimate = {
 	 * (`DEFAULT_COMPACTION_SETTINGS.reserveTokens`) — compaction fires once
 	 * `tokens` crosses `contextWindow - reserveTokens`. */
 	reserveTokens: number;
+	/** Whether `tokens` is grounded in a provider report or is entirely the
+	 * `chars/4` estimate (issue #268). `"provider"` once the measured
+	 * history contains an assistant round carrying a usable usage block;
+	 * `"estimated"` when it doesn't — today the cold-start case, where
+	 * dilna re-seeds from its own rows and none carries real usage, so the
+	 * number a page load shows is a heuristic. Renderers must say which it
+	 * is rather than presenting both as ground truth. */
+	source: "provider" | "estimated";
 };
