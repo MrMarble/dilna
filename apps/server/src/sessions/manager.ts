@@ -1710,9 +1710,11 @@ export class SessionManager {
 			if (estimate) {
 				this.events.broadcast(id, {
 					type: "context_usage",
-					tokens: estimate.tokens,
-					contextWindow: estimate.contextWindow,
-					reserveTokens: estimate.reserveTokens,
+					// The whole shared estimate — spreading keeps the event and the
+					// REST envelope in lockstep whenever `ContextUsageEstimate`
+					// grows a field (issue #268 added source/usage/trailing), so
+					// neither side can drift by forgetting to list one.
+					...estimate,
 				});
 			}
 		} catch (err) {
