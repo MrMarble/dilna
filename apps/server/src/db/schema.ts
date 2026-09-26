@@ -423,6 +423,17 @@ export const usageEvents = sqliteTable("usage_events", {
 	 * `"judge"` for an output-scoring call (ADR-0046). Existing rows are all
 	 * turns, hence the default. */
 	purpose: text("purpose").notNull().default("turn"),
+	/** Context occupancy the provider itself reported for this turn —
+	 * `input + output + cacheRead + cacheWrite` of the turn's final assistant
+	 * round (pi-agent-core's `calculateContextTokens`), stamped by the pi
+	 * adapter (issue #267). Deliberately *not* derivable from the billing
+	 * columns above: those sum across a turn's internal rounds, while the
+	 * final round's report already re-includes the whole conversation, so
+	 * summing would double-count the shared prefix. This is the ground truth
+	 * the calibration work checks dilna's own context estimate against; null
+	 * for rows written before the column existed, and never treated as zero
+	 * by readers. */
+	providerContextTokens: integer("provider_context_tokens"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 
