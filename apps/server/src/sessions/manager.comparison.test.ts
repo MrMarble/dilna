@@ -126,7 +126,8 @@ describe("SessionManager.createComparison (issue #250, ADR-0047)", () => {
 		]);
 
 		// Arms are ordinary Sessions: distinct worktrees on distinct branches,
-		// sharing one group id that SessionView deliberately omits.
+		// sharing one group id — exposed on SessionView too, so an arm opened on
+		// its own can link back to the comparison view.
 		const fulls = await Promise.all(
 			sessions.map((s) => sessionManager.get(s.id)),
 		);
@@ -134,7 +135,9 @@ describe("SessionManager.createComparison (issue #250, ADR-0047)", () => {
 			expect(full?.comparisonGroupId).toBe(groupId);
 		}
 		expect(fulls[0]?.worktreePath).not.toBe(fulls[1]?.worktreePath);
-		expect(sessions[0]).not.toHaveProperty("comparisonGroupId");
+		for (const view of sessions) {
+			expect(view.comparisonGroupId).toBe(groupId);
+		}
 
 		// The group reads back in creation order — the column order.
 		const arms = await sessionManager.getComparison(groupId);

@@ -28,8 +28,9 @@ export type Session = {
 	 * server (absent from SessionView), same as the compaction fields above. */
 	spawnedBy: string | null;
 	/** ADR-0047: the Comparison this Session is an arm of, when it was created
-	 * via `POST /api/comparisons` — null otherwise. Internal to the server
-	 * (absent from SessionView), same as the fields above. */
+	 * via `POST /api/comparisons` — null otherwise. Unlike the fields above it
+	 * is also on SessionView, so an arm opened on its own can link back to
+	 * its comparison view. */
 	comparisonGroupId?: string | null;
 	/** The concrete provider/model this Session runs on (multi-provider support).
 	 * Present once resolved (rowToSession always reads these columns), but kept
@@ -56,6 +57,9 @@ export type SessionView = {
 	 * agent label instead. */
 	provider?: string | null;
 	model?: string | null;
+	/** See {@link Session.comparisonGroupId}. The web UI reads it to offer a
+	 * way back to `/compare/<groupId>` from an arm opened as a plain Session. */
+	comparisonGroupId?: string | null;
 	status: SessionStatus;
 	/** See {@link Session.usage}. Seeds the chat header's token badge on
 	 * mount, so it doesn't restart from 0 after a reload or session switch. */

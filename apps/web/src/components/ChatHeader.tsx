@@ -1,6 +1,7 @@
 import type { Repo, SessionView } from "@dilna/shared";
 import {
 	Check,
+	Columns2,
 	FileDiff,
 	FolderGit2,
 	Link as LinkIcon,
@@ -26,6 +27,10 @@ type Props = {
 	 * see App.handleDeleteSession). Swaps the trash icon for a spinner and
 	 * blocks a duplicate click. */
 	deletingSession?: boolean;
+	/** Navigates to `/compare/<groupId>`. Shown only when the selected
+	 * Session is a Comparison arm (ADR-0047) — the one way back to the side
+	 * by side view once it's been left. */
+	onOpenComparison?: (groupId: string) => void;
 	/** Below the 768px breakpoint (issue #12) these drive the shared mobile
 	 * bottom sheet in place of the desktop Sidebar/ContextPanel; hidden via
 	 * `md:hidden` above the breakpoint, where the desktop panels are always
@@ -52,6 +57,7 @@ export function ChatHeader({
 	selectedSession,
 	onDeleteSession,
 	deletingSession = false,
+	onOpenComparison,
 	menuTrigger,
 	filesTrigger,
 	sidebarCollapsed,
@@ -105,6 +111,20 @@ export function ChatHeader({
 							selectedSession.agentType,
 						)}
 					</span>
+					{selectedSession.comparisonGroupId && onOpenComparison && (
+						<button
+							type="button"
+							onClick={() =>
+								selectedSession.comparisonGroupId &&
+								onOpenComparison(selectedSession.comparisonGroupId)
+							}
+							title="Open model comparison"
+							aria-label="Open model comparison"
+							className="rounded-md p-2 text-muted-foreground transition-[background-color,color,scale] hover:bg-accent hover:text-foreground active:scale-90 active:bg-accent"
+						>
+							<Columns2 className="size-3.5" />
+						</button>
+					)}
 					<CopyTranscriptLinkButton sessionId={selectedSession.id} />
 					<button
 						type="button"

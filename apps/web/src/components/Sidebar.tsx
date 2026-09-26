@@ -626,6 +626,14 @@ function RepoSessionsSubmenu({
 						>
 							<StatusDot status={session.status} />
 							<span className="truncate">{session.title}</span>
+							{/* Marks a Comparison arm (ADR-0047) — opened here it's a
+							    plain Session; ChatHeader links back to the view. */}
+							{session.comparisonGroupId && (
+								<Columns2
+									aria-label="Comparison arm"
+									className="size-3 shrink-0 text-muted-foreground"
+								/>
+							)}
 							{deleting ? (
 								<LoaderCircle className="ml-auto size-3 shrink-0 animate-spin" />
 							) : (
