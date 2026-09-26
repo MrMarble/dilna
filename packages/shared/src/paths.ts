@@ -26,6 +26,8 @@ export const paths = {
 	repos: {
 		/** `GET` the list, `POST` to clone. Optional `repoId` filters. */
 		list: () => "/api/repos",
+		/** `POST` to create an empty, remote-less Repo. */
+		workspace: () => "/api/repos/workspace",
 		get: (repoId: string) => `/api/repos/${enc(repoId)}`,
 		stats: (repoId: string) => `/api/repos/${enc(repoId)}/stats`,
 		pull: (repoId: string) => `/api/repos/${enc(repoId)}/pull`,

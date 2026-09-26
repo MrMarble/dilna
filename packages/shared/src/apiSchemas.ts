@@ -27,6 +27,13 @@ export const cloneRepoBodySchema = z.object({
 });
 export type CloneRepoBody = z.infer<typeof cloneRepoBodySchema>;
 
+/** A Repo started from nothing rather than cloned: `name` becomes its slug
+ * (normalized the same way a clone's is). */
+export const createWorkspaceBodySchema = z.object({
+	name: z.string().trim().min(1, "a workspace name is required"),
+});
+export type CreateWorkspaceBody = z.infer<typeof createWorkspaceBodySchema>;
+
 // ---- Sessions --------------------------------------------------------------
 
 /** `agentType` is validated structurally against the full shared union; the

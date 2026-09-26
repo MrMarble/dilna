@@ -21,28 +21,54 @@ type Props = {
 export function NewRepoDialog({ open, onOpenChange, onCloned }: Props) {
 	const [url, setUrl] = useState("");
 	const [slug, setSlug] = useState("");
-	const [submitting, setSubmitting] = useState(false);
+	const [submitting, setSubmitting] = useState<"clone" | "workspace" | null>(
+		null,
+	);
 	const [error, setError] = useState<string | null>(null);
 
-	async function handleSubmit(e: React.FormEvent) {
-		e.preventDefault();
-		if (!url.trim()) return;
-		setSubmitting(true);
+	async function run(
+		kind: "clone" | "workspace",
+		create: () => Promise<unknown>,
+	) {
+		setSubmitting(kind);
 		setError(null);
 		try {
-			await api.repos.clone({
-				url: url.trim(),
-				slug: slug.trim() || undefined,
-			});
+			await create();
 			setUrl("");
 			setSlug("");
 			onOpenChange(false);
 			onCloned();
 		} catch (err) {
-			setError(err instanceof Error ? err.message : "clone failed");
+			setError(
+				err instanceof Error
+					? err.message
+					: kind === "clone"
+						? "clone failed"
+						: "workspace creation failed",
+			);
 		} finally {
-			setSubmitting(false);
+			setSubmitting(null);
 		}
+	}
+
+	function handleSubmit(e: React.FormEvent) {
+		e.preventDefault();
+		if (!url.trim()) return;
+		void run("clone", () =>
+			api.repos.clone({
+				url: url.trim(),
+				slug: slug.trim() || undefined,
+			}),
+		);
+	}
+
+	// A Repo that starts empty, for new work with no existing codebase; the
+	// name field is its name, so it's the one input this path requires.
+	function handleCreateWorkspace() {
+		if (!slug.trim()) return;
+		void run("workspace", () =>
+			api.repos.createWorkspace({ name: slug.trim() }),
+		);
 	}
 
 	return (
@@ -51,7 +77,8 @@ export function NewRepoDialog({ open, onOpenChange, onCloned }: Props) {
 				<DialogHeader>
 					<DialogTitle>Clone repository</DialogTitle>
 					<DialogDescription>
-						Git URL of a public or SSH-reachable private repository.
+						Git URL of a public or SSH-reachable private repository — or leave
+						it empty and create an empty workspace to start something new.
 					</DialogDescription>
 				</DialogHeader>
 				<form onSubmit={handleSubmit} className="space-y-4">
@@ -64,15 +91,14 @@ export function NewRepoDialog({ open, onOpenChange, onCloned }: Props) {
 							value={url}
 							onChange={(e) => setUrl(e.target.value)}
 							autoFocus
-							disabled={submitting}
-							required
+							disabled={submitting !== null}
 						/>
 					</div>
 					<div className="space-y-1.5">
 						<Label htmlFor="repo-slug">
-							Slug{" "}
+							Name{" "}
 							<span className="text-muted-foreground">
-								(optional, defaults to repo name)
+								(optional when cloning, defaults to repo name)
 							</span>
 						</Label>
 						<Input
@@ -81,13 +107,23 @@ export function NewRepoDialog({ open, onOpenChange, onCloned }: Props) {
 							placeholder="my-repo"
 							value={slug}
 							onChange={(e) => setSlug(e.target.value)}
-							disabled={submitting}
+							disabled={submitting !== null}
 						/>
 					</div>
 					{error && <p className="text-sm text-destructive">{error}</p>}
 					<DialogFooter>
-						<Button type="submit" disabled={submitting || !url.trim()}>
-							{submitting ? "Cloning…" : "Clone"}
+						<Button
+							type="button"
+							variant="outline"
+							onClick={handleCreateWorkspace}
+							disabled={submitting !== null || !slug.trim()}
+						>
+							{submitting === "workspace"
+								? "Creating…"
+								: "Create empty workspace"}
+						</Button>
+						<Button type="submit" disabled={submitting !== null || !url.trim()}>
+							{submitting === "clone" ? "Cloning…" : "Clone"}
 						</Button>
 					</DialogFooter>
 				</form>

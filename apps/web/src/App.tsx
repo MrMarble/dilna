@@ -540,7 +540,9 @@ function EmptyState({ onNewRepo }: { onNewRepo: () => void }) {
 function RepoEmpty({ repo }: { repo: Repo }) {
 	return (
 		<div className="max-w-sm text-center">
-			<p className="text-sm font-medium">{repo.remoteUrl}</p>
+			<p className="text-sm font-medium">
+				{repo.remoteUrl || "Local workspace (no remote)"}
+			</p>
 			<p className="mt-1 text-xs text-muted-foreground">
 				default branch: <span className="font-mono">{repo.defaultBranch}</span>
 			</p>
