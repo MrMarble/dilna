@@ -12,6 +12,12 @@ import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
+import {
+	cacheHealthBarColor,
+	cacheHealthTone,
+	cacheHealthTooltip,
+	formatHitRate,
+} from "@/lib/cache-health";
 import { formatTokenCount } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
 
@@ -147,6 +153,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 							dailyByModel={summary.dailyByModel}
 						/>
 						<TokenCompositionChart totals={summary.totals} />
+						<CachePanel summary={summary} repoNameById={repoNameById} />
 						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 						<TopSessionsTable
@@ -508,6 +515,173 @@ function TokenCompositionChart({ totals }: { totals: UsageTotalsDetailed }) {
 }
 
 /**
+ * One row of a cache-rate breakdown table: label + colored hit rate, with
+ * the raw components in the tooltip.
+ */
+type CacheRateRow = {
+	key: string;
+	label: string;
+	rate: number | null;
+	read: number;
+	write: number;
+	uncachedInput: number;
+};
+
+/**
+ * Cache-health panel (issue #266) — the baseline instrument over
+ * `usage_events`' cache columns, shipped before anything changes how dilna
+ * builds a prompt so the effect is measured rather than asserted. Hit rate
+ * = cache reads / (reads + writes + uncached input), computed server-side
+ * per slice; this panel only reads it. Until this panel existed, a Session
+ * paying a cache-write premium every turn looked identical to a healthy
+ * cached one.
+ *
+ * Worth knowing while reading it: dilna's request prefix is byte-stable
+ * across the turns of a *live* Session, so a healthy warm-Session rate is
+ * expected — the write side of the ratio is what exposes cold starts (idle
+ * kill, restart, post-compaction respawn).
+ */
+function CachePanel({
+	summary,
+	repoNameById,
+}: {
+	summary: UsageSummary;
+	repoNameById: Record<string, string>;
+}) {
+	const { totals } = summary;
+	// Rendered whenever any usage exists (the page already handles the truly
+	// empty instance) — a provider that never reports cache tokens shows a
+	// legitimate 0% here, and slices with no input-side tokens show "—".
+	const rate = totals.cacheHitRate;
+	const byRepo: CacheRateRow[] = summary.byRepo.map((r) => ({
+		key: r.repoId,
+		label: repoNameById[r.repoId] ?? `${r.repoId.slice(0, 8)}… (deleted)`,
+		rate: r.cacheHitRate,
+		read: r.cacheReadTokens,
+		write: r.cacheWriteTokens,
+		uncachedInput: r.inputTokens,
+	}));
+	const byModel: CacheRateRow[] = summary.byModel.map((m) => ({
+		key: `${m.provider}/${m.model}`,
+		label: `${m.model} · ${m.provider}`,
+		rate: m.cacheHitRate,
+		read: m.cacheReadTokens,
+		write: m.cacheWriteTokens,
+		uncachedInput: m.inputTokens,
+	}));
+	const bySession: CacheRateRow[] = summary.topSessions.map((s) => ({
+		key: s.sessionId,
+		label: s.title ?? `deleted session ${s.sessionId.slice(0, 8)}…`,
+		rate: s.cacheHitRate,
+		read: s.cacheReadTokens,
+		write: s.cacheWriteTokens,
+		uncachedInput: s.inputTokens,
+	}));
+
+	return (
+		<div className="rounded-xl border border-border bg-card p-4 shadow-card">
+			<div className="mb-2 flex items-baseline justify-between text-xs text-muted-foreground">
+				<span>Cache health</span>
+				<span
+					className="tabular-nums"
+					title={cacheHealthTooltip(
+						rate,
+						totals.cacheReadTokens,
+						totals.cacheWriteTokens,
+						totals.inputTokens,
+					)}
+				>
+					{formatTokenCount(totals.cacheReadTokens)} read ·{" "}
+					{formatTokenCount(totals.cacheWriteTokens)} written ·{" "}
+					{formatTokenCount(totals.inputTokens)} uncached in
+				</span>
+			</div>
+			<div className="flex items-baseline gap-2">
+				<span
+					className={cn(
+						"text-2xl font-semibold tabular-nums tracking-tight",
+						cacheHealthTone(rate),
+					)}
+				>
+					{formatHitRate(rate)}
+				</span>
+				<span className="text-xs text-muted-foreground">hit rate</span>
+			</div>
+			<CacheTrend daily={summary.daily} />
+			<div className="mt-3 grid gap-x-6 gap-y-3 border-t border-border pt-3 sm:grid-cols-3">
+				<CacheRateTable title="By repo" rows={byRepo} />
+				<CacheRateTable title="By model" rows={byModel} />
+				<CacheRateTable title="By session" rows={bySession} />
+			</div>
+		</div>
+	);
+}
+
+/** Per-day trend: one bar per day, filled to the day's hit rate. Days with
+ * nothing to measure render an empty slot (visible gap, hover explains why)
+ * instead of a zero-height bar, which would read as a 0% day. */
+function CacheTrend({ daily }: { daily: UsageDailyPoint[] }) {
+	if (daily.length === 0) return null;
+	return (
+		<div className="mt-3 flex h-14 items-end gap-px">
+			{daily.map((d) => (
+				<div
+					key={d.date}
+					className="flex h-full min-w-0 flex-1 flex-col justify-end"
+					title={cacheHealthTooltip(
+						d.cacheHitRate,
+						d.cacheReadTokens,
+						d.cacheWriteTokens,
+						d.inputTokens,
+					)}
+				>
+					{d.cacheHitRate !== null && (
+						<div
+							className={cn(
+								"w-full rounded-sm",
+								cacheHealthBarColor(d.cacheHitRate),
+							)}
+							style={{ height: `${Math.max(d.cacheHitRate * 100, 2)}%` }}
+						/>
+					)}
+				</div>
+			))}
+		</div>
+	);
+}
+
+function CacheRateTable({
+	title,
+	rows,
+}: {
+	title: string;
+	rows: CacheRateRow[];
+}) {
+	if (rows.length === 0) return null;
+	return (
+		<div>
+			<div className="mb-1 text-xs text-muted-foreground">{title}</div>
+			<ul className="flex flex-col gap-1">
+				{rows.map((r) => (
+					<li
+						key={r.key}
+						className="flex items-baseline justify-between gap-2 text-sm"
+						title={cacheHealthTooltip(r.rate, r.read, r.write, r.uncachedInput)}
+					>
+						<span className="min-w-0 truncate">{r.label}</span>
+						<span
+							className={cn("shrink-0 tabular-nums", cacheHealthTone(r.rate))}
+						>
+							{formatHitRate(r.rate)}
+						</span>
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+/**
  * Per-model breakdown — the model/provider attribution that makes sense now
  * that the provider+model is web-configurable (a single instance can run
  * turns under several models over time). Each row is one `provider`/`model`
@@ -525,6 +699,7 @@ function ModelBreakdownTable({ models }: { models: UsageModelBreakdown[] }) {
 				<thead>
 					<tr className="border-b border-border text-left text-xs text-muted-foreground">
 						<th className="px-4 py-2 font-medium">Model</th>
+						<th className="px-4 py-2 text-right font-medium">Cache eff.</th>
 						<th className="px-4 py-2 text-right font-medium">Tokens</th>
 						<th className="px-4 py-2 text-right font-medium">Cost</th>
 						<th className="px-4 py-2 text-right font-medium">Cost / token</th>
@@ -553,6 +728,20 @@ function ModelBreakdownTable({ models }: { models: UsageModelBreakdown[] }) {
 									<span className="ml-1 text-xs text-muted-foreground">
 										· {m.provider}
 									</span>
+								</td>
+								<td
+									className={cn(
+										"px-4 py-2 text-right",
+										cacheHealthTone(m.cacheHitRate),
+									)}
+									title={cacheHealthTooltip(
+										m.cacheHitRate,
+										m.cacheReadTokens,
+										m.cacheWriteTokens,
+										m.inputTokens,
+									)}
+								>
+									{formatHitRate(m.cacheHitRate)}
 								</td>
 								<td className="px-4 py-2 text-right">
 									{formatTokenCount(tokens)}
