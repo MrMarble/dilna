@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.0](https://github.com/MrMarble/dilna/compare/v0.35.0...v0.36.0) (2026-09-26)
+
+
+### Features
+
+* run one prompt against two models side by side ([#258](https://github.com/MrMarble/dilna/issues/258)) ([720f6a7](https://github.com/MrMarble/dilna/commit/720f6a7c1169b95b73fd3f92156a1bf1c1e1cfe3))
+
 ## [0.35.0](https://github.com/MrMarble/dilna/compare/v0.34.0...v0.35.0) (2026-09-26)
 
 
