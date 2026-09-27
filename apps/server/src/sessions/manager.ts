@@ -2080,9 +2080,15 @@ export class SessionManager {
 		const history = (await this.getMessages(id)).filter(
 			(m) => m.id !== pendingId,
 		);
+		// Tool-output trims (issue #272) apply at this re-seed boundary and
+		// only here: the results are verbatim in the turn that produced them
+		// (the live transcript), and become eligible for the policy at the
+		// next cold start. The seen-map is per-seed: dedup markers point to
+		// turns within the context being built.
 		const initialMessages = buildInitialMessages(
 			history,
 			sessionCompactionOf(session),
+			{ seen: new Map() },
 		);
 
 		// Created before `startPi` because the tool's callback closes over it,

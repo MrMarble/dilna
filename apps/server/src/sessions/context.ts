@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import type { ContextUsageEstimate, Message } from "@dilna/shared";
+import { applyToolOutputPolicy, type ToolTrimContext } from "@dilna/shared";
 import {
 	type AgentMessage,
 	DEFAULT_COMPACTION_SETTINGS,
@@ -116,8 +118,17 @@ export function pickCutPoint(
 export function buildInitialMessages(
 	history: Message[],
 	compaction: SessionCompaction,
+	/** When provided (the cold-start seed path only — issue #272), prior
+	 * turns' tool outputs run through the shared `ToolOutputPolicy` on the
+	 * way in. The history rows themselves are never mutated: the policy runs
+	 * on copied parts, `messages` keeps the verbatim text, and the web
+	 * transcript renders exactly as before. Compaction/estimate paths omit
+	 * this and seed verbatim, as before. */
+	trims?: { seen: Map<string, string> },
 ): AgentMessage[] {
-	if (!compaction) return dilnaMessagesToInitialState(history);
+	if (!compaction) {
+		return dilnaMessagesToInitialState(applySeedTrims(history, trims));
+	}
 
 	const cutIndex = history.findIndex(
 		(m) => m.id === compaction.throughMessageId,
@@ -132,7 +143,63 @@ export function buildInitialMessages(
 		content: COMPACTION_SUMMARY_PREFACE + compaction.summary,
 		timestamp: Date.now(),
 	};
-	return [summaryMessage, ...dilnaMessagesToInitialState(tail)];
+	return [
+		summaryMessage,
+		...dilnaMessagesToInitialState(applySeedTrims(tail, trims)),
+	];
+}
+
+/**
+ * Apply the seed-time tool-output policy across a history walk (issue
+ * #272): each assistant row's `tool_call` parts may be replaced with the
+ * policy's marker (+ retained head/tail). Verbatim by default — only the
+ * cold-start seed path passes a {@link ToolTrimContext}, because a tool
+ * result is seeded verbatim in the turn that produced it (that is the turn
+ * the model is reasoning against) and only becomes eligible at the *next*
+ * cold start. Turn labels for dedup markers ("same as turn N") count user
+ * messages: each user row starts a turn.
+ *
+ * Copies, never mutates: the input rows (and their `parts` arrays) are
+ * exactly what `messages` persisted and what the web renders.
+ */
+function applySeedTrims(
+	history: Message[],
+	trims?: { seen: Map<string, string> },
+): Message[] {
+	if (!trims) return history;
+	let turnCount = 0;
+	return history.map((message) => {
+		if (message.role === "user") {
+			turnCount += 1;
+			return message;
+		}
+		if (message.role !== "assistant") return message;
+		const toolParts = message.parts.filter((p) => p.type === "tool_call");
+		if (toolParts.length === 0) return message;
+		const turnLabel = `turn ${turnCount}`;
+		let changed = false;
+		const parts = message.parts.map((part) => {
+			if (part.type !== "tool_call") return part;
+			const output = typeof part.output === "string" ? part.output : "";
+			if (output.length === 0) return part;
+			const trimmed = applyToolOutputPolicy(
+				part.tool,
+				part.input,
+				output,
+				sha256,
+				{ turnLabel, seen: trims.seen },
+			);
+			if (!trimmed) return part;
+			changed = true;
+			return { ...part, output: trimmed.seeded };
+		});
+		return changed ? { ...message, parts } : message;
+	});
+}
+
+/** Sync sha256 hex — the identity/marker hasher the shared policy requires. */
+function sha256(text: string): string {
+	return createHash("sha256").update(text).digest("hex");
 }
 
 /**

@@ -45,6 +45,11 @@ export * from "./skill";
 // the web refuses to navigate to such a slug, and the server must not mint
 // one in the first place.
 export * from "./slugs";
+// Not type-only: the per-tool output-trim policy is a pure runtime value —
+// the server applies it when seeding prior turns (issue #272), and the
+// measurement tooling / future UI predict the same trims from the same
+// inputs.
+export * from "./toolOutputPolicy";
 // Not type-only: the tool vocabulary is a runtime list plus the per-tool
 // argument key, so the web can key a `Record<ToolName, …>` off the union and
 // the server can validate against `TOOL_NAMES`.
