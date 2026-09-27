@@ -3,9 +3,11 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { dilnaMessagesToInitialState } from "../agents/pi";
+import { charsPerTokenFor } from "../agents/providerConfig";
 import {
 	buildInitialMessages,
 	checkSessionContext,
+	estimateAgentContextHeuristically,
 	estimateLiveAgentContext,
 	estimateSessionContext,
 	pickCutPoint,
@@ -150,12 +152,19 @@ describe("checkSessionContext", () => {
 		);
 
 		expect(result.compaction).toBeNull(); // nowhere near 1M tokens either way
+		// Same scale as the estimator: the compacted view measured through the
+		// provider's calibrated constant (issue #270), not the library's raw
+		// chars/4.
 		expect(result.estimate?.tokens).toEqual(
-			estimateContextTokens(
-				buildInitialMessages(history, {
-					summary: "the earlier exchange, summarized",
-					throughMessageId: "m2",
-				}),
+			toContextUsageEstimate(
+				estimateContextTokens(
+					buildInitialMessages(history, {
+						summary: "the earlier exchange, summarized",
+						throughMessageId: "m2",
+					}),
+				),
+				1_000_000,
+				charsPerTokenFor("anthropic"),
 			).tokens,
 		);
 		// Sanity check that folding the compaction in actually mattered — far
@@ -354,6 +363,7 @@ describe("context estimate source", () => {
 		const estimate = toContextUsageEstimate(
 			estimateContextTokens(messages),
 			1_000_000,
+			charsPerTokenFor("anthropic"),
 		);
 		expect(estimate.source).toBe("provider");
 		expect(estimate.usageTokens).toBe(120_000);
@@ -371,6 +381,7 @@ describe("context estimate source", () => {
 		const estimate = toContextUsageEstimate(
 			estimateContextTokens(messages),
 			1_000_000,
+			charsPerTokenFor("anthropic"),
 		);
 		// Still provider-derived — the walk-back finds the reported round —
 		// but the user message after it is only ever a chars/4 guess, and the
@@ -400,5 +411,83 @@ describe("context estimate source", () => {
 		expect(estimate?.source).toBe("estimated");
 		expect(estimate?.usageTokens).toBe(0);
 		expect(estimate?.trailingTokens).toBe(estimate?.tokens);
+	});
+});
+
+// Issue #270: the estimator's one knob is the per-provider charsPerToken.
+// A chars-based estimator cannot see content shape — the tests below pin
+// exactly that contract: equal characters estimate equally whether they are
+// JSON or prose, and the provider constant is what moves the number.
+describe("estimateAgentContextHeuristically", () => {
+	function userMessage(text: string): AgentMessage {
+		return { role: "user", content: text, timestamp: 1 } as AgentMessage;
+	}
+
+	const JSON_PAYLOAD = JSON.stringify({
+		file: "src/sessions/context.ts",
+		issues: [269, 270],
+		summary: "calibrate charsPerToken per provider",
+		notes: "x".repeat(120),
+	});
+	// Padded to exactly the JSON payload's character count, so the comparison
+	// isolates the constant rather than the length.
+	const PROSE_PREFIX =
+		"The context estimator charges every message a flat characters-per-token " +
+		"rate, which the calibration below replaces with a per-provider constant. ";
+	const PROSE_PAYLOAD =
+		PROSE_PREFIX + "x".repeat(JSON_PAYLOAD.length - PROSE_PREFIX.length);
+
+	it("estimates JSON-heavy and prose-heavy payloads alike — shape is invisible to a chars estimator", () => {
+		expect(JSON_PAYLOAD.length).toBe(PROSE_PAYLOAD.length);
+		const fromJson = estimateAgentContextHeuristically(
+			"anthropic",
+			"claude-opus-5",
+			[userMessage(JSON_PAYLOAD)],
+		);
+		const fromProse = estimateAgentContextHeuristically(
+			"anthropic",
+			"claude-opus-5",
+			[userMessage(PROSE_PAYLOAD)],
+		);
+		expect(fromJson).toBe(fromProse);
+		expect(fromJson).toBeGreaterThan(0);
+	});
+
+	it("applies each provider's constant: same characters, different providers, proportionally different tokens", () => {
+		const messages = [userMessage("y".repeat(400))];
+		const raw = Math.ceil(400 / 4); // the library's chars/4 baseline
+		const anthropic = estimateAgentContextHeuristically(
+			"anthropic",
+			"claude-opus-5",
+			messages,
+		);
+		const deepseek = estimateAgentContextHeuristically(
+			"deepseek",
+			"deepseek-v4-pro",
+			messages,
+		);
+		// round(raw × 4/constant) per ADR-0048's rescale — denser tokenizer
+		// (smaller constant) means MORE estimated tokens, the safe direction.
+		expect(anthropic).toBe(
+			Math.round((raw * 4) / charsPerTokenFor("anthropic")),
+		);
+		expect(deepseek).toBe(Math.round((raw * 4) / charsPerTokenFor("deepseek")));
+		expect(deepseek).toBeGreaterThan(anthropic as number);
+		// A pair outside the catalog resolves no model — nothing to calibrate
+		// against, so the estimate is null (the chars/4 fallback itself is
+		// pinned by charsPerTokenFor's own tests in providerConfig.test.ts).
+		expect(
+			estimateAgentContextHeuristically("anthropic", "not-a-real-model", [
+				userMessage("hi"),
+			]),
+		).toBeNull();
+	});
+
+	it("returns null for a provider/model no longer in dilna's catalog", () => {
+		expect(
+			estimateAgentContextHeuristically("anthropic", "not-a-real-model", [
+				userMessage("hi"),
+			]),
+		).toBeNull();
 	});
 });
