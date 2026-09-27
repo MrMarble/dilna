@@ -4,13 +4,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { Message, SessionView } from "@dilna/shared";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	dilnaMessagesToInitialState,
+	generateSessionTitle,
 	type PiHandle,
 	startPi,
 } from "../agents/pi";
 import { createServerContext } from "../container";
+import { getDb } from "../db";
+import { sessions as sessionsTable } from "../db/schema";
 import * as messageStore from "./messageStore";
 
 const execFileAsync = promisify(execFile);
@@ -47,9 +51,18 @@ vi.mock("../agents/pi", () => {
 		isAlive: vi.fn().mockReturnValue(true),
 		stderrTail: [],
 		resetTurnLimits: vi.fn(),
+		systemPrompt: "",
 	};
 	return {
-		startPi: vi.fn().mockResolvedValue(handle),
+		// Simulates real `startPi`'s prompt handling (issue #271): an unfrozen
+		// spawn "assembles" a fresh prompt (the counter stands in for anything
+		// that could vary between spawns — skills, index state), while a
+		// frozen spawn replays the stored bytes verbatim.
+		startPi: vi.fn((opts: { frozenSystemPrompt?: string }) => {
+			handle.systemPrompt =
+				opts.frozenSystemPrompt ?? `ASSEMBLED-${++assemblySeq}`;
+			return Promise.resolve(handle);
+		}),
 		startOrchestrator: vi.fn().mockResolvedValue(handle),
 		chatPi: vi.fn().mockResolvedValue(undefined),
 		generateSessionTitle: vi.fn().mockResolvedValue(null),
@@ -65,6 +78,7 @@ vi.mock("../agents/pi", () => {
 	};
 });
 
+let assemblySeq = 0;
 let dataDir: string;
 let fixtureRepo: string;
 let oldDataDir: string | undefined;
@@ -223,6 +237,69 @@ describe("getContextUsageEstimate (issue #269)", () => {
 				expect(row.id).not.toBe(`pending-user-${session.id}`);
 			}
 		}
+
+		await sessionManager.delete(session.id);
+	});
+});
+
+// Issue #271: the system prompt is frozen at first spawn and replayed
+// byte-identically on every cold start, no matter what changed in between —
+// here, the title (the issue's named drift source; skills/index state are
+// the same shape of drift and take the same path through the frozen bytes).
+describe("system prompt freeze (issue #271)", () => {
+	it("replays the first spawn's prompt bytes across a cold start that follows a title change", async () => {
+		vi.mocked(generateSessionTitle).mockResolvedValue("Derived Title");
+		const session = await createSessionWithHistory(0);
+
+		// First spawn assembled and froze the prompt on the row.
+		const firstCall = vi.mocked(startPi).mock.calls.at(-1)?.[0] as {
+			frozenSystemPrompt?: string;
+		};
+		const frozen = getDb()
+			.select({ p: sessionsTable.systemPrompt })
+			.from(sessionsTable)
+			.where(eq(sessionsTable.id, session.id))
+			.get()?.p;
+		// The first spawn assembled (not frozen) and the row froze its bytes.
+		expect(frozen).toMatch(/^ASSEMBLED-/);
+		expect(firstCall.frozenSystemPrompt).toBeUndefined();
+
+		// Wait for the fire-and-forget title derivation to land — the prompt
+		// changed *before* the cold start in the pre-freeze world.
+		const deadline = Date.now() + 2000;
+		let title = "";
+		while (Date.now() < deadline) {
+			title =
+				(
+					await getDb()
+						.select({ t: sessionsTable.title })
+						.from(sessionsTable)
+						.where(eq(sessionsTable.id, session.id))
+						.get()
+				)?.t ?? "";
+			if (title === "Derived Title") break;
+			await new Promise((r) => setTimeout(r, 20));
+		}
+		expect(title).toBe("Derived Title");
+
+		// Cold start: the respawn must receive the first spawn's bytes, not a
+		// fresh assembly.
+		await sessionManager.stopSession(session.id);
+		sessionManager.beginTurn(session.id, "second turn");
+		await sessionManager.runTurn(session.id, "second turn");
+
+		const secondCall = vi.mocked(startPi).mock.calls.at(-1)?.[0] as {
+			frozenSystemPrompt?: string;
+		};
+		expect(secondCall.frozenSystemPrompt).toBe(frozen);
+		// And the row still holds the same bytes (no re-freeze).
+		expect(
+			getDb()
+				.select({ p: sessionsTable.systemPrompt })
+				.from(sessionsTable)
+				.where(eq(sessionsTable.id, session.id))
+				.get()?.p,
+		).toBe(frozen);
 
 		await sessionManager.delete(session.id);
 	});

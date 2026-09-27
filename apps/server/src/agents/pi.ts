@@ -118,6 +118,17 @@ export type PiStartOptions = {
 	 * "resume by id" path the way Claude's transcript-backed resume needed,
 	 * since pi keeps no external transcript of its own to resume from. */
 	initialMessages: AgentMessage[];
+	/** The system prompt frozen at the Session's first start (issue #271),
+	 * persisted on the `sessions` row and replayed byte-identically on every
+	 * cold start. The prompt is the first message on the wire, so rebuilding
+	 * it from current state (skills enabled mid-session, the codegraph index
+	 * appearing, any future head-embedded context) invalidates the cached
+	 * prefix a cold start would otherwise hit. When absent (first spawn, or
+	 * pre-freeze rows) the prompt is assembled as before and the caller
+	 * persists what this returns via {@link PiHandle.systemPrompt}. If the
+	 * prompt genuinely needs new context later, append to the tail — never
+	 * rewrite the head — so an earlier breakpoint survives. */
+	frozenSystemPrompt?: string;
 	/** Called when the Agent publishes an Artefact (issue #194, ADR-0032),
 	 * so `SessionManager` can broadcast `artefact_published` and the user's
 	 * panel updates mid-turn. Optional: a Session started without it simply
@@ -167,6 +178,10 @@ export type PiHandle = {
 	 * change under a long-lived Session. */
 	provider: string;
 	model: string;
+	/** The exact system prompt this `Agent` was constructed with — what
+	 * `SessionManager` freezes onto the `sessions` row at first spawn (issue
+	 * #271) so every later cold start replays these bytes unchanged. */
+	systemPrompt: string;
 	/** Always empty — pi has no subprocess to capture stderr from. Kept only
 	 * for shape-parity with `failTurn`'s `detail.stderrTail` field, which
 	 * every `turn_failed` broadcast (Claude- or pi-sourced) fills in the same
@@ -510,13 +525,19 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 	// per-Repo, so a Session only ever sees the subset its own Repo turned on.
 	const repoSkills = await loadSkillsForRepo(opts.repoId);
 
+	// Prompt freeze (issue #271): once frozen, the stored bytes win over
+	// everything this spawn could re-derive — the head of the prompt never
+	// changes within a Session's life. `repoSkills`/`hasCodegraph` are still
+	// resolved because they drive the read_skill/codegraph TOOLS; they just
+	// no longer rewrite the prompt head.
 	const systemPrompt =
+		opts.frozenSystemPrompt ??
 		DILNA_AGENT_CONTEXT +
-		formatSkillsPrompt(repoSkills) +
-		(grant.nestedInCheckout
-			? `\n\nNote: this worktree happens to live nested inside dilna's own checkout on the host filesystem — the read/grep/find/ls tools are confined to this worktree regardless, so dilna's own project files are not reachable from here.`
-			: "") +
-		(hasCodegraph ? CODEGRAPH_SYSTEM_PROMPT_NOTE : "");
+			formatSkillsPrompt(repoSkills) +
+			(grant.nestedInCheckout
+				? `\n\nNote: this worktree happens to live nested inside dilna's own checkout on the host filesystem — the read/grep/find/ls tools are confined to this worktree regardless, so dilna's own project files are not reachable from here.`
+				: "") +
+			(hasCodegraph ? CODEGRAPH_SYSTEM_PROMPT_NOTE : "");
 
 	// biome-ignore lint/suspicious/noExplicitAny: AgentTool<any> is the library's own alias for a type-erased tool (pi-coding-agent's `Tool` type)
 	const tools: AgentTool<any>[] = [
@@ -620,6 +641,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		provider,
 		modelId,
 		task.resetTurn,
+		systemPrompt,
 	);
 }
 
@@ -635,6 +657,7 @@ function wirePiHandle(
 	provider: string,
 	model: string,
 	resetTurnLimits: () => void = () => {},
+	systemPrompt = "",
 ): PiHandle {
 	const listeners = new Set<Listener>();
 	const state: NormalizeState = createNormalizeState();
@@ -669,6 +692,7 @@ function wirePiHandle(
 		isAlive: () => !stopped,
 		provider,
 		model,
+		systemPrompt,
 		stderrTail: [],
 		resetTurnLimits,
 	};
@@ -715,7 +739,14 @@ export async function startOrchestrator(
 		getApiKey: (p) => resolveApiKey(p),
 	});
 
-	return wirePiHandle(agent, opts.worktreePath, provider, modelId);
+	return wirePiHandle(
+		agent,
+		opts.worktreePath,
+		provider,
+		modelId,
+		() => {},
+		ORCHESTRATOR_SYSTEM_PROMPT,
+	);
 }
 
 /**
