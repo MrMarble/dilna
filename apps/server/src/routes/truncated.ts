@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { readTruncated } from "../sessions/truncatedStore";
+import { readTruncated, recordRetrieval } from "../sessions/truncatedStore";
 
 /**
  * Read-only retrieval of the full original behind a trim marker (issue
@@ -26,5 +26,9 @@ truncatedRoute.get("/:hash", (c) => {
 	if (content === null) {
 		throw new HTTPException(404, { message: "no such original" });
 	}
+	// The retrieval counter (issue #274) — the UI links carry the Session
+	// they were opened from, so the trade reads per Session on the Metrics
+	// page. Counted only when the bytes actually exist.
+	recordRetrieval(hash, c.req.query("session") ?? null);
 	return c.body(content, 200, { "content-type": "text/plain; charset=utf-8" });
 });

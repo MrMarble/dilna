@@ -8,14 +8,25 @@ import type {
 	UsageSessionBreakdown,
 	UsageSummary,
 	UsageTotalsDetailed,
+	UsageTruncation,
+	UsageTruncationSummary,
 } from "@dilna/shared";
 import { and, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
 	sessionArchive as sessionArchiveTable,
 	sessions as sessionsTable,
+	truncatedOutputs as truncatedOutputsTable,
+	truncationEvents as truncationEventsTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
+import { collectSessionTrims } from "./context";
+import { getMessages } from "./messageStore";
+
+/** The trims the seeder would apply to one Session's current history. */
+function getTrimsForSession(sessionId: string) {
+	return collectSessionTrims(getMessages(sessionId));
+}
 
 /** How many top-spending Sessions the "Top sessions" table shows. */
 const TOP_SESSIONS_LIMIT = 10;
@@ -159,6 +170,7 @@ export function getUsageSummary(since: number): UsageSummary {
 
 	const topSessions = getTopSessions(where);
 	const contextDrift = getContextDrift(where);
+	const truncation = getTruncationSummary();
 
 	// Judge spend (ADR-0046) is folded into every aggregate above — it's real
 	// spend on a real model — and split out only here, so the dashboard can say
@@ -180,6 +192,99 @@ export function getUsageSummary(since: number): UsageSummary {
 		topSessions,
 		byPurpose,
 		contextDrift,
+		truncation,
+	};
+}
+
+/**
+ * The truncation trade (issue #274): per Session, the tokens the seeder's
+ * trims save (the same walk the seeder runs, over the Session's current
+ * history) next to the retrieval and re-read counters — savings and cost in
+ * one glance. Only Sessions with at least one counter or one stored
+ * original are listed (worst saved first, capped); deleted Sessions' counts
+ * still appear, titles resolved like `topSessions`, because the trade
+ * outlives the Session. Window-free by design: a re-read months later is
+ * still the policy's cost.
+ */
+function getTruncationSummary(): UsageTruncationSummary {
+	const db = getDb();
+
+	const events = db
+		.select({
+			sessionId: truncationEventsTable.sessionId,
+			kind: truncationEventsTable.kind,
+		})
+		.from(truncationEventsTable)
+		.all();
+	const stored = db
+		.select({ sessionId: truncatedOutputsTable.sessionId })
+		.from(truncatedOutputsTable)
+		.all();
+
+	const sessionIds = new Set<string>();
+	for (const e of events) if (e.sessionId) sessionIds.add(e.sessionId);
+	for (const st of stored) sessionIds.add(st.sessionId);
+	if (sessionIds.size === 0) {
+		return { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] };
+	}
+
+	const retrievalsBy = new Map<string, number>();
+	const rereadsBy = new Map<string, number>();
+	for (const e of events) {
+		if (!e.sessionId) continue;
+		if (e.kind === "retrieval") {
+			retrievalsBy.set(e.sessionId, (retrievalsBy.get(e.sessionId) ?? 0) + 1);
+		} else {
+			rereadsBy.set(e.sessionId, (rereadsBy.get(e.sessionId) ?? 0) + 1);
+		}
+	}
+
+	// savedTokens recomputes the live walk per listed Session — bounded by
+	// the listed set, which is bounded by sessions that touch the store.
+	const bySession: UsageTruncation[] = [];
+	let totalSaved = 0;
+	let totalRetrievals = 0;
+	let totalRereads = 0;
+	const ids = [...sessionIds];
+	const titleById = resolveSessionTitles(ids);
+	const repoIdById = new Map(
+		db
+			.select({ id: sessionsTable.id, repoId: sessionsTable.repoId })
+			.from(sessionsTable)
+			.where(inArray(sessionsTable.id, ids))
+			.all()
+			.map((r) => [r.id, r.repoId] as const),
+	);
+
+	for (const sessionId of ids) {
+		const savedTokens = Math.round(
+			getTrimsForSession(sessionId).reduce(
+				(sum, t) => sum + t.removedChars,
+				0,
+			) / 4,
+		);
+		const retrievals = retrievalsBy.get(sessionId) ?? 0;
+		const rereads = rereadsBy.get(sessionId) ?? 0;
+		totalSaved += savedTokens;
+		totalRetrievals += retrievals;
+		totalRereads += rereads;
+		if (savedTokens === 0 && retrievals === 0 && rereads === 0) continue;
+		bySession.push({
+			sessionId,
+			repoId: repoIdById.get(sessionId) ?? "",
+			title: titleById.get(sessionId) ?? null,
+			savedTokens,
+			retrievals,
+			rereads,
+		});
+	}
+	bySession.sort((a, b) => b.savedTokens - a.savedTokens);
+
+	return {
+		savedTokens: totalSaved,
+		retrievals: totalRetrievals,
+		rereads: totalRereads,
+		bySession: bySession.slice(0, CONTEXT_DRIFT_LIMIT),
 	};
 }
 
