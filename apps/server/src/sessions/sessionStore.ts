@@ -29,6 +29,7 @@ export function rowToSession(row: typeof sessionsTable.$inferSelect): Session {
 		compactedSummary: row.compactedSummary,
 		compactedThroughMessageId: row.compactedThroughMessageId,
 		spawnedBy: row.spawnedBy,
+		systemPrompt: row.systemPrompt ?? null,
 		comparisonGroupId: row.comparisonGroupId,
 		provider: row.provider,
 		model: row.model,

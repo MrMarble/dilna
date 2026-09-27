@@ -23,10 +23,18 @@ export type Session = {
 	 * first compaction. */
 	compactedSummary: string | null;
 	compactedThroughMessageId: string | null;
-	/** ADR-0025: the orchestrator Session's own id, when this Session was
+	/** ADR-0047: the orchestrator Session's own id, when this Session was
 	 * created via `dilna_create_session` — null otherwise. Internal to the
 	 * server (absent from SessionView), same as the compaction fields above. */
 	spawnedBy: string | null;
+	/** The system prompt frozen at this Session's first start (issue #271),
+	 * replayed byte-identically on every cold start so the provider's cached
+	 * prefix survives idle kills, restarts and compactions. Internal to the
+	 * server (absent from SessionView, like the compaction fields). Null for
+	 * rows created before the freeze shipped and for Sessions that have not
+	 * started yet — the first spawn assembles the prompt as before and
+	 * persists it here. */
+	systemPrompt?: string | null;
 	/** ADR-0047: the Comparison this Session is an arm of, when it was created
 	 * via `POST /api/comparisons` — null otherwise. Unlike the fields above it
 	 * is also on SessionView, so an arm opened on its own can link back to
