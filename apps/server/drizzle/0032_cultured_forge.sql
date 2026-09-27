@@ -1,0 +1,1 @@
+ALTER TABLE `usage_events` ADD `estimated_context_tokens` integer;

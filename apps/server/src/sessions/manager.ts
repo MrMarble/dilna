@@ -66,6 +66,7 @@ import { type Listener, SessionBroadcaster } from "./broadcaster";
 import {
 	buildInitialMessages,
 	checkSessionContext,
+	estimateAgentContextHeuristically,
 	estimateLiveAgentContext,
 	estimateSessionContext,
 	summarizeSessionForArchive,
@@ -1470,7 +1471,23 @@ export class SessionManager {
 				// The broadcaster retains the snapshot-relevant events
 				// (turn_failed/turn_activity/notice) on the way out — see
 				// SessionBroadcaster.record.
-				this.events.broadcast(id, accumulateSessionUsage(id, ev, handle));
+				this.events.broadcast(
+					id,
+					accumulateSessionUsage(
+						id,
+						ev,
+						handle,
+						// Issue #270: dilna's pure-heuristic estimate of the same
+						// context the provider just counted — stamped onto the row
+						// next to `providerContextTokens` so drift is a query, and
+						// logged here when it blows past the threshold.
+						estimateAgentContextHeuristically(
+							handle.provider,
+							handle.model,
+							handle.agent.state.messages,
+						),
+					),
+				);
 			};
 
 			// Incremental persistence (ADR-0026): a raw pi-agent-core subscription,

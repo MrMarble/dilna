@@ -1,5 +1,38 @@
 import { describe, expect, it, vi } from "vitest";
-import { PROVIDER_ALLOWLIST, validateProviderConfig } from "./providerConfig";
+import {
+	charsPerTokenFor,
+	LIBRARY_CHARS_PER_TOKEN,
+	PROVIDER_ALLOWLIST,
+	PROVIDER_CHARS_PER_TOKEN,
+	validateProviderConfig,
+} from "./providerConfig";
+
+describe("charsPerTokenFor", () => {
+	it("has a calibrated constant for every allowlisted provider", () => {
+		for (const p of PROVIDER_ALLOWLIST) {
+			const cpt = PROVIDER_CHARS_PER_TOKEN[p];
+			expect(cpt).toBeGreaterThan(0);
+			// Every shipped constant sits below the library's flat chars/4:
+			// all four providers' tokenizers pack denser than plain-English
+			// prose, and under-counting is the dangerous direction of error
+			// (issue #270 / ADR-0048).
+			expect(cpt).toBeLessThan(LIBRARY_CHARS_PER_TOKEN);
+		}
+	});
+
+	it("resolves each allowlisted provider to its own constant", () => {
+		for (const p of PROVIDER_ALLOWLIST) {
+			expect(charsPerTokenFor(p)).toBe(PROVIDER_CHARS_PER_TOKEN[p]);
+		}
+	});
+
+	it("falls back to the library's flat chars/4 for anything else", () => {
+		expect(charsPerTokenFor("some-custom-provider")).toBe(
+			LIBRARY_CHARS_PER_TOKEN,
+		);
+		expect(charsPerTokenFor("")).toBe(LIBRARY_CHARS_PER_TOKEN);
+	});
+});
 
 describe("validateProviderConfig", () => {
 	it("passes for a valid provider/model/api-key combination", () => {

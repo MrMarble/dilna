@@ -37,6 +37,8 @@ function seedRow(overrides: {
 	model?: string;
 	cacheReadTokens?: number;
 	cacheWriteTokens?: number;
+	estimatedContextTokens?: number;
+	providerContextTokens?: number;
 }) {
 	getDb()
 		.insert(usageEventsTable)
@@ -229,6 +231,81 @@ describe("getUsageSummary", () => {
 		expect(coldDay?.cacheHitRate).toBe(1);
 		const emptyDay = summary.daily.find((d) => d.date === dayOf(now - 4 * DAY));
 		expect(emptyDay?.cacheHitRate).toBeNull();
+	});
+
+	it("lists Sessions whose estimate drifts past the threshold, worst first (issue #270)", () => {
+		const now = Math.floor(Date.now() / 1000);
+		// Over-counting: dilna says 2000 where the provider reported 1000.
+		for (let i = 0; i < 3; i++) {
+			seedRow({
+				id: `drift-over-${i}`,
+				repoId: "repo-drift",
+				sessionId: "drift-over",
+				createdAt: now,
+				estimatedContextTokens: 2000,
+				providerContextTokens: 1000,
+			});
+		}
+		// Under-counting — the dangerous direction (compaction fires late).
+		seedRow({
+			id: "drift-under-0",
+			repoId: "repo-drift",
+			sessionId: "drift-under",
+			createdAt: now,
+			estimatedContextTokens: 400,
+			providerContextTokens: 1000,
+		});
+		seedRow({
+			id: "drift-under-1",
+			repoId: "repo-drift",
+			sessionId: "drift-under",
+			createdAt: now,
+			estimatedContextTokens: 600,
+			providerContextTokens: 1000,
+		});
+		// Within the threshold — must not be listed.
+		seedRow({
+			id: "drift-ok-0",
+			repoId: "repo-drift",
+			sessionId: "drift-ok",
+			createdAt: now,
+			estimatedContextTokens: 1100,
+			providerContextTokens: 1000,
+		});
+		// Half-stamped rows (either side missing) are not comparable turns.
+		seedRow({
+			id: "drift-partial-0",
+			repoId: "repo-drift",
+			sessionId: "drift-partial",
+			createdAt: now,
+			estimatedContextTokens: 9000,
+		});
+		seedRow({
+			id: "drift-partial-1",
+			repoId: "repo-drift",
+			sessionId: "drift-partial",
+			createdAt: now,
+			providerContextTokens: 100,
+		});
+
+		const summary = getUsageSummary(0);
+		const listed = summary.contextDrift;
+
+		expect(listed.map((d) => d.sessionId)).toEqual([
+			"drift-over",
+			"drift-under",
+		]);
+		// Mean signed drift, not max: +100% and -50% respectively.
+		const over = listed.find((d) => d.sessionId === "drift-over");
+		const under = listed.find((d) => d.sessionId === "drift-under");
+		expect(over?.driftPct).toBeCloseTo(1, 6);
+		expect(over?.turns).toBe(3);
+		expect(under?.driftPct).toBeCloseTo(-0.5, 6);
+		expect(under?.turns).toBe(2);
+		// No live/archive row for these ids — title falls back to null for
+		// the web's deleted-session rendering.
+		expect(over?.title).toBeNull();
+		expect(over?.repoId).toBe("repo-drift");
 	});
 
 	it("since=0 includes every row regardless of age", () => {

@@ -434,6 +434,17 @@ export const usageEvents = sqliteTable("usage_events", {
 	 * for rows written before the column existed, and never treated as zero
 	 * by readers. */
 	providerContextTokens: integer("provider_context_tokens"),
+	/** What dilna's own estimator said for the same turn (issue #270): the
+	 * pure heuristic (calibrated `chars/charsPerToken` per message) over the
+	 * context the turn ended with — the same estimator the cold-path meter
+	 * runs, so the drift against `provider_context_tokens` on this row is
+	 * the gap the user actually experiences. Both numbers on one row turn
+	 * "is the estimator wrong for this provider?" into a query
+	 * (`sessions/charCalibration.ts`), and the drift past
+	 * `CONTEXT_DRIFT_THRESHOLD` is logged per turn and listed per Session on
+	 * the Metrics page. Null for rows written before the column existed or
+	 * turns whose model had fallen out of the catalog; never read as zero. */
+	estimatedContextTokens: integer("estimated_context_tokens"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 
