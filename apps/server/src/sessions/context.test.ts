@@ -491,3 +491,73 @@ describe("estimateAgentContextHeuristically", () => {
 		).toBeNull();
 	});
 });
+
+// Issue #272: the trim policy applies at the re-seed boundary and only on
+// copies — persisted rows and the web transcript are untouched.
+describe("buildInitialMessages seed trims", () => {
+	function readRow(id: string, path: string, lines: number): Message {
+		return {
+			id,
+			sessionId: "s1",
+			role: "assistant",
+			parts: [
+				{ type: "text", text: "reading" },
+				{
+					type: "tool_call",
+					callId: `call-${id}`,
+					tool: "read",
+					input: { path },
+					output: Array.from(
+						{ length: lines },
+						(_, i) => `line ${i}: ${path} content`,
+					).join("\n"),
+				},
+			],
+			turnId: null,
+			createdAt: 5,
+		};
+	}
+
+	function history(): Message[] {
+		return [
+			dilnaMessage("u1", "user", "please read", 1),
+			readRow("a1", "src/big.ts", 400),
+			dilnaMessage("u2", "user", "again", 2),
+			readRow("a2", "src/big.ts", 400),
+		];
+	}
+
+	it("trims prior turns' tool outputs in the seed, markers replacing the middle", () => {
+		const seeded = buildInitialMessages(history(), null, { seen: new Map() });
+		const seededText = JSON.stringify(seeded);
+		// Head and tail of the first read survive.
+		expect(seededText).toContain("line 0: src/big.ts content");
+		expect(seededText).toContain("line 399: src/big.ts content");
+		// The re-read becomes a dedup marker naming the first turn.
+		expect(seededText).toContain("identical result to turn 1");
+		// And the second read's verbatim middle is gone from the seed.
+		const a2Seeded = seeded.find((m) =>
+			JSON.stringify(m).includes("identical"),
+		);
+		expect(a2Seeded).toBeDefined();
+	});
+
+	it("never mutates the persisted rows — copies only", () => {
+		const rows = history();
+		const before = JSON.stringify(rows);
+		buildInitialMessages(rows, null, { seen: new Map() });
+		expect(JSON.stringify(rows)).toBe(before);
+		// The verbatim output is still in the row (what the web renders).
+		const a1 = rows.find((r) => r.id === "a1");
+		const part = a1?.parts.find((p) => p.type === "tool_call");
+		expect(part && part.type === "tool_call" ? part.output : "").toContain(
+			"line 399: src/big.ts content",
+		);
+	});
+
+	it("seeds verbatim without a trim context (compaction/estimate paths)", () => {
+		const seeded = buildInitialMessages(history(), null);
+		expect(JSON.stringify(seeded)).toContain("line 399: src/big.ts content");
+		expect(JSON.stringify(seeded)).not.toContain("identical result to");
+	});
+});
