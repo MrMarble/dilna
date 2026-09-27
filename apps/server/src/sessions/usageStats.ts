@@ -1,4 +1,5 @@
 import type {
+	UsageContextDrift,
 	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
@@ -8,7 +9,7 @@ import type {
 	UsageSummary,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
-import { gte, inArray, sql } from "drizzle-orm";
+import { and, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
 	sessionArchive as sessionArchiveTable,
@@ -18,6 +19,15 @@ import {
 
 /** How many top-spending Sessions the "Top sessions" table shows. */
 const TOP_SESSIONS_LIMIT = 10;
+
+/** How many drifted Sessions the drift list shows, worst first. */
+const CONTEXT_DRIFT_LIMIT = 10;
+
+/** Mean signed |drift| past which a Session is flagged on the Metrics page
+ * (issue #270) and the per-turn drift log fires (`usageAccounting.ts`).
+ * 25%: well above per-turn noise (a trailing message or two), well below
+ * the ~2x error a wrong calibration constant can produce. */
+export const CONTEXT_DRIFT_THRESHOLD = 0.25;
 
 const ZERO_TOTALS: UsageTotalsDetailed = {
 	inputTokens: 0,
@@ -148,6 +158,7 @@ export function getUsageSummary(since: number): UsageSummary {
 	byModel.sort((a, b) => b.costUsd - a.costUsd);
 
 	const topSessions = getTopSessions(where);
+	const contextDrift = getContextDrift(where);
 
 	// Judge spend (ADR-0046) is folded into every aggregate above — it's real
 	// spend on a real model — and split out only here, so the dashboard can say
@@ -168,7 +179,95 @@ export function getUsageSummary(since: number): UsageSummary {
 		byModel,
 		topSessions,
 		byPurpose,
+		contextDrift,
 	};
+}
+
+/**
+ * Sessions whose context estimate persistently disagrees with the
+ * provider's own report (issue #270) — the per-turn drift
+ * `usageAccounting.ts` stamps and logs, aggregated per Session so a
+ * mis-calibrated `charsPerToken` is identifiable from the Metrics page
+ * alone, without reading raw `usage_events` rows. Only Sessions past
+ * {@link CONTEXT_DRIFT_THRESHOLD} are listed, worst (largest |drift|)
+ * first, capped at {@link CONTEXT_DRIFT_LIMIT}; Sessions with no comparable
+ * turns (rows missing either stamp) can't drift and aren't listed.
+ */
+function getContextDrift(where: ReturnType<typeof gte>): UsageContextDrift[] {
+	const db = getDb();
+	const rows = db
+		.select({
+			sessionId: usageEventsTable.sessionId,
+			repoId: usageEventsTable.repoId,
+			driftPct:
+				sql`avg((${usageEventsTable.estimatedContextTokens} - ${usageEventsTable.providerContextTokens}) * 1.0 / ${usageEventsTable.providerContextTokens})`.as(
+					"drift_pct",
+				),
+			turns: sql<number>`count(*)`.as("turns"),
+		})
+		.from(usageEventsTable)
+		.where(
+			and(
+				where,
+				isNotNull(usageEventsTable.estimatedContextTokens),
+				isNotNull(usageEventsTable.providerContextTokens),
+				gt(usageEventsTable.providerContextTokens, 0),
+			),
+		)
+		.groupBy(usageEventsTable.sessionId, usageEventsTable.repoId)
+		.all() as {
+		sessionId: string;
+		repoId: string;
+		driftPct: number;
+		turns: number;
+	}[];
+
+	const drifted = rows.filter(
+		(r) => Math.abs(r.driftPct) > CONTEXT_DRIFT_THRESHOLD,
+	);
+	drifted.sort((a, b) => Math.abs(b.driftPct) - Math.abs(a.driftPct));
+	const top = drifted.slice(0, CONTEXT_DRIFT_LIMIT);
+	if (top.length === 0) return [];
+
+	const titleById = resolveSessionTitles(top.map((r) => r.sessionId));
+	return top.map((r) => ({
+		sessionId: r.sessionId,
+		repoId: r.repoId,
+		title: titleById.get(r.sessionId) ?? null,
+		driftPct: r.driftPct,
+		turns: r.turns,
+	}));
+}
+
+/**
+ * Display title for each Session id, resolved against whichever of
+ * `sessions`/`sessionArchive` still has a row — shared by the top-spend
+ * table and the drift list, which both outlive deletion the same way
+ * (`usage_events` has no FK to either; see its schema comment).
+ */
+function resolveSessionTitles(ids: string[]): Map<string, string> {
+	const db = getDb();
+	const titleById = new Map<string, string>();
+	for (const row of db
+		.select({
+			id: sessionArchiveTable.sessionId,
+			title: sessionArchiveTable.title,
+		})
+		.from(sessionArchiveTable)
+		.where(inArray(sessionArchiveTable.sessionId, ids))
+		.all()) {
+		titleById.set(row.id, row.title);
+	}
+	// Live sessions win over an archive row for the same id (shouldn't both
+	// exist, but a live row is the fresher source of truth if they do).
+	for (const row of db
+		.select({ id: sessionsTable.id, title: sessionsTable.title })
+		.from(sessionsTable)
+		.where(inArray(sessionsTable.id, ids))
+		.all()) {
+		titleById.set(row.id, row.title);
+	}
+	return titleById;
 }
 
 /**
@@ -202,26 +301,7 @@ function getTopSessions(
 	if (top.length === 0) return [];
 
 	const ids = top.map((s) => s.sessionId);
-	const titleById = new Map<string, string>();
-	for (const row of db
-		.select({
-			id: sessionArchiveTable.sessionId,
-			title: sessionArchiveTable.title,
-		})
-		.from(sessionArchiveTable)
-		.where(inArray(sessionArchiveTable.sessionId, ids))
-		.all()) {
-		titleById.set(row.id, row.title);
-	}
-	// Live sessions win over an archive row for the same id (shouldn't both
-	// exist, but a live row is the fresher source of truth if they do).
-	for (const row of db
-		.select({ id: sessionsTable.id, title: sessionsTable.title })
-		.from(sessionsTable)
-		.where(inArray(sessionsTable.id, ids))
-		.all()) {
-		titleById.set(row.id, row.title);
-	}
+	const titleById = resolveSessionTitles(ids);
 
 	return top.map((s) => ({ ...s, title: titleById.get(s.sessionId) ?? null }));
 }

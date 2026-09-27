@@ -11,6 +11,10 @@ import {
 	resolveSummarizationModel,
 	summarizeMessages,
 } from "../agents/pi";
+import {
+	charsPerTokenFor,
+	LIBRARY_CHARS_PER_TOKEN,
+} from "../agents/providerConfig";
 
 /**
  * Session context/compaction policy (ADR-0023) and the deleted-Session
@@ -81,14 +85,20 @@ export type SessionCompaction = {
 export function pickCutPoint(
 	history: Message[],
 	keepRecentTokens: number,
+	charsPerToken: number = LIBRARY_CHARS_PER_TOKEN,
 ): number {
+	// Same calibrated scale as the estimator itself (issue #270): a budget
+	// denominated in the provider's tokens has to cut messages measured in
+	// the provider's tokens.
+	const factor = LIBRARY_CHARS_PER_TOKEN / charsPerToken;
 	let kept = 0;
 	let index = history.length;
 	for (let i = history.length - 1; i >= 0; i--) {
-		const size = dilnaMessagesToInitialState([history[i] as Message]).reduce(
-			(sum, m) => sum + estimateTokens(m),
-			0,
-		);
+		const size =
+			dilnaMessagesToInitialState([history[i] as Message]).reduce(
+				(sum, m) => sum + estimateTokens(m),
+				0,
+			) * factor;
 		if (kept > 0 && kept + size > keepRecentTokens) break;
 		kept += size;
 		index = i;
@@ -131,23 +141,32 @@ export function buildInitialMessages(
  * returns — the provider-derived `usageTokens` and the `chars/4`
  * `trailingTokens` estimate for the tail after the last reported round —
  * instead of collapsing them into the headline `tokens`, and flag which one
- * the figure actually is. Exported for tests (context.test.ts exercises both
- * `source` branches through it); `estimateFor` is the only production
- * caller.
+ * the figure actually is. The heuristic portion is rescaled from the
+ * library's flat `chars/4` to the provider's calibrated `charsPerToken`
+ * (issue #270): the reported portion is the provider's own count and is
+ * never touched. Exported for tests (context.test.ts exercises both
+ * `source` branches through it); `estimateFor` and
+ * `estimateLiveAgentContext` are the production callers.
  */
 export function toContextUsageEstimate(
 	raw: ReturnType<typeof estimateContextTokens>,
 	contextWindow: number,
+	charsPerToken: number,
 ): ContextUsageEstimate {
+	// The library's heuristic assumes 4 chars/token; dilna's calibration says
+	// this provider packs chars/charsPerToken — rescale exactly the estimated
+	// part (usageTokens is ground truth, trailing is the chars/4 sum).
+	const factor = LIBRARY_CHARS_PER_TOKEN / charsPerToken;
+	const trailingTokens = Math.round(raw.trailingTokens * factor);
 	return {
-		tokens: raw.tokens,
+		tokens: raw.usageTokens + trailingTokens,
 		usageTokens: raw.usageTokens,
-		trailingTokens: raw.trailingTokens,
+		trailingTokens,
 		contextWindow,
 		reserveTokens: DEFAULT_COMPACTION_SETTINGS.reserveTokens,
 		// No usable usage block anywhere in the measured history → the whole
-		// figure is the chars/4 sum; otherwise the headline is grounded in the
-		// provider's report (plus the estimated tail after it).
+		// figure is the calibrated chars estimate; otherwise the headline is
+		// grounded in the provider's report (plus the estimated tail after it).
 		source: raw.lastUsageIndex === null ? "estimated" : "provider",
 	};
 }
@@ -162,10 +181,12 @@ function estimateFor(
 	contextWindow: number,
 	history: Message[],
 	compaction: SessionCompaction,
+	charsPerToken: number,
 ): ContextUsageEstimate {
 	return toContextUsageEstimate(
 		estimateContextTokens(buildInitialMessages(history, compaction)),
 		contextWindow,
+		charsPerToken,
 	);
 }
 
@@ -188,7 +209,14 @@ export function estimateSessionContext(
 	compaction: SessionCompaction,
 ): ContextUsageEstimate | null {
 	const model = resolveSummarizationModel(provider, modelId);
-	return model ? estimateFor(model.contextWindow, history, compaction) : null;
+	return model
+		? estimateFor(
+				model.contextWindow,
+				history,
+				compaction,
+				charsPerTokenFor(provider),
+			)
+		: null;
 }
 
 /**
@@ -230,7 +258,33 @@ export function estimateLiveAgentContext(
 	return toContextUsageEstimate(
 		estimateContextTokens(measured),
 		model.contextWindow,
+		charsPerTokenFor(provider),
 	);
+}
+
+/**
+ * The pure-heuristic context estimate for a live Agent's transcript — what
+ * dilna's estimator would say with *no* provider report anywhere: every
+ * message charged its calibrated `chars/charsPerToken`, nothing grounded in
+ * a usage block. This is the number stamped onto each turn's
+ * `usage_events.estimated_context_tokens` (issue #270): compared against
+ * the provider's own report on the same row (#267's
+ * `provider_context_tokens`), it is both the drift signal (log + Metrics)
+ * and the calibration input — the constant that minimises its error is
+ * exactly what `sessions/charCalibration.ts` computes. Deliberately the
+ * same estimator the cold-path meter runs, so the drift measures the gap
+ * the user actually experiences. `null` when the provider/model is no
+ * longer in the catalog (nothing to calibrate against).
+ */
+export function estimateAgentContextHeuristically(
+	provider: string,
+	modelId: string,
+	messages: AgentMessage[],
+): number | null {
+	if (!resolveSummarizationModel(provider, modelId)) return null;
+	const factor = LIBRARY_CHARS_PER_TOKEN / charsPerTokenFor(provider);
+	const raw = messages.reduce((sum, m) => sum + estimateTokens(m), 0);
+	return Math.round(raw * factor);
 }
 
 export type SessionContextCheck = {
@@ -287,7 +341,12 @@ export async function checkSessionContext(
 	const model = resolveSummarizationModel(provider, modelId);
 	if (!model) return { estimate: null, compaction: null, newContext: null };
 
-	const estimate = estimateFor(model.contextWindow, history, priorCompaction);
+	const estimate = estimateFor(
+		model.contextWindow,
+		history,
+		priorCompaction,
+		charsPerTokenFor(provider),
+	);
 	const notDue: SessionContextCheck = {
 		estimate,
 		compaction: null,
@@ -308,6 +367,7 @@ export async function checkSessionContext(
 	const cutIndexInTail = pickCutPoint(
 		tailHistory,
 		DEFAULT_COMPACTION_SETTINGS.keepRecentTokens,
+		charsPerTokenFor(provider),
 	);
 	if (cutIndexInTail <= 0) return notDue;
 
@@ -338,6 +398,7 @@ export async function checkSessionContext(
 		estimate: toContextUsageEstimate(
 			estimateContextTokens(newContext),
 			estimate.contextWindow,
+			charsPerTokenFor(provider),
 		),
 		compaction,
 		newContext,
