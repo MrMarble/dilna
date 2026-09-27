@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.37.0](https://github.com/MrMarble/dilna/compare/v0.36.1...v0.37.0) (2026-09-27)
+
+
+### Features
+
+* **metrics:** cache-health panel over usage_events ([#277](https://github.com/MrMarble/dilna/issues/277)) ([d21b7d6](https://github.com/MrMarble/dilna/commit/d21b7d69256f785af2d091f02e87a5c12950624c)), closes [#266](https://github.com/MrMarble/dilna/issues/266)
+* **sessions:** calibrate the context estimator per provider, flag drift ([#280](https://github.com/MrMarble/dilna/issues/280)) ([dad0beb](https://github.com/MrMarble/dilna/commit/dad0beb2b870f24a602afdf6535e5dd558ad22ae)), closes [#270](https://github.com/MrMarble/dilna/issues/270)
+* **sessions:** freeze the Session system prompt at first start ([#286](https://github.com/MrMarble/dilna/issues/286)) ([17c7565](https://github.com/MrMarble/dilna/commit/17c7565544c6f68dbe7a2ff91f9130c9eef9a120)), closes [#271](https://github.com/MrMarble/dilna/issues/271)
+* **sessions:** measure context usage from the live Agent's own transcript ([#278](https://github.com/MrMarble/dilna/issues/278)) ([737e6d0](https://github.com/MrMarble/dilna/commit/737e6d07a230c06ccb1f7e213987129426b9ce2a)), closes [#269](https://github.com/MrMarble/dilna/issues/269)
+* **sessions:** say whether the context figure is provider-reported or estimated ([#276](https://github.com/MrMarble/dilna/issues/276)) ([469dfa1](https://github.com/MrMarble/dilna/commit/469dfa169e5412498e350ff52870c31b2ddee8b2)), closes [#268](https://github.com/MrMarble/dilna/issues/268)
+* **sessions:** tool-aware, reversible trims applied at the re-seed boundary ([#283](https://github.com/MrMarble/dilna/issues/283)) ([50ef8d2](https://github.com/MrMarble/dilna/commit/50ef8d2c474c7393fed7466b4bfefd4276778268)), closes [#272](https://github.com/MrMarble/dilna/issues/272)
+* **sessions:** warn on consecutive cache-write turns in the context card ([#281](https://github.com/MrMarble/dilna/issues/281)) ([97b5bda](https://github.com/MrMarble/dilna/commit/97b5bdac0a230c72ce841eb32732bfd94defb023))
+* **usage:** record the provider's reported context tokens per turn ([#275](https://github.com/MrMarble/dilna/issues/275)) ([757a91d](https://github.com/MrMarble/dilna/commit/757a91d7eea9a49529dc0e00a203885c5fa6ee48)), closes [#267](https://github.com/MrMarble/dilna/issues/267)
+
+
+### Bug Fixes
+
+* **sessions:** always land a first-turn title, whatever the provider does ([#263](https://github.com/MrMarble/dilna/issues/263)) ([669b50e](https://github.com/MrMarble/dilna/commit/669b50e38b6e08ffe48c2084854eee19f75ef181))
+
 ## [0.36.1](https://github.com/MrMarble/dilna/compare/v0.36.0...v0.36.1) (2026-09-26)
 
 
