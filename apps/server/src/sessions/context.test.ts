@@ -6,6 +6,7 @@ import { dilnaMessagesToInitialState } from "../agents/pi";
 import {
 	buildInitialMessages,
 	checkSessionContext,
+	estimateLiveAgentContext,
 	estimateSessionContext,
 	pickCutPoint,
 	summarizeSessionForArchive,
@@ -184,6 +185,103 @@ describe("estimateSessionContext", () => {
 	it("returns null for a provider/model no longer in dilna's catalog", () => {
 		expect(
 			estimateSessionContext("anthropic", "not-a-real-model-id", [], null),
+		).toBeNull();
+	});
+});
+
+// Issue #269: the live-Agent path measures the agent's own transcript —
+// no dilna-row rebuild — so the shape is the pi `AgentMessage[]` the agent
+// holds, not dilna `Message[]` rows.
+describe("estimateLiveAgentContext", () => {
+	/** A completed assistant round carrying a real provider report — what a
+	 * live agent's array holds after every finished round. */
+	function liveAssistantRound(
+		usage: {
+			input: number;
+			output: number;
+			cacheRead: number;
+			cacheWrite: number;
+		},
+		timestamp: number,
+	): AgentMessage {
+		return {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-opus-5",
+			usage: {
+				...usage,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp,
+		} as unknown as AgentMessage;
+	}
+
+	it("derives the figure from the agent's array, grounded in its real usage report", () => {
+		const messages = [
+			{ role: "user", content: "hi", timestamp: 1 },
+			liveAssistantRound(
+				{ input: 900, output: 100, cacheRead: 5_000, cacheWrite: 0 },
+				2,
+			),
+		] as AgentMessage[];
+		const estimate = estimateLiveAgentContext(
+			"anthropic",
+			"claude-opus-5",
+			messages,
+		);
+		expect(estimate?.source).toBe("provider");
+		expect(estimate?.usageTokens).toBe(6_000);
+		expect(estimate?.trailingTokens).toBe(0);
+		expect(estimate?.tokens).toBe(6_000);
+	});
+
+	it("excludes the in-flight turn's trailing user message — the meter reflects completed turns", () => {
+		// The turn in flight has been prompted but no round has completed: the
+		// array ends in the (huge) new user message. It is not yet prior
+		// context — same exclusion as the cold path's pending user row — so a
+		// long turn must not make the meter jump when it starts.
+		const messages = [
+			{ role: "user", content: "hi", timestamp: 1 },
+			liveAssistantRound(
+				{ input: 900, output: 100, cacheRead: 0, cacheWrite: 0 },
+				2,
+			),
+			{ role: "user", content: "x".repeat(100_000), timestamp: 3 },
+		] as AgentMessage[];
+		const estimate = estimateLiveAgentContext(
+			"anthropic",
+			"claude-opus-5",
+			messages,
+		);
+		expect(estimate?.tokens).toBe(1_000);
+		expect(estimate?.trailingTokens).toBe(0);
+	});
+
+	it("reads as an estimate right after a compaction, where the swapped-in array carries no usage", () => {
+		// checkContextAndCompact swaps the live array to buildInitialMessages'
+		// output — dilna-converted rows with zeroed usage — so until the next
+		// round completes there is no report to ground on, and the shape says
+		// so instead of implying precision.
+		const compacted = dilnaMessagesToInitialState([
+			dilnaMessage("m1", "user", "tail after the summary", 1),
+			dilnaMessage("m2", "assistant", "tail reply", 2),
+		]);
+		const estimate = estimateLiveAgentContext(
+			"anthropic",
+			"claude-opus-5",
+			compacted,
+		);
+		expect(estimate?.source).toBe("estimated");
+		expect(estimate?.usageTokens).toBe(0);
+		expect(estimate?.tokens).toBeGreaterThan(0);
+	});
+
+	it("returns null for a provider/model no longer in dilna's catalog", () => {
+		expect(
+			estimateLiveAgentContext("anthropic", "not-a-real-model", []),
 		).toBeNull();
 	});
 });

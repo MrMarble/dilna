@@ -191,6 +191,48 @@ export function estimateSessionContext(
 	return model ? estimateFor(model.contextWindow, history, compaction) : null;
 }
 
+/**
+ * Same estimate as {@link estimateSessionContext}, but measured over a live
+ * `Agent`'s own transcript instead of a transcript rebuilt from dilna's
+ * `messages` rows (issue #269). The agent's array *is* the context the
+ * provider last saw — post-compaction swaps included — so measuring it
+ * directly skips the most expensive part of answering
+ * `GET /api/sessions/:id` for a long, tool-heavy Session: re-expanding
+ * every persisted row. It also reports a grounded figure: the array's
+ * assistant rounds carry the provider's real usage blocks, so the estimate
+ * rides the last completed round's report (source `"provider"`) instead of
+ * the all-`chars/4` sum the rebuilt rows produce (their usage blocks are
+ * zeroed, so they never count as a report).
+ *
+ * A trailing user entry is the in-flight turn's prompt — dilna's own
+ * `pending-user` row has been promoted, but from the array's point of view
+ * it is the same "not yet prior context" the cold path filters out — so it
+ * is dropped before measuring and the meter reflects the last *completed*
+ * turn; a long in-flight turn no longer moves it. (Once the turn's first
+ * round completes, its report lands in the array and the meter steps
+ * forward onto real ground again.) The one false positive is a respawned
+ * Session whose failed previous turn left a user row last in the seeded
+ * history: the trim then under-counts by that one message until the next
+ * turn reports — acceptable for a meter, and self-correcting.
+ *
+ * Returns `null` when the provider/model is no longer in dilna's catalog —
+ * same contract as {@link estimateSessionContext}.
+ */
+export function estimateLiveAgentContext(
+	provider: string,
+	modelId: string,
+	messages: AgentMessage[],
+): ContextUsageEstimate | null {
+	const model = resolveSummarizationModel(provider, modelId);
+	if (!model) return null;
+	const measured =
+		messages.at(-1)?.role === "user" ? messages.slice(0, -1) : messages;
+	return toContextUsageEstimate(
+		estimateContextTokens(measured),
+		model.contextWindow,
+	);
+}
+
 export type SessionContextCheck = {
 	/** `null` only when the Session's provider/model is no longer in dilna's
 	 * catalog (see `resolveSummarizationModel`) — nothing to report or

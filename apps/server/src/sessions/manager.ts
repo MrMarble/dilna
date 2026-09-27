@@ -66,6 +66,7 @@ import { type Listener, SessionBroadcaster } from "./broadcaster";
 import {
 	buildInitialMessages,
 	checkSessionContext,
+	estimateLiveAgentContext,
 	estimateSessionContext,
 	summarizeSessionForArchive,
 } from "./context";
@@ -465,12 +466,30 @@ export class SessionManager {
 	 * end). `null` for an orchestrator Session (no compaction, no model
 	 * concept meaningful to report) or one whose provider/model has since
 	 * fallen out of dilna's catalog.
+	 *
+	 * Two paths (issue #269): when a live `Agent` exists, its own transcript
+	 * is measured directly — no rebuild from `messages` rows, which for a
+	 * long tool-heavy Session is the most expensive part of loading the chat
+	 * shell, and the agent's rounds carry the provider's real usage report.
+	 * Without a handle (idle, never started, or respawned since), the
+	 * transcript is rebuilt from rows exactly as a cold start would seed it,
+	 * and the figure is labelled an estimate (`source: "estimated"`) — those
+	 * rows carry no usable usage block.
 	 */
 	async getContextUsageEstimate(
 		id: string,
 	): Promise<ContextUsageEstimate | null> {
 		const session = await this.get(id);
 		if (session?.kind !== "session") return null;
+
+		const active = this.active.get(id);
+		if (active) {
+			return estimateLiveAgentContext(
+				active.handle.provider,
+				active.handle.model,
+				active.handle.agent.state.messages,
+			);
+		}
 
 		const { provider, model } = this.resolveProviderModel(session);
 		const pendingId = messageStore.pendingUserMessageId(id);
@@ -1708,13 +1727,25 @@ export class SessionManager {
 					.run();
 			}
 			if (estimate) {
+				// Prefer the live Agent's own transcript when one exists (issue
+				// #269): its rounds carry the turn's real usage report, where the
+				// rebuilt rows this check measured are all-`chars/4`. After a
+				// compaction the array was just swapped to the rebuilt context
+				// (no usage blocks), so the figure honestly reads as an estimate
+				// until the next turn reports. Fall back to the rebuilt estimate
+				// only when the model fell out of the catalog mid-check.
+				const live = estimateLiveAgentContext(
+					active.handle.provider,
+					active.handle.model,
+					active.handle.agent.state.messages,
+				);
 				this.events.broadcast(id, {
 					type: "context_usage",
 					// The whole shared estimate — spreading keeps the event and the
 					// REST envelope in lockstep whenever `ContextUsageEstimate`
 					// grows a field (issue #268 added source/usage/trailing), so
 					// neither side can drift by forgetting to list one.
-					...estimate,
+					...(live ?? estimate),
 				});
 			}
 		} catch (err) {
