@@ -76,6 +76,10 @@ export function accumulateSessionUsage(
 				cacheWriteTokens: cumulative.cacheWriteTokens ?? 0,
 				reasoningTokens: cumulative.reasoningTokens ?? 0,
 				costUsd: cumulative.costUsd ?? 0,
+				// Stamped by the adapter on the same turn-end event (issue #267);
+				// stays null when absent — e.g. an adapter that doesn't report
+				// context occupancy — never coerced to 0.
+				providerContextTokens: ev.providerContextTokens ?? null,
 			})
 			.run();
 		return updated;

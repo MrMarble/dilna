@@ -188,6 +188,14 @@ export type AgentStreamEvent =
 			 * `GET /api/sessions/:id` serves — see
 			 * SessionManager.accumulateSessionUsage. */
 			cumulative?: UsageTotals;
+			/** The context occupancy the provider itself reported for this turn
+			 * (issue #267): `input + output + cacheRead + cacheWrite` of the
+			 * turn's final assistant round, which already includes the whole
+			 * conversation — persisted onto
+			 * `usage_events.provider_context_tokens`. Present only on the same
+			 * turn-end reconciling event as `cumulative`; per-round events
+			 * report their own billing delta without it. */
+			providerContextTokens?: number;
 	  }
 	| ({
 			/** Live estimate of how much of the Session's context window is
