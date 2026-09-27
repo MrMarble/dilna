@@ -77,6 +77,14 @@ export const sessions = sqliteTable("sessions", {
 	 * Sessions always used). */
 	provider: text("provider"),
 	model: text("model"),
+	/** The system prompt frozen at the Session's first start (issue #271,
+	 * ADR-0049): replayed byte-identically on every cold start so the
+	 * provider's cached prefix survives idle kills, restarts and
+	 * compactions. Null until the first spawn assembles and persists it;
+	 * pre-freeze rows stay null until their own first spawn, which freezes
+	 * whatever the then-current assembly produces. Internal to the server —
+	 * absent from SessionView, like the compaction fields. */
+	systemPrompt: text("system_prompt"),
 	/** Issue #250 (ADR-0047): the Comparison this Session is an arm of, when
 	 * it was created via `POST /api/comparisons` — null for every Session
 	 * created outside a Comparison. No FK (same dangling-id tolerance as

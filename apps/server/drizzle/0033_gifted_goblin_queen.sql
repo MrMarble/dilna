@@ -1,0 +1,1 @@
+ALTER TABLE `sessions` ADD `system_prompt` text;

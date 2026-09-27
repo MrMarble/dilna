@@ -2113,6 +2113,14 @@ export class SessionManager {
 						provider: session.provider,
 						model: session.model,
 						initialMessages,
+						// Prompt freeze (issue #271, ADR-0049): the first spawn
+						// assembles the prompt (persisted below); every later
+						// cold start replays the stored bytes instead of
+						// re-deriving them, so the provider's cached prefix
+						// survives respawn no matter what changed since —
+						// skills enabled mid-session, index state, anything
+						// future changes embed in the head.
+						frozenSystemPrompt: session.systemPrompt ?? undefined,
 						// Issue #194/ADR-0032: a publish is broadcast the moment the
 						// tool returns, so the panel gains the artefact mid-turn
 						// rather than at end-of-turn like `changed_files`.
@@ -2148,6 +2156,19 @@ export class SessionManager {
 							this.emitImageSent(id, attachment, caption);
 						},
 					} satisfies PiStartOptions);
+
+		// Freeze the prompt on the Session's first spawn (issue #271,
+		// ADR-0049): the exact bytes this Agent was constructed with are
+		// persisted and replayed on every later cold start. Later spawns pass
+		// `frozenSystemPrompt` instead of re-deriving, so this write happens
+		// at most once per Session.
+		if (!session.systemPrompt && handle.systemPrompt) {
+			this.db
+				.update(sessionsTable)
+				.set({ systemPrompt: handle.systemPrompt })
+				.where(eq(sessionsTable.id, id))
+				.run();
+		}
 
 		const active: ActiveAgent = {
 			handle,
