@@ -392,22 +392,45 @@ function SessionContextRow({ sessionId }: { sessionId: string }) {
 		usage.contextWindow,
 		usage.reserveTokens,
 	);
+	// An estimated figure is a `chars/4` heuristic over the messages dilna
+	// holds — shown as approximate ("~", stripes on the bar) and named as an
+	// estimate, never as the provider's ground truth (issue #268). A cold
+	// start (page load, post-respawn) lands here; the first turn's report
+	// replaces it with the exact figure.
+	const estimated = usage.source === "estimated";
+	const tokenTitle = estimated
+		? `~${usage.tokens.toLocaleString()} of ${usage.contextWindow.toLocaleString()} tokens — estimated from message sizes; the provider hasn't reported this turn's occupancy yet`
+		: `${usage.tokens.toLocaleString()} of ${usage.contextWindow.toLocaleString()} tokens — reported by the provider after its last turn`;
 	return (
 		<div className="flex flex-col gap-1 pt-0.5">
 			<div
 				className="flex items-baseline justify-between gap-2 text-sm"
-				title={`${usage.tokens.toLocaleString()} / ${usage.contextWindow.toLocaleString()} tokens`}
+				title={tokenTitle}
 			>
 				<span className="shrink-0 text-muted-foreground">Context</span>
 				<span className="truncate text-right">
+					{estimated && <span className="text-muted-foreground">~</span>}
 					{formatTokenCount(usage.tokens)} /{" "}
 					{formatTokenCount(usage.contextWindow)}
+					{estimated && (
+						<span className="ml-1 text-xs text-muted-foreground">est.</span>
+					)}
 				</span>
 			</div>
 			<div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
 				<div
 					className={`h-full rounded-full ${contextUsageBarColor(pct)}`}
-					style={{ width: `${pct}%` }}
+					style={{
+						width: `${pct}%`,
+						...(estimated
+							? {
+									// Striped fill distinguishes an estimated occupancy
+									// at a glance from the solid reported one.
+									backgroundImage:
+										"repeating-linear-gradient(135deg, rgba(255,255,255,0.4) 0 2px, transparent 2px 4px)",
+								}
+							: undefined),
+					}}
 				/>
 			</div>
 			{isNearCompaction(pct) && (

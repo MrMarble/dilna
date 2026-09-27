@@ -1,4 +1,5 @@
 import type { Message } from "@dilna/shared";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateContextTokens } from "@earendil-works/pi-agent-core";
 import { describe, expect, it } from "vitest";
 import { dilnaMessagesToInitialState } from "../agents/pi";
@@ -8,6 +9,7 @@ import {
 	estimateSessionContext,
 	pickCutPoint,
 	summarizeSessionForArchive,
+	toContextUsageEstimate,
 } from "./context";
 
 function dilnaMessage(
@@ -217,5 +219,88 @@ describe("summarizeSessionForArchive", () => {
 			{ summary: "already fully summarized", throughMessageId: "m2" },
 		);
 		expect(summary).toBe("already fully summarized");
+	});
+});
+
+// Issue #268: the estimate must carry *both* numbers pi-agent-core returns
+// (the provider-derived `usageTokens` and the `chars/4` `trailingTokens`
+// estimate) plus which one the headline figure is — never collapse them into
+// one silently-trusted number.
+describe("context estimate source", () => {
+	/** An assistant round carrying a real provider report — the shape a live
+	 * measured history ends in once its usage block survives conversion. */
+	function assistantWithUsage(contextTokens: number): AgentMessage {
+		return {
+			role: "assistant",
+			content: [{ type: "text", text: "done" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-opus-5",
+			usage: {
+				input: contextTokens - 20,
+				output: 20,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		} as unknown as AgentMessage;
+	}
+
+	it("reports a provider-derived figure when the history ends in an assistant message carrying usage", () => {
+		const messages = [
+			{ role: "user", content: "hi", timestamp: 1 },
+			assistantWithUsage(120_000),
+		] as AgentMessage[];
+		const estimate = toContextUsageEstimate(
+			estimateContextTokens(messages),
+			1_000_000,
+		);
+		expect(estimate.source).toBe("provider");
+		expect(estimate.usageTokens).toBe(120_000);
+		// The history ends on the reported round itself — nothing to estimate.
+		expect(estimate.trailingTokens).toBe(0);
+		expect(estimate.tokens).toBe(120_000);
+	});
+
+	it("keeps the trailing estimate visible when the history ends in a user message after the last report", () => {
+		const messages = [
+			{ role: "user", content: "hi", timestamp: 1 },
+			assistantWithUsage(120_000),
+			{ role: "user", content: "x".repeat(400), timestamp: 3 },
+		] as AgentMessage[];
+		const estimate = toContextUsageEstimate(
+			estimateContextTokens(messages),
+			1_000_000,
+		);
+		// Still provider-derived — the walk-back finds the reported round —
+		// but the user message after it is only ever a chars/4 guess, and the
+		// shape says so instead of folding it invisibly into `tokens`.
+		expect(estimate.source).toBe("provider");
+		expect(estimate.usageTokens).toBe(120_000);
+		expect(estimate.trailingTokens).toBeGreaterThan(0);
+		expect(estimate.tokens).toBe(120_000 + estimate.trailingTokens);
+	});
+
+	it("flags the cold-start path as estimated when no assistant round carries a usable report", () => {
+		// dilna's rows convert with an all-zero usage block, which the library
+		// treats as "no report" — so the array a page load measures is summed
+		// entirely from the chars/4 heuristic. That's exactly the figure the
+		// panel must label an estimate rather than ground truth.
+		const history = [
+			dilnaMessage("m1", "user", "hi", 1),
+			dilnaMessage("m2", "assistant", "hello", 2),
+			dilnaMessage("m3", "user", "and then?", 3),
+		];
+		const estimate = estimateSessionContext(
+			"anthropic",
+			"claude-opus-5",
+			history,
+			null,
+		);
+		expect(estimate?.source).toBe("estimated");
+		expect(estimate?.usageTokens).toBe(0);
+		expect(estimate?.trailingTokens).toBe(estimate?.tokens);
 	});
 });

@@ -28,10 +28,16 @@ export function useSessionContextUsage(
 			});
 		const unsubscribe = api.sessions.stream(sessionId, (ev) => {
 			if (ev.type === "context_usage") {
+				// The event *is* the shared `ContextUsageEstimate` shape; field-list
+				// (rather than spreading the event) keeps the `type` discriminator
+				// out of the stored value.
 				setUsage({
 					tokens: ev.tokens,
+					usageTokens: ev.usageTokens,
+					trailingTokens: ev.trailingTokens,
 					contextWindow: ev.contextWindow,
 					reserveTokens: ev.reserveTokens,
+					source: ev.source,
 				});
 			}
 		});
