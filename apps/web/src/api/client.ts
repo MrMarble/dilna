@@ -261,8 +261,8 @@ export function artefactUrl(sessionId: string, artefactId: string): string {
  * {@link attachmentUrl}: the browser opens it directly as plain text, no
  * auth headers (the API is unauthenticated on a default deployment).
  */
-export function truncatedUrl(hash: string): string {
-	return paths.truncated(hash);
+export function truncatedUrl(hash: string, sessionId?: string): string {
+	return paths.truncated(hash, sessionId);
 }
 
 export class ApiError extends Error {

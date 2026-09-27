@@ -24,6 +24,7 @@ let nextSummary: UsageSummary = {
 	topSessions: [],
 	byPurpose: [],
 	contextDrift: [],
+	truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 };
 
 vi.mock("@/api/client", () => ({
@@ -48,6 +49,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		expect(
@@ -131,6 +133,7 @@ describe("MetricsPage", () => {
 			],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 		};
 		render(
 			<MetricsPage
@@ -237,6 +240,7 @@ describe("MetricsPage", () => {
 			],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 		};
 		render(
 			<MetricsPage
@@ -311,6 +315,7 @@ describe("MetricsPage", () => {
 					turns: 5,
 				},
 			],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 		};
 		render(
 			<MetricsPage
@@ -362,6 +367,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		// Some usage exists (the empty-state banner is gone) but no Session
@@ -369,6 +375,84 @@ describe("MetricsPage", () => {
 		await screen.findByText("Cache health");
 		expect(
 			screen.queryByText("Context estimate drift — dilna vs provider"),
+		).not.toBeInTheDocument();
+	});
+
+	it("renders the truncation trade card with savings and cost together (issue #274)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 100,
+					costUsd: 0.005,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			truncation: {
+				savedTokens: 11856,
+				retrievals: 3,
+				rereads: 2,
+				bySession: [
+					{
+						sessionId: "s-trim",
+						repoId: "repo-1",
+						title: "Trimmed session",
+						savedTokens: 11856,
+						retrievals: 3,
+						rereads: 2,
+					},
+				],
+			},
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+
+		expect(
+			await screen.findByText("Truncation trade — saved vs re-read"),
+		).toBeInTheDocument();
+		expect(screen.getAllByText("12k").length).toBe(2); // headline + row
+		expect(screen.getByText("tokens saved")).toBeInTheDocument();
+		expect(screen.getAllByText("3").length).toBe(2);
+		expect(screen.getByText("originals opened")).toBeInTheDocument();
+		expect(screen.getAllByText("2").length).toBe(2);
+		expect(screen.getByText("agent re-reads")).toBeInTheDocument();
+		expect(screen.getByText("Trimmed session")).toBeInTheDocument();
+		// A climbing re-read count is the too-aggressive warning.
+		const rereads = screen.getAllByText("2");
+		expect(rereads.some((el) => el.className.includes("text-warning"))).toBe(
+			true,
+		);
+	});
+
+	it("hides the truncation card while nothing is stored or counted (issue #274)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS, inputTokens: 100, cacheHitRate: 0.9 },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 100,
+					costUsd: 0.005,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		await screen.findByText("Cache health");
+		expect(
+			screen.queryByText("Truncation trade — saved vs re-read"),
 		).not.toBeInTheDocument();
 	});
 
@@ -382,6 +466,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { savedTokens: 0, retrievals: 0, rereads: 0, bySession: [] },
 		};
 		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);
 		await screen.findByText(/no usage recorded yet/i);

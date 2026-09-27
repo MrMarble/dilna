@@ -406,6 +406,31 @@ export const truncatedOutputs = sqliteTable("truncated_outputs", {
 });
 
 /**
+ * One counted use of a trimmed tool output (issue #274): `"reread"` when an
+ * agent read a path whose content hash the store already held (the honest
+ * failure mode — the trim cut something the model needed, and it went back),
+ * `"retrieval"` when a human opened the original from a trim marker. The
+ * trade the policy makes is only readable with the cost next to the savings.
+ * No FK, same dangling-id tolerance as `usage_events`; a Session's counts
+ * survive its deletion.
+ */
+export const truncationEvents = sqliteTable(
+	"truncation_events",
+	{
+		id: text("id").primaryKey(),
+		kind: text("kind").notNull(),
+		/** Content hash of the original involved. */
+		hash: text("hash").notNull(),
+		/** The Session the event is attributed to — the Session that re-read,
+		 * or (when carried) the one the UI retrieval came from. Null only for
+		 * retrievals with no session context. */
+		sessionId: text("session_id"),
+		createdAt: integer("created_at").notNull().$defaultFn(now),
+	},
+	(t) => [index("truncation_events_session_idx").on(t.sessionId)],
+);
+
+/**
  * Last-known account-wide plan rate-limit reading per window (one row per
  * `RateLimitWindowKind`), persisted so the sidebar footer survives a server
  * restart / page reload without waiting for the next agent turn to re-fetch

@@ -239,6 +239,13 @@
 			"when": 1790545273068,
 			"tag": "0033_remarkable_mathemanic",
 			"breakpoints": true
+		},
+		{
+			"idx": 34,
+			"version": "6",
+			"when": 1790545373351,
+			"tag": "0034_robust_gladiator",
+			"breakpoints": true
 		}
 	]
 }

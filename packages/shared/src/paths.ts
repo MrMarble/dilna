@@ -35,8 +35,10 @@ export const paths = {
 	},
 	/** `GET /api/truncated/:hash` — the full original behind a trim marker
 	 * (#273). A plain relative path, like the attachment/artefact URLs: the
-	 * API is unauthenticated on a default deployment and same-origin. */
-	truncated: (hash: string) => `/api/truncated/${enc(hash)}`,
+	 * API is unauthenticated on a default deployment and same-origin. The
+	 * session query attributes the retrieval for #274's counters. */
+	truncated: (hash: string, sessionId?: string) =>
+		`/api/truncated/${enc(hash)}${sessionId ? `?session=${enc(sessionId)}` : ""}`,
 	sessions: {
 		list: (repoId?: string) =>
 			repoId ? `/api/sessions?repoId=${enc(repoId)}` : "/api/sessions",

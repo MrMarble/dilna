@@ -9,9 +9,13 @@ import {
 import path from "node:path";
 import type { Message } from "@dilna/shared";
 import { TOOL_OUTPUT_POLICY } from "@dilna/shared";
-import { lt } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import { getDataDir, getDb } from "../db";
-import { truncatedOutputs as truncatedOutputsTable } from "../db/schema";
+import {
+	truncatedOutputs as truncatedOutputsTable,
+	truncationEvents as truncationEventsTable,
+} from "../db/schema";
 import { logger } from "../logger";
 
 /**
@@ -129,8 +133,20 @@ export function storeTruncationsForRows(
 			}
 			const POLICY_TOOLS = new Set(["read", "grep", "find", "bash"]);
 			if (!POLICY_TOOLS.has(part.tool)) continue;
+			const hash = sha256Hex(output);
+
+			// The honest failure mode of truncation, counted (issue #274): an
+			// agent read a path whose content hash the store already held —
+			// the trim cut something the model went back for, and that cost
+			// belongs on the Metrics page next to the savings. Counted for
+			// `read` only: the issue's criterion is a re-read of a *path*,
+			// which grep/find/bash results don't have.
+			if (part.tool === "read" && hasTruncatedRow(hash)) {
+				recordTruncationEvent("reread", hash, sessionId);
+			}
+
 			storeTruncated({
-				hash: sha256Hex(output),
+				hash,
 				tool: part.tool,
 				path:
 					part.input && typeof part.input === "object" && "path" in part.input
@@ -147,6 +163,40 @@ export function storeTruncationsForRows(
 
 function sha256Hex(text: string): string {
 	return createHash("sha256").update(text).digest("hex");
+}
+
+function hasTruncatedRow(hash: string): boolean {
+	return (
+		getDb()
+			.select({ hash: truncatedOutputsTable.hash })
+			.from(truncatedOutputsTable)
+			.where(eq(truncatedOutputsTable.hash, hash))
+			.get() !== undefined
+	);
+}
+
+/** Count one use of a stored original (issue #274). `sessionId` is the
+ * Session that re-read, or the one the UI retrieval came from (null only
+ * for a context-free retrieval). */
+export function recordTruncationEvent(
+	kind: "reread" | "retrieval",
+	hash: string,
+	sessionId: string | null,
+): void {
+	getDb()
+		.insert(truncationEventsTable)
+		.values({ id: nanoid(), kind, hash, sessionId })
+		.run();
+}
+
+/** Retrieval counter for `GET /api/truncated/:hash` — best-effort, so a
+ * counting failure never blocks serving the bytes. */
+export function recordRetrieval(hash: string, sessionId: string | null): void {
+	try {
+		recordTruncationEvent("retrieval", hash, sessionId);
+	} catch (err) {
+		log.warn({ err, hash }, "failed to count truncated-original retrieval");
+	}
 }
 
 /**

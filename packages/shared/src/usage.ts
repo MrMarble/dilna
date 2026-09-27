@@ -88,6 +88,36 @@ export type UsageContextDrift = {
 	turns: number;
 };
 
+/**
+ * The truncation trade, per Session (issue #274): what the seed-time trims
+ * save versus what they cost. Sessions are listed only when they have at
+ * least one counter or one stored original, so a policy-free instance shows
+ * nothing. Deleted Sessions' counts still appear (title resolved against
+ * the archive like `topSessions`) — the trade outlives the Session.
+ */
+export type UsageTruncation = {
+	sessionId: string;
+	repoId: string;
+	title: string | null;
+	/** Estimated tokens the seeder's trims remove from this Session's
+	 * current-history seed (removedChars / 4, the estimator's own flat
+	 * rate). Recomputed per request from the same walk the seeder runs. */
+	savedTokens: number;
+	/** Times a human opened the original from a trim marker. */
+	retrievals: number;
+	/** Times an agent re-read a path whose content hash the store already
+	 * held — the cost of having trimmed something the model needed. */
+	rereads: number;
+};
+
+/** Aggregate of the per-Session numbers, plus the totals. */
+export type UsageTruncationSummary = {
+	savedTokens: number;
+	retrievals: number;
+	rereads: number;
+	bySession: UsageTruncation[];
+};
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
@@ -100,6 +130,9 @@ export type UsageSummary = {
 	 * threshold, worst first; empty when every estimator is honest (or no
 	 * turn carries both numbers yet). */
 	contextDrift: UsageContextDrift[];
+	/** The truncation trade (issue #274): savings vs retrieval/re-read
+	 * cost, read together in one glance. */
+	truncation: UsageTruncationSummary;
 };
 
 /**

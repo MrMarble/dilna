@@ -8,6 +8,7 @@ import type {
 	UsageSessionBreakdown,
 	UsageSummary,
 	UsageTotalsDetailed,
+	UsageTruncationSummary,
 } from "@dilna/shared";
 import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -159,6 +160,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 							drift={summary.contextDrift}
 							repoNameById={repoNameById}
 						/>
+						<TruncationTradeCard truncation={summary.truncation} />
 						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 						<TopSessionsTable
@@ -697,6 +699,99 @@ function CacheRateTable({
  * negatives, amber for over-counting (which merely wastes context on early
  * compaction).
  */
+function TruncationTradeCard({
+	truncation,
+}: {
+	truncation: UsageTruncationSummary;
+}) {
+	if (
+		truncation.savedTokens === 0 &&
+		truncation.retrievals === 0 &&
+		truncation.rereads === 0
+	) {
+		return null;
+	}
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				Truncation trade — saved vs re-read
+			</div>
+			<div className="grid grid-cols-3 gap-3 px-4 py-3">
+				<div>
+					<p className="text-2xl font-semibold tabular-nums tracking-tight">
+						{formatTokenCount(truncation.savedTokens)}
+					</p>
+					<p className="text-xs text-muted-foreground">tokens saved</p>
+				</div>
+				<div>
+					<p className="text-2xl font-semibold tabular-nums tracking-tight">
+						{truncation.retrievals}
+					</p>
+					<p className="text-xs text-muted-foreground">originals opened</p>
+				</div>
+				<div>
+					<p
+						className={cn(
+							"text-2xl font-semibold tabular-nums tracking-tight",
+							truncation.rereads > 0 && "text-warning",
+						)}
+					>
+						{truncation.rereads}
+					</p>
+					<p className="text-xs text-muted-foreground">agent re-reads</p>
+				</div>
+			</div>
+			{truncation.bySession.length > 0 && (
+				<table className="w-full text-sm">
+					<thead>
+						<tr className="border-y border-border text-left text-xs text-muted-foreground">
+							<th className="px-4 py-2 font-medium">Session</th>
+							<th className="px-4 py-2 text-right font-medium">Saved</th>
+							<th className="px-4 py-2 text-right font-medium">Opened</th>
+							<th className="px-4 py-2 text-right font-medium">Re-reads</th>
+						</tr>
+					</thead>
+					<tbody>
+						{truncation.bySession.map((t, i) => (
+							<tr
+								key={t.sessionId}
+								className={cn(
+									"tabular-nums",
+									i > 0 && "border-t border-border",
+								)}
+							>
+								<td className="max-w-64 truncate px-4 py-2">
+									{t.title ?? `deleted session ${t.sessionId.slice(0, 8)}…`}
+								</td>
+								<td className="px-4 py-2 text-right">
+									{formatTokenCount(t.savedTokens)}
+								</td>
+								<td className="px-4 py-2 text-right text-muted-foreground">
+									{t.retrievals}
+								</td>
+								<td
+									className={cn(
+										"px-4 py-2 text-right",
+										t.rereads > 0 ? "text-warning" : "text-muted-foreground",
+									)}
+								>
+									{t.rereads}
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			)}
+			<p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+				Saved = what the seeder's tool-output trims remove from context.
+				Re-reads are agents going back to a path whose content was already
+				trimmed — a climbing rate means the policy is too aggressive. Counts
+				survive Session deletion.
+			</p>
+		</div>
+	);
+}
+
 function ContextDriftCard({
 	drift,
 	repoNameById,
