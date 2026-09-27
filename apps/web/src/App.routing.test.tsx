@@ -71,15 +71,24 @@ vi.mock("@/api/client", () => ({
 			// contextUsage }` envelope `get` does — always `contextUsage: null`,
 			// since a brand-new Session has no turns to estimate from and an
 			// orchestrator Session never reports context at all.
-			create: async () => ({ session: REPO_SESSION, contextUsage: null }),
+			create: async () => ({
+				session: REPO_SESSION,
+				contextUsage: null,
+				recentCacheTurns: [],
+			}),
 			createOrchestrator: async () => ({
 				session: state.createdOrchestrator ?? ORCHESTRATOR_SESSION,
 				contextUsage: null,
+				recentCacheTurns: [],
 			}),
 			delete: async (id: string) => ({ ok: true, id }),
 			// `get` resolves `{ session, contextUsage }` — there is no separate
 			// `contextUsage` endpoint, and no `messages` key on this response.
-			get: async () => ({ session: REPO_SESSION, contextUsage: null }),
+			get: async () => ({
+				session: REPO_SESSION,
+				contextUsage: null,
+				recentCacheTurns: [],
+			}),
 			messages: async () => ({ messages: [] }),
 			// The chat column's live surfaces (ChatShell, UsageBadge,
 			// SessionContextRow) all open the per-session SSE stream; a no-op

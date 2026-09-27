@@ -72,7 +72,11 @@ describe("response envelopes reach callers whole", () => {
 	it("keeps contextUsage on a freshly created Session", async () => {
 		// The server has always sent this; the client used to type
 		// `POST /api/sessions` as `{ session }` only.
-		mockFetch(201, { session: { id: "s1" }, contextUsage: null });
+		mockFetch(201, {
+			session: { id: "s1" },
+			contextUsage: null,
+			recentCacheTurns: [],
+		});
 		const res = await api.sessions.create("r1");
 		expect(res).toHaveProperty("contextUsage", null);
 	});

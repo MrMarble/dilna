@@ -24,6 +24,7 @@ vi.mock("@/api/client", () => ({
 					},
 				}),
 				contextUsage: null,
+				recentCacheTurns: [],
 			}),
 			stream: (sessionId: string, onEvent: StreamListener) => {
 				listenersBySession.set(sessionId, onEvent);

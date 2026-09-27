@@ -14,12 +14,13 @@ import type {
 	RateLimitWindow,
 	RateLimitWindowKind,
 	Session,
+	SessionCacheTurn,
 	SessionKind,
 	SessionListEvent,
 	SessionView,
 } from "@dilna/shared";
 import { isTurnCompletion } from "@dilna/shared";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
 	type AgentEvent,
@@ -45,9 +46,11 @@ import {
 	TURN_TIMEOUT_MS,
 } from "../agents/types";
 import type { Db } from "../db";
+import { getDb } from "../db";
 import {
 	rateLimits as rateLimitsTable,
 	sessions as sessionsTable,
+	usageEvents as usageEventsTable,
 } from "../db/schema";
 import { logger } from "../logger";
 import { type RepoManager, RepoNotFoundError } from "../repos/manager";
@@ -503,6 +506,34 @@ export class SessionManager {
 			history,
 			sessionCompactionOf(session),
 		);
+	}
+
+	/**
+	 * The most recent completed Agent turns' cache split, oldest last (issue
+	 * 271) — `GET /api/sessions/:id`'s `recentCacheTurns`, the seed for the
+	 * context card's cache-instability warning. Agent turns only
+	 * (`purpose = 'turn'`): judge calls (ADR-0046) have their own one-shot
+	 * prefix and would pollute a consecutive-turn signal about the Session's
+	 * prompt stability. Unbounded growth is capped by the SQL limit — the
+	 * web's rolling window never needs more than a handful of turns.
+	 */
+	getRecentCacheTurns(id: string, limit = 5): SessionCacheTurn[] {
+		return getDb()
+			.select({
+				readTokens: usageEventsTable.cacheReadTokens,
+				writeTokens: usageEventsTable.cacheWriteTokens,
+			})
+			.from(usageEventsTable)
+			.where(
+				and(
+					eq(usageEventsTable.sessionId, id),
+					eq(usageEventsTable.purpose, "turn"),
+				),
+			)
+			.orderBy(desc(usageEventsTable.createdAt))
+			.limit(limit)
+			.all()
+			.reverse();
 	}
 
 	async create(

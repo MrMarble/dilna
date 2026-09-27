@@ -99,6 +99,19 @@ export type SessionResponse = {
 	 * doc comment. `null` for an orchestrator Session or one whose
 	 * provider/model has fallen out of dilna's catalog. */
 	contextUsage: ContextUsageEstimate | null;
+	/** The most recent completed Agent turns' cache usage, oldest last (issue
+	 * 271) — seeds the context card's cache-instability warning on page load,
+	 * where the live `usage_update` stream has no history. Reads
+	 * `usage_events`' per-turn cache columns (agent turns only — judge rows
+	 * have their own prefix and would pollute the consecutive-turn signal);
+	 * capped at the 5 most recent. Empty for a brand-new Session. */
+	recentCacheTurns: SessionCacheTurn[];
+};
+
+/** One completed Agent turn's cache split, from its `usage_events` row. */
+export type SessionCacheTurn = {
+	readTokens: number;
+	writeTokens: number;
 };
 
 /** `GET /api/sessions/:id/messages` */

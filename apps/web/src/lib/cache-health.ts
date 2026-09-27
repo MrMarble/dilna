@@ -73,3 +73,46 @@ export type CacheSlice = Pick<
 	UsageTotalsDetailed,
 	"cacheHitRate" | "cacheReadTokens" | "cacheWriteTokens" | "inputTokens"
 >;
+
+/**
+ * How many consecutive write-dominant turns the cache-instability warning
+ * requires (issue #271). Two is the smallest honest "across consecutive
+ * turns": one cold start re-paying a prefix is normal (idle kill,
+ * restart); two in a row is the fingerprint of a prefix that keeps
+ * changing. Deliberately small so the measurement scenario (a cold start
+ * that follows a prompt change) trips it without a long setup.
+ */
+export const CACHE_INSTABILITY_TURNS = 2;
+
+/** One completed Agent turn's cache split — mirrors the server's
+ * `SessionCacheTurn` (shared `SessionResponse.recentCacheTurns`). */
+export type CacheTurn = { readTokens: number; writeTokens: number };
+
+/**
+ * The context card's cache-instability warning (issue #271): true when the
+ * most recent `CACHE_INSTABILITY_TURNS` completed turns each paid more in
+ * cache writes than they served from cache reads — the signature of a
+ * prompt prefix that keeps changing between turns (a rebuilt system prompt
+ * at a cold start, a re-ordered tool list), since within a live Session
+ * dilna's prefix is byte-stable and reads dominate. `turns` is oldest-last;
+ * fewer completed turns than the window, or turns with no cache reporting
+ * at all (both zero), never warn.
+ */
+export function cacheInstabilityWarning(turns: CacheTurn[]): boolean {
+	if (turns.length < CACHE_INSTABILITY_TURNS) return false;
+	const recent = turns.slice(-CACHE_INSTABILITY_TURNS);
+	return recent.every((t) => t.writeTokens > t.readTokens && t.writeTokens > 0);
+}
+
+/** The warning's copy, naming the fingerprint and the likely cause. */
+export function cacheInstabilityCopy(turns: CacheTurn[]): string {
+	const recent = turns.slice(-CACHE_INSTABILITY_TURNS);
+	const reads = recent.reduce((sum, t) => sum + t.readTokens, 0);
+	const writes = recent.reduce((sum, t) => sum + t.writeTokens, 0);
+	return (
+		`Cache keeps missing — writes exceeded reads on ${CACHE_INSTABILITY_TURNS} ` +
+		`consecutive turns (${formatTokenCount(writes)} written vs ` +
+		`${formatTokenCount(reads)} read). The prompt prefix is probably ` +
+		`changing between turns; check what rebuilds it at cold starts.`
+	);
+}

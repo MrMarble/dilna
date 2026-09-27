@@ -15,13 +15,19 @@ import {
 	GitCommitHorizontal,
 	PanelRightClose,
 	Pencil,
+	TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { api, artefactUrl } from "@/api/client";
 import { ArtefactViewer } from "@/components/ArtefactViewer";
 import { ARTEFACT_KIND_ICONS } from "@/components/artefact-render";
+import { useSessionCacheTurns } from "@/hooks/useSessionCacheTurns";
 import { useSessionContextUsage } from "@/hooks/useSessionContextUsage";
 import { useSessionUsage } from "@/hooks/useSessionUsage";
+import {
+	cacheInstabilityCopy,
+	cacheInstabilityWarning,
+} from "@/lib/cache-health";
 import {
 	contextUsageBarColor,
 	contextUsagePct,
@@ -371,8 +377,32 @@ function SessionSection({
 				<FactRow label="Last active" value={timeAgo(session.lastActiveAt)} />
 				{showTokens && <SessionTokensRow sessionId={session.id} />}
 				<SessionContextRow sessionId={session.id} />
+				<SessionCacheHealthRow sessionId={session.id} />
 			</div>
 		</SectionCard>
+	);
+}
+
+/**
+ * Cache-instability warning (issue #271) — visible only when the recent
+ * consecutive turns paid more in cache writes than they served from reads:
+ * the fingerprint of a prompt prefix that keeps changing between turns
+ * (within a live Session dilna's prefix is byte-stable, so healthy sessions
+ * read from cache and this row never renders). Deliberately a quiet amber
+ * line, not an error — a cold start re-paying a prefix once is normal;
+ * twice in a row is what's worth noticing.
+ */
+function SessionCacheHealthRow({ sessionId }: { sessionId: string }) {
+	const turns = useSessionCacheTurns(sessionId);
+	if (!cacheInstabilityWarning(turns)) return null;
+	return (
+		<div
+			className="flex items-start gap-1.5 pt-0.5 text-xs text-warning"
+			title="Per-turn cache split from usage_events"
+		>
+			<TriangleAlert className="mt-0.5 size-3 shrink-0" aria-hidden />
+			<span>{cacheInstabilityCopy(turns)}</span>
+		</div>
 	);
 }
 
