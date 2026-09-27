@@ -7,9 +7,9 @@
  * result is spread at module scope in `worktreeSandbox.ts`, so it must
  * stay an iterable of paths).
  */
-export class SandboxManager {
-	static async initialize() {}
-}
+export const SandboxManager = {
+	initialize: async () => {},
+};
 
 export function getDefaultWritePaths() {
 	return [

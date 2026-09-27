@@ -44,33 +44,10 @@ const STATE_FILE =
 	process.env.CACHE_SPY_STATE ||
 	path.join(process.cwd(), "cache-spy-state.json");
 
-// Providers match cached prefixes on CONTENT; where the cache_control
-// breakpoints were placed last request is bookkeeping (they move with each
-// request), so strip them before hashing.
-function stripCacheControl(value) {
-	if (Array.isArray(value)) return value.map(stripCacheControl);
-	if (value && typeof value === "object") {
-		const out = {};
-		for (const [k, v] of Object.entries(value)) {
-			if (k === "cache_control") continue;
-			out[k] = stripCacheControl(v);
-		}
-		return out;
-	}
-	return value;
-}
-
-// sha256 over the canonical boundary; 32 hex chars are plenty for a
-// fixture-run table.
-function boundaryKey(system, messages) {
-	const h = crypto.createHash("sha256");
-	h.update(
-		JSON.stringify({
-			system: stripCacheControl(system),
-			messages: stripCacheControl(messages),
-		}),
-	);
-	return h.digest("hex").slice(0, 32);
+// sha256 over the canonical content boundary; 32 hex chars are plenty for
+// a fixture-run table.
+function hashText(text) {
+	return crypto.createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
 
 // chars/4 — the same flat estimate pi-agent-core's estimator uses.
@@ -109,25 +86,28 @@ function cacheSplit(body) {
 				.map((b) => (typeof b === "string" ? b : (b.text ?? "")))
 				.join("")
 		: "";
-	const messages = body.messages ?? [];
-	// Cumulative boundaries over the whole request — the provider caches
-	// everything it has seen, including the current trailing user turn.
+	// pi-agent-core carries zero-content internal `system` entries in its
+	// message array at positions that differ between a live turn and a
+	// replayed one — they never reach the wire as messages (system content
+	// rides the `system` param), so they are dropped from the cache stream.
+	const messages = (body.messages ?? []).filter(
+		(m) => m.role !== "system" && messageText(m.content).length > 0,
+	);
+	// Boundaries are keyed on the concatenated CONTENT stream, not the
+	// message objects: a provider's cache matches bytes of content, and the
+	// same content can be split across messages differently between a live
+	// transcript and a replayed one.
 	const boundaries = [];
-	let cumulative = [];
-	for (let i = 0; i < messages.length; i++) {
-		cumulative = cumulative.concat([messages[i]]);
-		boundaries.push({
-			key: boundaryKey(system, cumulative),
-			tokens:
-				estTokens(messageText(system)) +
-				cumulative.reduce((s, m) => s + estTokens(messageText(m.content)), 0),
-		});
-	}
+	let text = system;
+	let tokens = estTokens(system);
 	if (messages.length === 0) {
-		boundaries.push({
-			key: boundaryKey(system, []),
-			tokens: estTokens(system),
-		});
+		boundaries.push({ key: hashText(text), tokens });
+	}
+	for (const m of messages) {
+		const part = messageText(m.content);
+		text += `\u0000${part}`;
+		tokens += estTokens(part);
+		boundaries.push({ key: hashText(text), tokens });
 	}
 
 	let readTokens = 0;
@@ -136,10 +116,7 @@ function cacheSplit(body) {
 		if (state.boundaries[boundaries[i].key] !== undefined) matched = i;
 	}
 	if (matched >= 0) readTokens = boundaries[matched].tokens;
-	const total =
-		boundaries.length > 0
-			? boundaries[boundaries.length - 1].tokens
-			: estTokens(system);
+	const total = tokens;
 	const writeTokens = Math.max(0, total - readTokens);
 
 	for (const b of boundaries) state.boundaries[b.key] = true;
@@ -312,7 +289,15 @@ globalThis.fetch = async function patchedFetch(input, init) {
 	const url = typeof input === "string" ? input : input.url;
 	const body = init?.body ? JSON.parse(init.body) : {};
 
-	dbg({ url, method: init?.method, keys: Object.keys(body ?? {}) });
+	dbg({
+		url,
+		method: init?.method,
+		roles: (body.messages ?? []).map((m) => ({
+			role: m.role,
+			len: messageText(m.content).length,
+			head: messageText(m.content).slice(0, 60),
+		})),
+	});
 	if (url.includes("/v1/messages")) {
 		const systemText =
 			typeof body.system === "string"

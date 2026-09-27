@@ -167,9 +167,14 @@ function enableOneMoreSkill() {
 let turnSeq = 0;
 async function runTurn(sessionId) {
 	turnSeq += 1;
-	await api("POST", `/sessions/${sessionId}/messages`, {
-		text: `Turn ${turnSeq}: inspect the fixture. @@tool:read:{"path":"big.txt"}`,
-	});
+	// Turn 1 exercises the real read tool (establishing a big cached prefix);
+	// later turns add only a few tokens of new content, so the write side
+	// measures prefix re-payment rather than legitimate new tool output.
+	const text =
+		turnSeq === 1
+			? 'Turn 1: inspect the fixture. @@tool:read:{"path":"big.txt"}'
+			: `Turn ${turnSeq}: status check, no tools needed.`;
+	await api("POST", `/sessions/${sessionId}/messages`, { text });
 	// Tap the SSE stream so a failure surfaces with its actual detail.
 	const controller = new AbortController();
 	const sseDone = fetch(`${baseUrl}/api/sessions/${sessionId}/stream`, {
