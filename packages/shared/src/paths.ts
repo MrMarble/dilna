@@ -33,6 +33,10 @@ export const paths = {
 		pull: (repoId: string) => `/api/repos/${enc(repoId)}/pull`,
 		sync: (repoId: string) => `/api/repos/${enc(repoId)}/sync`,
 	},
+	/** `GET /api/truncated/:hash` — the full original behind a trim marker
+	 * (#273). A plain relative path, like the attachment/artefact URLs: the
+	 * API is unauthenticated on a default deployment and same-origin. */
+	truncated: (hash: string) => `/api/truncated/${enc(hash)}`,
 	sessions: {
 		list: (repoId?: string) =>
 			repoId ? `/api/sessions?repoId=${enc(repoId)}` : "/api/sessions",
@@ -55,6 +59,9 @@ export const paths = {
 		queue: (sessionId: string) => `/api/sessions/${enc(sessionId)}/queue`,
 		queuedMessage: (sessionId: string, queuedId: string) =>
 			`/api/sessions/${enc(sessionId)}/queue/${enc(queuedId)}`,
+		/** `GET` the per-call tool-output trims the seeder applies (issue
+		 * #272/#273) — derived from persisted rows + the shared policy. */
+		trims: (sessionId: string) => `/api/sessions/${enc(sessionId)}/trims`,
 		/** `POST` to upload a file. */
 		attachments: (sessionId: string) =>
 			`/api/sessions/${enc(sessionId)}/attachments`,

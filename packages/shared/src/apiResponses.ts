@@ -117,6 +117,27 @@ export type SessionCacheTurn = {
 /** `GET /api/sessions/:id/messages` */
 export type SessionMessagesResponse = { messages: Message[] };
 
+/**
+ * One tool-call part whose output the seeder trims (issue #272) — derived
+ * from the persisted rows by the same walk the seeder runs, so it survives
+ * reloads. `hash` names the full original on disk (#273), retrievable from
+ * `GET /api/truncated/:hash`.
+ */
+export type ToolOutputTrim = {
+	callId: string;
+	tool: string;
+	path: string | null;
+	/** Content hash of the original output (sha256 hex). */
+	hash: string;
+	originalChars: number;
+	originalLines: number;
+	removedChars: number;
+	removedLines: number;
+};
+
+/** `GET /api/sessions/:id/trims` */
+export type SessionTrimsResponse = { trims: ToolOutputTrim[] };
+
 /** `GET /api/sessions/:id/changed-files` */
 export type ChangedFilesResponse = { files: ChangedFile[] };
 

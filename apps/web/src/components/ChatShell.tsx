@@ -5,6 +5,7 @@ import {
 	type MessagePart,
 	type QueuedMessage,
 	type SessionView,
+	type ToolOutputTrim,
 	type TurnScore,
 } from "@dilna/shared";
 import {
@@ -17,6 +18,7 @@ import {
 	ListTree,
 	LoaderCircle,
 	Plus,
+	Scissors,
 	Send,
 	Square,
 	User,
@@ -32,7 +34,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { ApiError, api, attachmentUrl } from "@/api/client";
+import { ApiError, api, attachmentUrl, truncatedUrl } from "@/api/client";
 import { SlashCommandMenu } from "@/components/SlashCommandMenu";
 import {
 	ScoreTurnButton,
@@ -63,6 +65,7 @@ import {
 } from "@/hooks/usePendingAttachments";
 import { useRepoSkills } from "@/hooks/useRepoSkills";
 import { useSessionDraft } from "@/hooks/useSessionDraft";
+import { useSessionTrims } from "@/hooks/useSessionTrims";
 import { AgentIcon } from "@/lib/agent-icons";
 import { assistantDisplayName } from "@/lib/agent-labels";
 import {
@@ -187,6 +190,9 @@ export function ChatShell({
 	// is what Escape sets: the query can still be a valid `/ver`, so without it
 	// the menu would reopen on the very next keystroke.
 	const repoSkills = useRepoSkills(session.repoId);
+	// Which tool calls the seeder trims (issue #273) — fetched once per
+	// session and threaded to the markers, the same way turnActivity flows.
+	const trims = useSessionTrims(session.id);
 	const [slashDismissed, setSlashDismissed] = useState(false);
 	const [slashIndex, setSlashIndex] = useState(0);
 	const slashMatches = useMemo(() => {
@@ -576,6 +582,7 @@ export function ChatShell({
 														isStreaming={m.id in live}
 														thinkingChunk={thinkingBuffers[m.id]}
 														turnActivity={turnActivity}
+														trims={trims}
 													/>
 												</MessageScrollerItem>
 											),
@@ -1042,6 +1049,7 @@ function ChatMessageRow({
 	isStreaming,
 	thinkingChunk,
 	turnActivity,
+	trims,
 }: {
 	id: string;
 	sessionId: string;
@@ -1062,6 +1070,7 @@ function ChatMessageRow({
 	isStreaming?: boolean;
 	thinkingChunk?: string;
 	turnActivity?: TurnActivity | null;
+	trims?: Map<string, ToolOutputTrim>;
 }) {
 	const name =
 		role === "user" ? "You" : assistantDisplayName(modelName, agentType);
@@ -1076,6 +1085,7 @@ function ChatMessageRow({
 					key={`g-${rows.length}`}
 					parts={toolBuffer}
 					turnActivity={turnActivity}
+					trims={trims}
 				/>,
 			);
 			toolBuffer = [];
@@ -1257,9 +1267,11 @@ function ThinkingBlock({
 function ToolCallGroup({
 	parts,
 	turnActivity,
+	trims,
 }: {
 	parts: Extract<MessagePart, { type: "tool_call" }>[];
 	turnActivity?: TurnActivity | null;
+	trims?: Map<string, ToolOutputTrim>;
 }) {
 	const running = parts.some((p) => p.output == null && p.error == null);
 	// Live-streaming groups mount open so the user sees tools as they run;
@@ -1299,6 +1311,7 @@ function ToolCallGroup({
 								key={p.callId}
 								part={p}
 								turnActivity={turnActivity}
+								trim={trims?.get(p.callId)}
 							/>
 						))}
 					</div>
@@ -1311,9 +1324,11 @@ function ToolCallGroup({
 function ToolCallMarker({
 	part,
 	turnActivity,
+	trim,
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
 	turnActivity?: TurnActivity | null;
+	trim?: ToolOutputTrim;
 }) {
 	const [open, setOpen] = useState(false);
 	const running = part.output == null && part.error == null;
@@ -1407,6 +1422,27 @@ function ToolCallMarker({
 						{task.toolUses === 1 ? "" : "s"}
 						{task.lastTool ? ` (${task.lastTool})` : ""}
 					</span>
+				</div>
+			)}
+			{trim && (
+				// The seed-time trim, shown explicitly on the marker (issue
+				// #273). The transcript itself still holds the full output —
+				// this says what the MODEL sees, and hands a person the
+				// original.
+				<div className="flex items-center gap-1.5 border-t border-border px-2.5 py-1 text-xs text-muted-foreground">
+					<Scissors className="size-3 shrink-0" />
+					<span className="truncate">
+						trimmed for the model — {trim.removedLines} lines /{" "}
+						{trim.removedChars} chars removed
+					</span>
+					<a
+						href={truncatedUrl(trim.hash)}
+						target="_blank"
+						rel="noreferrer"
+						className="ml-auto shrink-0 text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+					>
+						view original
+					</a>
 				</div>
 			)}
 			{open && hasDetails && (

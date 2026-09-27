@@ -80,6 +80,7 @@ vi.mock("@/api/client", () => ({
 			}),
 			messages: async () => ({ messages: [] }),
 			stream: () => () => {},
+			trims: async () => ({ trims: [] }),
 			send: async () => ({ ok: true, message: USER_MESSAGE }),
 			queueMessage: async () => ({ ok: true, entry: QUEUED_MESSAGE }),
 			queuedMessages: async () => ({ queued: [] }),

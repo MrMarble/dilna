@@ -232,6 +232,13 @@
 			"when": 1790488955052,
 			"tag": "0032_cultured_forge",
 			"breakpoints": true
+		},
+		{
+			"idx": 33,
+			"version": "6",
+			"when": 1790545273068,
+			"tag": "0033_remarkable_mathemanic",
+			"breakpoints": true
 		}
 	]
 }

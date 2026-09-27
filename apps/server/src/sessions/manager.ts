@@ -18,6 +18,7 @@ import type {
 	SessionKind,
 	SessionListEvent,
 	SessionView,
+	ToolOutputTrim,
 } from "@dilna/shared";
 import { isTurnCompletion } from "@dilna/shared";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
@@ -69,6 +70,7 @@ import { type Listener, SessionBroadcaster } from "./broadcaster";
 import {
 	buildInitialMessages,
 	checkSessionContext,
+	collectSessionTrims,
 	estimateAgentContextHeuristically,
 	estimateLiveAgentContext,
 	estimateSessionContext,
@@ -92,6 +94,7 @@ import {
 	sessionCompactionOf,
 	toView,
 } from "./sessionStore";
+import { storeTruncationsForRows } from "./truncatedStore";
 import { TurnLedger } from "./turnLedger";
 import { type Turn, TurnRegistry } from "./turnRegistry";
 import { accumulateSessionUsage } from "./usageAccounting";
@@ -506,6 +509,23 @@ export class SessionManager {
 			history,
 			sessionCompactionOf(session),
 		);
+	}
+
+	/**
+	 * `GET /api/sessions/:id/trims`' data (issue #273): the tool-output
+	 * trims the seeder applies to this Session's history, derived from the
+	 * persisted rows by the same walk the seeder runs — so the UI's trim
+	 * markers survive reloads. The pending user row is filtered exactly like
+	 * the estimate paths (not yet prior context).
+	 */
+	async getTrims(id: string): Promise<ToolOutputTrim[]> {
+		const session = await this.get(id);
+		if (!session) return [];
+		const pendingId = messageStore.pendingUserMessageId(id);
+		const history = (await this.getMessages(id)).filter(
+			(m) => m.id !== pendingId,
+		);
+		return collectSessionTrims(history);
 	}
 
 	/**
@@ -1658,6 +1678,14 @@ export class SessionManager {
 				// replace it. Promoting also frees the stable `pending-user-<id>`
 				// id for the next turn's `beginTurn` INSERT.
 				messageStore.promotePendingUserMessage(id);
+				// Reversibility for the trims (#273): the just-persisted rows'
+				// sizeable tool outputs land in the content-addressed original
+				// store, so every seed-time trim marker has its full text
+				// recoverable by hash. Reads the rows, never writes them.
+				storeTruncationsForRows(
+					id,
+					messageStore.getMessages(id).filter((m) => m.turnId === turnId),
+				);
 				// The turn's rows are now in the DB (or promoted) — the in-memory
 				// snapshot has served its purpose. Cleared only after persisting so
 				// a subscriber connecting in between never sees neither.

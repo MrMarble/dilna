@@ -58,6 +58,7 @@ import type {
 	SessionListEvent,
 	SessionMessagesResponse,
 	SessionResponse,
+	SessionTrimsResponse,
 	SessionView,
 	SetCredentialBody,
 	SetOverrideResponse,
@@ -254,6 +255,16 @@ export function artefactUrl(sessionId: string, artefactId: string): string {
 	return paths.sessions.artefact(sessionId, artefactId);
 }
 
+/**
+ * URL that serves the full original behind a trimmed tool output (issue
+ * #273) — the "view original" link target on a trim marker. Relative, like
+ * {@link attachmentUrl}: the browser opens it directly as plain text, no
+ * auth headers (the API is unauthenticated on a default deployment).
+ */
+export function truncatedUrl(hash: string): string {
+	return paths.truncated(hash);
+}
+
 export class ApiError extends Error {
 	constructor(
 		public status: number,
@@ -431,6 +442,11 @@ export const api = {
 		 * for handing a session's history to another agent. */
 		transcriptUrl: (id: string) =>
 			new URL(paths.sessions.transcript(id), window.location.origin).toString(),
+		/** The tool-output trims the seeder applies to this Session's history
+		 * (issue #272/#273) — powers the tool-call markers' "trimmed" line
+		 * and their view-original links. */
+		trims: (id: string) =>
+			request<SessionTrimsResponse>(paths.sessions.trims(id)),
 		/** Subscribe to a session's live SSE stream.
 		 *
 		 * Multiple subscribers to the same `id` share one `EventSource` via
