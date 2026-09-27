@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	type CacheTurn,
 	cacheHealthBarColor,
 	cacheHealthTone,
 	cacheHealthTooltip,
+	cacheInstabilityWarning,
 	formatHitRate,
 } from "./cache-health";
 
@@ -65,5 +67,43 @@ describe("cacheHealthTooltip", () => {
 
 	it("says there is nothing to measure for a null rate", () => {
 		expect(cacheHealthTooltip(null, 0, 0, 0)).toContain("Nothing to measure");
+	});
+});
+
+describe("cacheInstabilityWarning", () => {
+	const readTurn: CacheTurn = { readTokens: 900, writeTokens: 100 };
+	const writeTurn: CacheTurn = { readTokens: 100, writeTokens: 900 };
+
+	it("warns when the last two consecutive turns are both write-dominant", () => {
+		expect(cacheInstabilityWarning([readTurn, writeTurn, writeTurn])).toBe(
+			true,
+		);
+	});
+
+	it("stays quiet on a healthy cached session", () => {
+		expect(cacheInstabilityWarning([readTurn, readTurn, readTurn])).toBe(false);
+	});
+
+	it("needs the turns to be consecutive — a healthy latest turn clears it", () => {
+		expect(cacheInstabilityWarning([writeTurn, writeTurn, readTurn])).toBe(
+			false,
+		);
+		expect(cacheInstabilityWarning([writeTurn, readTurn, writeTurn])).toBe(
+			false,
+		);
+	});
+
+	it("never warns on fewer turns than the window", () => {
+		expect(cacheInstabilityWarning([])).toBe(false);
+		expect(cacheInstabilityWarning([writeTurn])).toBe(false);
+	});
+
+	it("ignores turns with no cache reporting at all", () => {
+		expect(
+			cacheInstabilityWarning([
+				{ readTokens: 0, writeTokens: 0 },
+				{ readTokens: 0, writeTokens: 0 },
+			]),
+		).toBe(false);
 	});
 });

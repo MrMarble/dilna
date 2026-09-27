@@ -104,7 +104,11 @@ export function createSessionsRoute(deps: {
 		const contextUsage = await deps.sessions.getContextUsageEstimate(
 			session.id,
 		);
-		const body: SessionResponse = { session: toView(session), contextUsage };
+		const body: SessionResponse = {
+			session: toView(session),
+			contextUsage,
+			recentCacheTurns: deps.sessions.getRecentCacheTurns(session.id),
+		};
 		return c.json(body);
 	});
 
@@ -184,7 +188,11 @@ export function createSessionsRoute(deps: {
 					{ provider: body.provider, model: body.model },
 				);
 				// A brand-new Session has no turns yet — nothing to estimate.
-				const res: SessionResponse = { session, contextUsage: null };
+				const res: SessionResponse = {
+					session,
+					contextUsage: null,
+					recentCacheTurns: [],
+				};
 				return c.json(res, 201);
 			} catch (err) {
 				if (err instanceof RepoNotFoundError) {
@@ -206,7 +214,11 @@ export function createSessionsRoute(deps: {
 		try {
 			const session = await deps.sessions.createOrchestrator();
 			// Orchestrator Sessions never get compaction/context reporting.
-			const res: SessionResponse = { session, contextUsage: null };
+			const res: SessionResponse = {
+				session,
+				contextUsage: null,
+				recentCacheTurns: [],
+			};
 			return c.json(res, 201);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : "create failed";

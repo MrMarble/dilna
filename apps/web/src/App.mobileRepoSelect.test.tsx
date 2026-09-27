@@ -62,13 +62,22 @@ vi.mock("@/api/client", () => ({
 			pull: async (id: string) => ({ repo: { ...REPO, id } }),
 		},
 		sessions: {
-			create: async () => ({ session: NEWER_SESSION, contextUsage: null }),
+			create: async () => ({
+				session: NEWER_SESSION,
+				contextUsage: null,
+				recentCacheTurns: [],
+			}),
 			createOrchestrator: async () => ({
 				session: NEWER_SESSION,
 				contextUsage: null,
+				recentCacheTurns: [],
 			}),
 			delete: async (id: string) => ({ ok: true, id }),
-			get: async () => ({ session: NEWER_SESSION, contextUsage: null }),
+			get: async () => ({
+				session: NEWER_SESSION,
+				contextUsage: null,
+				recentCacheTurns: [],
+			}),
 			messages: async () => ({ messages: [] }),
 			stream: () => () => {},
 			send: async () => ({ ok: true, message: USER_MESSAGE }),
