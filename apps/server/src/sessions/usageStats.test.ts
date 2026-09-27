@@ -32,6 +32,11 @@ function seedRow(overrides: {
 	outputTokens?: number;
 	costUsd?: number;
 	purpose?: string;
+	sessionId?: string;
+	provider?: string;
+	model?: string;
+	cacheReadTokens?: number;
+	cacheWriteTokens?: number;
 }) {
 	getDb()
 		.insert(usageEventsTable)
@@ -60,6 +65,8 @@ describe("getUsageSummary", () => {
 			cacheWriteTokens: 0,
 			reasoningTokens: 0,
 			costUsd: 0,
+			// Nothing to measure is null, never a misleading 0% (issue #266).
+			cacheHitRate: null,
 		});
 		expect(summary.daily).toEqual([]);
 		expect(summary.dailyByModel).toEqual([]);
@@ -124,6 +131,104 @@ describe("getUsageSummary", () => {
 				}),
 			]),
 		);
+	});
+
+	it("computes the cache hit rate per slice, null where there is nothing to measure (issue #266)", () => {
+		const now = Math.floor(Date.now() / 1000);
+		const before = getUsageSummary(0);
+
+		// Healthy turn: 300 of the 450 prompt-side tokens served from cache.
+		seedRow({
+			id: "cache-a",
+			repoId: "cache-repo-1",
+			sessionId: "cache-session-1",
+			provider: "p1",
+			model: "m1",
+			createdAt: now,
+			inputTokens: 100,
+			cacheReadTokens: 300,
+			cacheWriteTokens: 50,
+		});
+		// Write-heavy turn on every cut: everything re-written, nothing read.
+		seedRow({
+			id: "cache-b",
+			repoId: "cache-repo-2",
+			sessionId: "cache-session-2",
+			provider: "p1",
+			model: "m2",
+			createdAt: now,
+			inputTokens: 10,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 90,
+		});
+		// A fully-cached turn two days back, so the per-day trend gets its own
+		// bucket nobody else seeded.
+		seedRow({
+			id: "cache-c",
+			repoId: "cache-repo-1",
+			sessionId: "cache-session-1",
+			provider: "p1",
+			model: "m1",
+			createdAt: now - 2 * DAY,
+			inputTokens: 0,
+			cacheReadTokens: 500,
+			cacheWriteTokens: 0,
+		});
+		// An output-only turn four days back: prompt-side denominator 0 —
+		// the rate must read as null ("nothing to measure"), not 0%.
+		seedRow({
+			id: "cache-d",
+			repoId: "cache-repo-3",
+			sessionId: "cache-session-3",
+			provider: "p1",
+			model: "m3",
+			createdAt: now - 4 * DAY,
+			inputTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+		});
+
+		const summary = getUsageSummary(0);
+
+		// Totals pool every slice's components before dividing — never a
+		// ratio-of-ratios.
+		const read = before.totals.cacheReadTokens + 300 + 0 + 500 + 0;
+		const write = before.totals.cacheWriteTokens + 50 + 90 + 0 + 0;
+		const uncached = before.totals.inputTokens + 100 + 10 + 0 + 0;
+		expect(summary.totals.cacheHitRate).toBeCloseTo(
+			read / (read + write + uncached),
+			6,
+		);
+
+		const repo1 = summary.byRepo.find((r) => r.repoId === "cache-repo-1");
+		const repo2 = summary.byRepo.find((r) => r.repoId === "cache-repo-2");
+		const repo3 = summary.byRepo.find((r) => r.repoId === "cache-repo-3");
+		// cache-a + cache-c pool: 800 read of a 950 prompt-side denominator.
+		expect(repo1?.cacheHitRate).toBeCloseTo(800 / 950, 6);
+		expect(repo2?.cacheHitRate).toBe(0);
+		expect(repo3?.cacheHitRate).toBeNull();
+
+		const model1 = summary.byModel.find((m) => m.model === "m1");
+		const model2 = summary.byModel.find((m) => m.model === "m2");
+		const model3 = summary.byModel.find((m) => m.model === "m3");
+		expect(model1?.cacheHitRate).toBeCloseTo(800 / 950, 6);
+		expect(model2?.cacheHitRate).toBe(0);
+		expect(model3?.cacheHitRate).toBeNull();
+
+		const session1 = summary.topSessions.find(
+			(s) => s.sessionId === "cache-session-1",
+		);
+		const session2 = summary.topSessions.find(
+			(s) => s.sessionId === "cache-session-2",
+		);
+		expect(session1?.cacheHitRate).toBeCloseTo(800 / 950, 6);
+		expect(session2?.cacheHitRate).toBe(0);
+
+		const dayOf = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
+		const coldDay = summary.daily.find((d) => d.date === dayOf(now - 2 * DAY));
+		expect(coldDay?.cacheHitRate).toBe(1);
+		const emptyDay = summary.daily.find((d) => d.date === dayOf(now - 4 * DAY));
+		expect(emptyDay?.cacheHitRate).toBeNull();
 	});
 
 	it("since=0 includes every row regardless of age", () => {

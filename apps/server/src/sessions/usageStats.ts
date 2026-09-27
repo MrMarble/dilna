@@ -26,6 +26,7 @@ const ZERO_TOTALS: UsageTotalsDetailed = {
 	cacheWriteTokens: 0,
 	reasoningTokens: 0,
 	costUsd: 0,
+	cacheHitRate: null,
 };
 
 // SUM() over an empty group returns NULL, not 0 — coalesce so every
@@ -39,6 +40,48 @@ const SUM_COLUMNS = {
 	reasoningTokens: sql<number>`coalesce(sum(${usageEventsTable.reasoningTokens}), 0)`,
 	costUsd: sql<number>`coalesce(sum(${usageEventsTable.costUsd}), 0)`,
 };
+
+/**
+ * Cache hit rate over one slice of `usage_events` (issue #266): cache reads
+ * over everything the prompt side cost — read + write + uncached input
+ * (`input_tokens` is the non-cached portion; cache tokens are recorded
+ * separately). The denominator deliberately excludes output/reasoning:
+ * compaction-eligible output doesn't tell you anything about whether the
+ * *prompt prefix* was reused. `null` when the slice has no input-side
+ * tokens — an empty range, or a slice of output-only rows — so callers can
+ * render "—" instead of a misleading 0% (0% would read as "every turn was
+ * a cache miss" when it really means "nothing to measure").
+ *
+ * Worth knowing while reading it: dilna's request prefix is byte-stable
+ * across the turns of a *live* Session, so a healthy-looking rate on a warm
+ * Session is expected; invalidation shows up across cold starts (idle kill,
+ * restart, post-compaction respawn), which is what the write-side of the
+ * ratio is there to expose.
+ */
+function cacheHitRateOf(row: {
+	inputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+}): number | null {
+	const denominator =
+		row.cacheReadTokens + row.cacheWriteTokens + row.inputTokens;
+	return denominator > 0 ? row.cacheReadTokens / denominator : null;
+}
+
+/** Attach the slice's computed hit rate to one aggregate row — the raw
+ * components are already in `SUM_COLUMNS`' output, the rate is derived, so
+ * it's stamped on after the query rather than summed in SQL. Takes the raw
+ * sums shape (not `UsageTotalsDetailed`) because that's what the SQL rows
+ * are before the stamp. */
+function withCacheHitRate<
+	T extends {
+		inputTokens: number;
+		cacheReadTokens: number;
+		cacheWriteTokens: number;
+	},
+>(row: T): T & { cacheHitRate: number | null } {
+	return { ...row, cacheHitRate: cacheHitRateOf(row) };
+}
 
 const DAY_BUCKET = sql`date(${usageEventsTable.createdAt}, 'unixepoch')`;
 
@@ -65,7 +108,8 @@ export function getUsageSummary(since: number): UsageSummary {
 		.where(where)
 		.groupBy(DAY_BUCKET)
 		.orderBy(DAY_BUCKET)
-		.all() as UsageDailyPoint[];
+		.all()
+		.map(withCacheHitRate) as UsageDailyPoint[];
 
 	const dailyByModel = db
 		.select({
@@ -78,14 +122,16 @@ export function getUsageSummary(since: number): UsageSummary {
 		.where(where)
 		.groupBy(DAY_BUCKET, usageEventsTable.provider, usageEventsTable.model)
 		.orderBy(DAY_BUCKET)
-		.all() as UsageDailyModelBreakdown[];
+		.all()
+		.map(withCacheHitRate) as UsageDailyModelBreakdown[];
 
 	const byRepo = db
 		.select({ repoId: usageEventsTable.repoId, ...SUM_COLUMNS })
 		.from(usageEventsTable)
 		.where(where)
 		.groupBy(usageEventsTable.repoId)
-		.all() as UsageRepoBreakdown[];
+		.all()
+		.map(withCacheHitRate) as UsageRepoBreakdown[];
 	byRepo.sort((a, b) => b.costUsd - a.costUsd);
 
 	const byModel = db
@@ -97,7 +143,8 @@ export function getUsageSummary(since: number): UsageSummary {
 		.from(usageEventsTable)
 		.where(where)
 		.groupBy(usageEventsTable.provider, usageEventsTable.model)
-		.all() as UsageModelBreakdown[];
+		.all()
+		.map(withCacheHitRate) as UsageModelBreakdown[];
 	byModel.sort((a, b) => b.costUsd - a.costUsd);
 
 	const topSessions = getTopSessions(where);
@@ -110,10 +157,11 @@ export function getUsageSummary(since: number): UsageSummary {
 		.from(usageEventsTable)
 		.where(where)
 		.groupBy(usageEventsTable.purpose)
-		.all() as UsagePurposeBreakdown[];
+		.all()
+		.map(withCacheHitRate) as UsagePurposeBreakdown[];
 
 	return {
-		totals: totals ?? { ...ZERO_TOTALS },
+		totals: withCacheHitRate(totals ?? { ...ZERO_TOTALS }),
 		daily,
 		dailyByModel,
 		byRepo,
@@ -144,7 +192,11 @@ function getTopSessions(
 		.from(usageEventsTable)
 		.where(where)
 		.groupBy(usageEventsTable.sessionId, usageEventsTable.repoId)
-		.all() as (UsageTotalsDetailed & { sessionId: string; repoId: string })[];
+		.all()
+		.map(withCacheHitRate) as (UsageTotalsDetailed & {
+		sessionId: string;
+		repoId: string;
+	})[];
 	bySession.sort((a, b) => b.costUsd - a.costUsd);
 	const top = bySession.slice(0, TOP_SESSIONS_LIMIT);
 	if (top.length === 0) return [];

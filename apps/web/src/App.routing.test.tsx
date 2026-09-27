@@ -117,6 +117,7 @@ vi.mock("@/api/client", () => ({
 						cacheWriteTokens: 0,
 						reasoningTokens: 0,
 						costUsd: 0,
+						cacheHitRate: null,
 					},
 					daily: [],
 					dailyByModel: [],
