@@ -27,6 +27,48 @@ export function isDilnaProvider(value: string): value is DilnaProvider {
 }
 
 /**
+ * pi-agent-core's own estimator constant: `estimateTokens` charges every
+ * message `Math.ceil(chars / 4)`. It is the baseline dilna's calibration
+ * scales, and what providers without a measured constant keep using.
+ */
+export const LIBRARY_CHARS_PER_TOKEN = 4;
+
+/**
+ * Per-provider `charsPerToken` for dilna's own context estimator (issue
+ * #270): tokens ≈ chars / constant, replacing the library's flat `chars/4`
+ * on the estimation path. All four allowlisted providers run BPE tokenizers
+ * trained on code-heavy multilingual corpora, which pack denser than the
+ * plain-English `chars/4` assumption — fewer chars per token means the
+ * flat constant *under*-counts, and under-counting is the dangerous
+ * direction (compaction fires too late and the real window overflows), so
+ * every value here sits below 4.
+ *
+ * These are the *initial priors* (ADR-0048), ordered by how much
+ * non-English/code mass each provider's training mix is publicly known to
+ * carry. The recorded measurement that replaces them is
+ * `sessions/charCalibration.ts` + `scripts/measure-chars-per-token.ts`, run
+ * over a real instance's `usage_events` (the provider-reported context
+ * tokens #267 stamps are the ground truth) once real Sessions have
+ * accumulated; until then the drift log and the Metrics page's drift list
+ * flag any provider whose constant is wrong.
+ */
+export const PROVIDER_CHARS_PER_TOKEN: Record<DilnaProvider, number> = {
+	anthropic: 3.8,
+	deepseek: 3.5,
+	moonshotai: 3.7,
+	zai: 3.6,
+};
+
+/** The calibrated constant for `provider` — allowlisted providers get their
+ * measured/prior value, anything else (custom providers, unknown ids) the
+ * library's flat `chars/4`, i.e. exactly today's behavior. */
+export function charsPerTokenFor(provider: string): number {
+	return isDilnaProvider(provider)
+		? PROVIDER_CHARS_PER_TOKEN[provider]
+		: LIBRARY_CHARS_PER_TOKEN;
+}
+
+/**
  * The `pi-ai` `Api` shapes dilna's custom-provider support (customProviders.ts)
  * lets a user pick from — the same four kinds pi's own `models.json` supports
  * (see https://pi.dev/docs/latest/models): OpenAI Chat Completions, OpenAI

@@ -64,6 +64,30 @@ export type UsagePurposeBreakdown = {
 	purpose: UsagePurpose;
 } & UsageTotalsDetailed;
 
+/**
+ * A Session whose context estimate persistently disagrees with what the
+ * provider itself reports (issue #270) — surfaced on the Metrics page so a
+ * mis-calibrated `charsPerToken` is identifiable without reading raw
+ * `usage_events` rows. Only Sessions past `CONTEXT_DRIFT_THRESHOLD` (server
+ * side, `usageStats.ts`) are listed, worst first.
+ */
+export type UsageContextDrift = {
+	sessionId: string;
+	repoId: string;
+	/** Resolved server-side against the live `sessions` row or the
+	 * `sessionArchive` row (ADR-0024) — same rule as `UsageSessionBreakdown`. */
+	title: string | null;
+	/** Signed mean of `(estimated − reported) / reported` over the Session's
+	 * turns that carry both numbers. Positive = dilna over-counts (compacts
+	 * early, throws away context it didn't need to); negative = dilna
+	 * under-counts (the dangerous direction — the real window can overflow
+	 * before the meter says so). */
+	driftPct: number;
+	/** How many turns the mean is over — a drift verdict on one turn is
+	 * noise, on dozens is a calibration problem. */
+	turns: number;
+};
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
@@ -72,6 +96,10 @@ export type UsageSummary = {
 	byModel: UsageModelBreakdown[];
 	topSessions: UsageSessionBreakdown[];
 	byPurpose: UsagePurposeBreakdown[];
+	/** Sessions whose estimate vs provider-report drift is past the warn
+	 * threshold, worst first; empty when every estimator is honest (or no
+	 * turn carries both numbers yet). */
+	contextDrift: UsageContextDrift[];
 };
 
 /**

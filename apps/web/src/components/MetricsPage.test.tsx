@@ -23,6 +23,7 @@ let nextSummary: UsageSummary = {
 	byModel: [],
 	topSessions: [],
 	byPurpose: [],
+	contextDrift: [],
 };
 
 vi.mock("@/api/client", () => ({
@@ -46,6 +47,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			contextDrift: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		expect(
@@ -128,6 +130,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			byPurpose: [],
+			contextDrift: [],
 		};
 		render(
 			<MetricsPage
@@ -233,6 +236,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			byPurpose: [],
+			contextDrift: [],
 		};
 		render(
 			<MetricsPage
@@ -275,6 +279,99 @@ describe("MetricsPage", () => {
 		expect(screen.getByText("—")).toBeInTheDocument();
 	});
 
+	it("flags Sessions whose context estimate drifts past the threshold (issue #270)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [
+				{
+					sessionId: "s-over",
+					repoId: "repo-1",
+					title: "Over-counting session",
+					driftPct: 0.42,
+					turns: 12,
+				},
+				{
+					sessionId: "s-under",
+					repoId: "repo-1",
+					title: "Under-counting session",
+					driftPct: -0.61,
+					turns: 5,
+				},
+			],
+		};
+		render(
+			<MetricsPage
+				repos={[
+					{
+						id: "repo-1",
+						slug: "my-repo",
+						path: "/tmp/my-repo",
+						defaultBranch: "main",
+						remoteUrl: "https://example.com/my-repo.git",
+						createdAt: 0,
+					},
+				]}
+				onBack={() => {}}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("Context estimate drift — dilna vs provider"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Over-counting session")).toBeInTheDocument();
+		expect(screen.getByText("Under-counting session")).toBeInTheDocument();
+		// Signed, one line each: over-count amber, under-count red (the
+		// dangerous direction — compaction fires too late).
+		const over = screen.getByText("+42%");
+		expect(over.className).toContain("text-warning");
+		const under = screen.getByText("-61%");
+		expect(under.className).toContain("text-danger");
+	});
+
+	it("hides the drift section while every estimator is honest (issue #270)", async () => {
+		nextSummary = {
+			totals: {
+				...ZERO_TOTALS,
+				inputTokens: 100,
+				cacheHitRate: 0.9,
+			},
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 100,
+					costUsd: 0.005,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		// Some usage exists (the empty-state banner is gone) but no Session
+		// drifted — the card must not render at all.
+		await screen.findByText("Cache health");
+		expect(
+			screen.queryByText("Context estimate drift — dilna vs provider"),
+		).not.toBeInTheDocument();
+	});
+
 	it("names the icon-only Back button (issue #223)", async () => {
 		nextSummary = {
 			totals: { ...ZERO_TOTALS },
@@ -284,6 +381,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			contextDrift: [],
 		};
 		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);
 		await screen.findByText(/no usage recorded yet/i);

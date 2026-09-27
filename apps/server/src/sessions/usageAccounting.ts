@@ -6,6 +6,11 @@ import {
 	sessions as sessionsTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
+import { logger } from "../logger";
+import { turnDrift } from "./charCalibration";
+import { CONTEXT_DRIFT_THRESHOLD } from "./usageStats";
+
+const log = logger.child({ component: "sessions/usageAccounting" });
 
 /**
  * Token/cost accounting for a turn, extracted from `SessionManager`
@@ -36,6 +41,7 @@ export function accumulateSessionUsage(
 	sessionId: string,
 	ev: AgentStreamEvent,
 	agent: { provider: string; model: string },
+	estimatedContextTokens?: number | null,
 ): AgentStreamEvent {
 	if (ev.type !== "usage_update" || !ev.cumulative) return ev;
 	const cumulative = ev.cumulative;
@@ -80,11 +86,42 @@ export function accumulateSessionUsage(
 				// stays null when absent — e.g. an adapter that doesn't report
 				// context occupancy — never coerced to 0.
 				providerContextTokens: ev.providerContextTokens ?? null,
+				// dilna's own estimate for the same turn (issue #270), passed by
+				// the caller from the live Agent's transcript; null when the
+				// model has fallen out of the catalog (nothing to calibrate
+				// against).
+				estimatedContextTokens: estimatedContextTokens ?? null,
 			})
 			.run();
 		return updated;
 	});
 	if (!row) return ev;
+
+	// Per-turn drift signal (issue #270): both stamps on one row make the
+	// estimator's error a log line, not an argument. Aggregate drift per
+	// Session is the Metrics page's drift list (usageStats.getContextDrift);
+	// this is the per-turn tripwire past CONTEXT_DRIFT_THRESHOLD.
+	const reported = ev.providerContextTokens;
+	if (
+		reported !== undefined &&
+		reported > 0 &&
+		estimatedContextTokens != null
+	) {
+		const drift = turnDrift(estimatedContextTokens, reported);
+		if (drift !== null && Math.abs(drift) > CONTEXT_DRIFT_THRESHOLD) {
+			log.warn(
+				{
+					sessionId,
+					provider: agent.provider,
+					model: agent.model,
+					estimated: estimatedContextTokens,
+					reported,
+					driftPct: Math.round(drift * 100),
+				},
+				"context estimate drifts past threshold vs provider report",
+			);
+		}
+	}
 
 	return {
 		...ev,

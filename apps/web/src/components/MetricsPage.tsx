@@ -1,6 +1,7 @@
 import type {
 	DiskUsage,
 	Repo,
+	UsageContextDrift,
 	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
@@ -154,6 +155,10 @@ export function MetricsPage({ repos, onBack }: Props) {
 						/>
 						<TokenCompositionChart totals={summary.totals} />
 						<CachePanel summary={summary} repoNameById={repoNameById} />
+						<ContextDriftCard
+							drift={summary.contextDrift}
+							repoNameById={repoNameById}
+						/>
 						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 						<TopSessionsTable
@@ -677,6 +682,81 @@ function CacheRateTable({
 					</li>
 				))}
 			</ul>
+		</div>
+	);
+}
+
+/**
+ * Context estimate drift (issue #270) — Sessions whose dilna-side context
+ * estimate persistently disagrees with the provider's own report, the
+ * calibration alarm for `PROVIDER_CHARS_PER_TOKEN`. Only Sessions past the
+ * server-side threshold are listed (worst first), so the section is simply
+ * absent while every estimator is honest. Under-counting (negative drift)
+ * is the dangerous direction — compaction fires too late and the real
+ * window can overflow before the meter says so — hence danger red for
+ * negatives, amber for over-counting (which merely wastes context on early
+ * compaction).
+ */
+function ContextDriftCard({
+	drift,
+	repoNameById,
+}: {
+	drift: UsageContextDrift[];
+	repoNameById: Record<string, string>;
+}) {
+	if (drift.length === 0) return null;
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				Context estimate drift — dilna vs provider
+			</div>
+			<table className="w-full text-sm">
+				<thead>
+					<tr className="border-b border-border text-left text-xs text-muted-foreground">
+						<th className="px-4 py-2 font-medium">Session</th>
+						<th className="px-4 py-2 font-medium">Repo</th>
+						<th className="px-4 py-2 text-right font-medium">Drift</th>
+						<th className="px-4 py-2 text-right font-medium">Turns</th>
+					</tr>
+				</thead>
+				<tbody>
+					{drift.map((d, i) => (
+						<tr
+							key={d.sessionId}
+							className={cn("tabular-nums", i > 0 && "border-t border-border")}
+						>
+							<td className="max-w-64 truncate px-4 py-2">
+								{d.title ?? `deleted session ${d.sessionId.slice(0, 8)}…`}
+							</td>
+							<td className="px-4 py-2 font-mono text-xs text-muted-foreground">
+								{repoNameById[d.repoId] ?? `${d.repoId.slice(0, 8)}… (deleted)`}
+							</td>
+							<td
+								className={cn(
+									"px-4 py-2 text-right font-medium",
+									d.driftPct < 0 ? "text-danger" : "text-warning",
+								)}
+								title={
+									d.driftPct < 0
+										? "dilna under-counts this Session's context — compaction may fire too late and the provider's real window can overflow"
+										: "dilna over-counts this Session's context — compaction fires early and throws away context it didn't need to"
+								}
+							>
+								{d.driftPct > 0 ? "+" : ""}
+								{(d.driftPct * 100).toFixed(0)}%
+							</td>
+							<td className="px-4 py-2 text-right text-muted-foreground">
+								{d.turns}
+							</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+			<p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+				Mean signed gap between dilna's context estimate and what the provider
+				itself reported, per turn. Recalibrate charsPerTokenFor() once enough
+				turns have accumulated (see scripts/measure-chars-per-token.ts).
+			</p>
 		</div>
 	);
 }
