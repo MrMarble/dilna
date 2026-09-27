@@ -384,6 +384,28 @@ export const repoSkills = sqliteTable(
 );
 
 /**
+ * The full original behind a trimmed tool output (issue #273). Keyed by the
+ * content hash alone — identical content trimmed in any Session is stored
+ * once, deliberately (a trim marker carries the hash, so any marker finds
+ * its original; no per-Session cleanup story is needed because entries are
+ * pruned by age, see `truncatedStore.ts`). `sessionId`/`path` are
+ * provenance for the UI, not ownership. No FK, same as `usage_events`:
+ * Sessions delete without touching these; age-based pruning bounds growth.
+ */
+export const truncatedOutputs = sqliteTable("truncated_outputs", {
+	/** sha256 hex of the original output — also the on-disk filename under
+	 * `<DILNA_DATA_DIR>/truncated/`. */
+	hash: text("hash").primaryKey(),
+	tool: text("tool").notNull(),
+	path: text("path"),
+	/** The Session whose trim first stored this content (provenance). */
+	sessionId: text("session_id").notNull(),
+	originalChars: integer("original_chars").notNull(),
+	originalLines: integer("original_lines").notNull(),
+	createdAt: integer("created_at").notNull().$defaultFn(now),
+});
+
+/**
  * Last-known account-wide plan rate-limit reading per window (one row per
  * `RateLimitWindowKind`), persisted so the sidebar footer survives a server
  * restart / page reload without waiting for the next agent turn to re-fetch

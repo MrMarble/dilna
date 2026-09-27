@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../container";
 import * as messageStore from "./messageStore";
+import { readTruncated } from "./truncatedStore";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -287,6 +288,17 @@ describe("seed-time tool-output trim over a live provider (issue #272)", () => {
 				expect(part.output).toContain("line 150: content");
 			}
 		}
+
+		// Reversibility (#273): the turn's sizeable read landed in the
+		// content-addressed original store, and the trims endpoint — the
+		// same walk the seeder runs — names it by hash, so the UI's
+		// "view original" link resolves to the exact bytes.
+		const trims = await sessionManager.getTrims(session.id);
+		const bigTrim = trims.find((t) => t.tool === "read");
+		expect(bigTrim).toBeDefined();
+		expect(bigTrim?.originalChars).toBe(BIG_FILE.length);
+		expect(bigTrim?.removedChars).toBeGreaterThan(0);
+		expect(readTruncated(bigTrim?.hash ?? "")).toBe(BIG_FILE);
 
 		await sessionManager.delete(session.id);
 	}, 60_000);

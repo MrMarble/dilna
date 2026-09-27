@@ -19,6 +19,7 @@ import {
 	type SendMessageResponse,
 	type SessionMessagesResponse,
 	type SessionResponse,
+	type SessionTrimsResponse,
 	scoreTurnBodySchema,
 	sendMessageBodySchema,
 	type TurnScoreResponse,
@@ -108,6 +109,17 @@ export function createSessionsRoute(deps: {
 			session: toView(session),
 			contextUsage,
 			recentCacheTurns: deps.sessions.getRecentCacheTurns(session.id),
+		};
+		return c.json(body);
+	});
+
+	// The tool-output trims the seeder applies (issue #272/#273) — derived
+	// from the persisted rows by the same walk, so the UI's markers survive
+	// reloads.
+	guarded.get("/:id/trims", async (c) => {
+		const session = c.get("session");
+		const body: SessionTrimsResponse = {
+			trims: await deps.sessions.getTrims(session.id),
 		};
 		return c.json(body);
 	});

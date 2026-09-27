@@ -165,8 +165,9 @@ export function buildInitialMessages(
 function applySeedTrims(
 	history: Message[],
 	trims?: { seen: Map<string, string> },
+	onTrim?: (trim: SeedTrim) => void,
 ): Message[] {
-	if (!trims) return history;
+	if (!trims && !onTrim) return history;
 	let turnCount = 0;
 	return history.map((message) => {
 		if (message.role === "user") {
@@ -187,14 +188,56 @@ function applySeedTrims(
 				part.input,
 				output,
 				sha256,
-				{ turnLabel, seen: trims.seen },
+				{ turnLabel, seen: trims?.seen ?? new Map() },
 			);
 			if (!trimmed) return part;
 			changed = true;
+			onTrim?.({
+				callId: part.callId,
+				tool: part.tool,
+				path: stringArgOf(part.input, "path"),
+				hash: trimmed.hash,
+				originalChars: trimmed.originalChars,
+				originalLines: trimmed.originalLines,
+				removedChars: trimmed.originalChars - trimmed.seeded.length,
+				removedLines: trimmed.originalLines - trimmed.seededLines,
+			});
 			return { ...part, output: trimmed.seeded };
 		});
 		return changed ? { ...message, parts } : message;
 	});
+}
+
+/** What one seeded trim removed — `ToolOutputTrim`'s server-side shape. */
+export type SeedTrim = {
+	callId: string;
+	tool: string;
+	path: string | null;
+	hash: string;
+	originalChars: number;
+	originalLines: number;
+	removedChars: number;
+	removedLines: number;
+};
+
+/**
+ * The trims `buildInitialMessages` would apply to a Session's history —
+ * the exact same walk the seeder runs (same dedup seen-map semantics), used
+ * by `GET /api/sessions/:id/trims` so the UI shows precisely what the model
+ * sees, derived from persisted state and surviving reloads (issue #273).
+ */
+export function collectSessionTrims(history: Message[]): SeedTrim[] {
+	const trims: SeedTrim[] = [];
+	applySeedTrims(history, { seen: new Map() }, (t) => trims.push(t));
+	return trims;
+}
+
+function stringArgOf(input: unknown, key: string): string | null {
+	if (input && typeof input === "object" && key in input) {
+		const value = (input as Record<string, unknown>)[key];
+		if (typeof value === "string" && value.length > 0) return value;
+	}
+	return null;
 }
 
 /** Sync sha256 hex — the identity/marker hasher the shared policy requires. */

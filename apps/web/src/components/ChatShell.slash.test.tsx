@@ -41,6 +41,7 @@ vi.mock("@/api/client", () => ({
 			commits: vi.fn(),
 			artefacts: vi.fn(),
 			scores: async () => ({ scores: [] }),
+			trims: async () => ({ trims: [] }),
 			get: vi.fn(),
 		},
 		skills: {

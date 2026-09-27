@@ -94,6 +94,7 @@ vi.mock("@/api/client", () => ({
 			// SessionContextRow) all open the per-session SSE stream; a no-op
 			// unsubscribe is enough, since none of them is under test here.
 			stream: () => () => {},
+			trims: async () => ({ trims: [] }),
 			send: async () => ({ ok: true, message: USER_MESSAGE }),
 			queueMessage: async () => ({ ok: true, entry: QUEUED_MESSAGE }),
 			queuedMessages: async () => ({ queued: [] }),

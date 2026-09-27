@@ -25,8 +25,10 @@ import { createReposRoute } from "./routes/repos";
 import { createSessionsRoute } from "./routes/sessions";
 import { createSkillsRoute } from "./routes/skills";
 import { createStreamRoute } from "./routes/stream";
+import { truncatedRoute } from "./routes/truncated";
 import { usageRoute } from "./routes/usage";
 import { primeVapidKeys } from "./sessions/pushSender";
+import { pruneTruncated } from "./sessions/truncatedStore";
 
 // The instance's provider/model is resolved as: web-settable override (from
 // the `llm_config` row) ?? DILNA_PROVIDER/DILNA_MODEL env fallback (see
@@ -116,6 +118,10 @@ app.route("/api/sessions", createSessionsRoute({ sessions, repos }));
 app.route("/api/skills", createSkillsRoute({ repos }));
 app.route("/api/stream", createStreamRoute({ sessions }));
 app.route("/api/usage", usageRoute);
+app.route("/api/truncated", truncatedRoute);
+// Age-based sweep of the trimmed-original store (issue #273): bounded at
+// boot, since restarts are the natural cadence of a long-lived instance.
+pruneTruncated();
 
 // Flipped by `shutdown()` before it starts draining in-flight turns, so a
 // k8s readiness probe hitting this stops routing new traffic to a
