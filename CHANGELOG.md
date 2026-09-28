@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.38.0](https://github.com/MrMarble/dilna/compare/v0.37.0...v0.38.0) (2026-09-28)
+
+
+### Features
+
+* **sessions:** keep trimmed tool outputs on disk and recover them from the UI ([#288](https://github.com/MrMarble/dilna/issues/288)) ([980182c](https://github.com/MrMarble/dilna/commit/980182c7ecf6dfc1816e3afa7ec5bf12587e2acf))
+
 ## [0.37.0](https://github.com/MrMarble/dilna/compare/v0.36.1...v0.37.0) (2026-09-27)
 
 
