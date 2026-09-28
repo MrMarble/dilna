@@ -291,11 +291,11 @@ describe("truncated originals (issue #273)", () => {
 		};
 		const trim = body.trims["call-1"];
 		expect(trim).toBeDefined();
-		expect(trim.reason).toBe("size");
-		expect(trim.seeded).toContain("dilna trimmed this tool output");
+		expect(trim?.reason).toBe("size");
+		expect(trim?.seeded).toContain("dilna trimmed this tool output");
 		// The route's walk is also the store's write path: the file exists by
 		// the time the link is on screen.
-		expect(readTruncatedOutput(trim.hash)).toBe(BIG_READ);
+		expect(readTruncatedOutput(trim?.hash ?? "")).toBe(BIG_READ);
 	});
 
 	it("GET /:id/messages omits the original from the trim map (the rows carry it)", async () => {
@@ -312,7 +312,7 @@ describe("truncated originals (issue #273)", () => {
 		const body = (await (await seeded.request("/s1/messages")).json()) as {
 			trims: Record<string, { hash: string }>;
 		};
-		const { hash } = body.trims["call-1"];
+		const hash = body.trims["call-1"]?.hash ?? "";
 
 		const app = appWithSession([]);
 		const res = await app.request(`/s1/truncated/${hash}`);
