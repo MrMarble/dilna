@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ContextUsageEstimate, Message } from "@dilna/shared";
-import { applyToolOutputPolicy, type ToolTrimContext } from "@dilna/shared";
+import { applyToolOutputPolicy, type TrimmedToolOutput } from "@dilna/shared";
 import {
 	type AgentMessage,
 	DEFAULT_COMPACTION_SETTINGS,
@@ -123,8 +123,13 @@ export function buildInitialMessages(
 	 * way in. The history rows themselves are never mutated: the policy runs
 	 * on copied parts, `messages` keeps the verbatim text, and the web
 	 * transcript renders exactly as before. Compaction/estimate paths omit
-	 * this and seed verbatim, as before. */
-	trims?: { seen: Map<string, string> },
+	 * this and seed verbatim, as before. `onTrim` (issue #273) receives
+	 * every trim as it fires, so the seed can park the full original on
+	 * disk under its hash while it walks. */
+	trims?: {
+		seen: Map<string, string>;
+		onTrim?: (trimmed: TrimmedToolOutput) => void;
+	},
 ): AgentMessage[] {
 	if (!compaction) {
 		return dilnaMessagesToInitialState(applySeedTrims(history, trims));
@@ -150,48 +155,91 @@ export function buildInitialMessages(
 }
 
 /**
- * Apply the seed-time tool-output policy across a history walk (issue
- * #272): each assistant row's `tool_call` parts may be replaced with the
- * policy's marker (+ retained head/tail). Verbatim by default — only the
- * cold-start seed path passes a {@link ToolTrimContext}, because a tool
+ * Run the seed-time tool-output policy across a history walk — the single
+ * implementation every trim consumer shares (issue #273). Returns one
+ * {@link TrimmedToolOutput} per `tool_call` part the policy would trim,
+ * keyed by call id, in history order. The `seen` map and turn labels are
+ * the same cross-message state the seed seeds the model with, so the
+ * marker a reload computes is byte-identical to the one a cold start
+ * seeds — one walk, two consumers, no drift:
+ *
+ * - the seed path ({@link applySeedTrims}) swaps the seeded text into the
+ *   model's context and passes `onTrim` to store each original on disk;
+ * - `GET /:id/messages` publishes the same map to the web, which renders
+ *   the marker from persisted state (it survives a reload because it is
+ *   recomputed from the verbatim rows, not replayed from a live event).
+ *
+ * Turn labels for dedup markers ("same as turn N") count user messages:
+ * each user row starts a turn. Pure with respect to the rows: nothing here
+ * mutates a `Message`.
+ */
+export function collectSeedTrims(
+	history: Message[],
+	/** Cross-walk dedup state — defaults to a fresh map, matching the
+	 * per-seed semantics (each cold start dedups within its own context). */
+	seen: Map<string, string> = new Map(),
+	/** Invoked once per trim, in walk order — the disk-write hook. */
+	onTrim?: (trimmed: TrimmedToolOutput) => void,
+): Map<string, TrimmedToolOutput> {
+	const trimmed = new Map<string, TrimmedToolOutput>();
+	let turnCount = 0;
+	for (const message of history) {
+		if (message.role === "user") {
+			turnCount += 1;
+			continue;
+		}
+		if (message.role !== "assistant") continue;
+		const turnLabel = `turn ${turnCount}`;
+		for (const part of message.parts) {
+			if (part.type !== "tool_call") continue;
+			const output = typeof part.output === "string" ? part.output : "";
+			if (output.length === 0) continue;
+			const result = applyToolOutputPolicy(
+				part.tool,
+				part.input,
+				output,
+				sha256,
+				{ turnLabel, seen },
+			);
+			if (!result) continue;
+			trimmed.set(part.callId, result);
+			onTrim?.(result);
+		}
+	}
+	return trimmed;
+}
+
+/**
+ * Apply the seed-time trim map from {@link collectSeedTrims} to a copy of
+ * the history (issue #272): each trimmed `tool_call` part's output is
+ * replaced with the policy's marker (+ retained head/tail). Verbatim by
+ * default — only the cold-start seed path passes `trims`, because a tool
  * result is seeded verbatim in the turn that produced it (that is the turn
  * the model is reasoning against) and only becomes eligible at the *next*
- * cold start. Turn labels for dedup markers ("same as turn N") count user
- * messages: each user row starts a turn.
+ * cold start.
  *
  * Copies, never mutates: the input rows (and their `parts` arrays) are
  * exactly what `messages` persisted and what the web renders.
  */
 function applySeedTrims(
 	history: Message[],
-	trims?: { seen: Map<string, string> },
+	trims?: {
+		seen: Map<string, string>;
+		onTrim?: (trimmed: TrimmedToolOutput) => void;
+	},
 ): Message[] {
 	if (!trims) return history;
-	let turnCount = 0;
+	const trimmed = collectSeedTrims(history, trims.seen, trims.onTrim);
+	if (trimmed.size === 0) return history;
 	return history.map((message) => {
-		if (message.role === "user") {
-			turnCount += 1;
-			return message;
-		}
 		if (message.role !== "assistant") return message;
-		const toolParts = message.parts.filter((p) => p.type === "tool_call");
-		if (toolParts.length === 0) return message;
-		const turnLabel = `turn ${turnCount}`;
 		let changed = false;
 		const parts = message.parts.map((part) => {
 			if (part.type !== "tool_call") return part;
-			const output = typeof part.output === "string" ? part.output : "";
-			if (output.length === 0) return part;
-			const trimmed = applyToolOutputPolicy(
-				part.tool,
-				part.input,
-				output,
-				sha256,
-				{ turnLabel, seen: trims.seen },
-			);
-			if (!trimmed) return part;
+			const result = trimmed.get(part.callId);
+			if (!result) return part;
 			changed = true;
-			return { ...part, output: trimmed.seeded };
+			return { ...part, output: result.seeded };
 		});
 		return changed ? { ...message, parts } : message;
 	});

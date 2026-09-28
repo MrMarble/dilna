@@ -3,7 +3,9 @@ import {
 	type Attachment,
 	formatAttachmentSize,
 	type MessagePart,
+	paths,
 	type QueuedMessage,
+	type SeedTrimView,
 	type SessionView,
 	type TurnScore,
 } from "@dilna/shared";
@@ -12,11 +14,13 @@ import {
 	ChevronDown,
 	ChevronRight,
 	Clock,
+	ExternalLink,
 	FileText,
 	Info,
 	ListTree,
 	LoaderCircle,
 	Plus,
+	Scissors,
 	Send,
 	Square,
 	User,
@@ -157,6 +161,7 @@ export function ChatShell({
 	);
 	const {
 		messages,
+		trims,
 		live,
 		status,
 		queued,
@@ -271,8 +276,12 @@ export function ChatShell({
 
 	const loadHistory = useCallback(async () => {
 		try {
-			const { messages } = await api.sessions.messages(sessionId);
-			dispatch({ type: "history_loaded", messages });
+			const { messages, trims } = await api.sessions.messages(sessionId);
+			dispatch({
+				type: "history_loaded",
+				messages,
+				trims: trims ?? {},
+			});
 		} catch (e) {
 			dispatch({
 				type: "error_set",
@@ -566,6 +575,7 @@ export function ChatShell({
 														onScored={turnScores.add}
 														role={m.role}
 														parts={m.parts}
+														trims={trims}
 														createdAt={m.createdAt}
 														showAttribution={
 															i === 0 || rendered[i - 1]?.role !== m.role
@@ -1034,6 +1044,7 @@ function ChatMessageRow({
 	onScored,
 	role,
 	parts,
+	trims,
 	createdAt,
 	showAttribution,
 	agentType,
@@ -1052,6 +1063,7 @@ function ChatMessageRow({
 	onScored: (score: TurnScore) => void;
 	role: "user" | "assistant";
 	parts: MessagePart[];
+	trims: Record<string, SeedTrimView>;
 	createdAt: number;
 	showAttribution: boolean;
 	agentType: AgentType;
@@ -1075,6 +1087,8 @@ function ChatMessageRow({
 				<ToolCallGroup
 					key={`g-${rows.length}`}
 					parts={toolBuffer}
+					sessionId={sessionId}
+					trims={trims}
 					turnActivity={turnActivity}
 				/>,
 			);
@@ -1256,9 +1270,13 @@ function ThinkingBlock({
 
 function ToolCallGroup({
 	parts,
+	sessionId,
+	trims,
 	turnActivity,
 }: {
 	parts: Extract<MessagePart, { type: "tool_call" }>[];
+	sessionId: string;
+	trims: Record<string, SeedTrimView>;
 	turnActivity?: TurnActivity | null;
 }) {
 	const running = parts.some((p) => p.output == null && p.error == null);
@@ -1298,6 +1316,8 @@ function ToolCallGroup({
 							<ToolCallMarker
 								key={p.callId}
 								part={p}
+								sessionId={sessionId}
+								trim={trims[p.callId]}
 								turnActivity={turnActivity}
 							/>
 						))}
@@ -1310,9 +1330,18 @@ function ToolCallGroup({
 
 function ToolCallMarker({
 	part,
+	sessionId,
+	trim,
 	turnActivity,
 }: {
 	part: Extract<MessagePart, { type: "tool_call" }>;
+	sessionId: string;
+	/** Set when the seed policy would trim this part at the re-seed
+	 * boundary (issue #273): the tool call then renders its *seeded* form —
+	 * what the model reasons over after a cold start — with the marker line
+	 * shown explicitly and a read-only link to the stored original. The
+	 * verbatim output is one click away, not hidden. */
+	trim?: SeedTrimView;
 	turnActivity?: TurnActivity | null;
 }) {
 	const [open, setOpen] = useState(false);
@@ -1348,6 +1377,11 @@ function ToolCallMarker({
 			: part.output != null && part.output !== ""
 				? String(part.output)
 				: "";
+	// A trimmed part renders its *seeded* form — marker line included — so
+	// the transcript reads like the context the model actually reasons over
+	// at the re-seed boundary (issue #273). The verbatim output stays one
+	// click away via the banner's link to the stored original.
+	const shownOutput = trim && part.error == null ? trim.seeded : output;
 
 	const input = (
 		part.input !== null && typeof part.input === "object" ? part.input : {}
@@ -1426,9 +1460,29 @@ function ToolCallMarker({
 							{JSON.stringify(input)}
 						</pre>
 					)}
-					{output && (
+					{trim && (
+						<div className="flex items-center gap-1.5 rounded bg-warning/10 px-2 py-1 text-xs text-muted-foreground">
+							<Scissors className="size-3 shrink-0" />
+							<span className="min-w-0 flex-1">
+								{trim.reason === "dedup"
+									? "Identical to an earlier result — the model sees only the marker"
+									: `Trimmed for context — the model sees ${trim.seededLines} of ${trim.originalLines} lines`}
+							</span>
+							<a
+								href={paths.sessions.truncated(sessionId, trim.hash)}
+								target="_blank"
+								rel="noreferrer"
+								title={`Full original the trim removed · sha256 ${trim.hash}`}
+								className="flex shrink-0 items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline"
+							>
+								<ExternalLink className="size-3" />
+								View original
+							</a>
+						</div>
+					)}
+					{shownOutput && (
 						<pre className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
-							{output}
+							{shownOutput}
 						</pre>
 					)}
 				</div>

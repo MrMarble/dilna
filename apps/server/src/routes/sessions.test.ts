@@ -1,8 +1,12 @@
-import { commitsQuerySchema } from "@dilna/shared";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { commitsQuerySchema, type Message } from "@dilna/shared";
 import { Hono } from "hono";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { errorHandler } from "../middleware/errors";
 import type { SessionManager } from "../sessions/manager";
+import { readTruncatedOutput } from "../sessions/truncated";
 import { createSessionsRoute } from "./sessions";
 
 // Was `parseCommitsLimit`, a hand-rolled parser; the bound now lives on
@@ -211,5 +215,141 @@ describe("requireSession on sessions routes", () => {
 		const res = await app.request("/missing/queue/q1", { method: "DELETE" });
 		expect(res.status).toBe(200);
 		expect(sessions.removeQueuedMessage).toHaveBeenCalledWith("missing", "q1");
+	});
+});
+
+// Issue #273: trimmed tool outputs are stored on disk under their content
+// hash and served read-only; the transcript response carries the trim map
+// the UI renders its markers from.
+describe("truncated originals (issue #273)", () => {
+	let dataDir: string;
+	let oldDataDir: string | undefined;
+
+	const BIG_READ = Array.from(
+		{ length: 400 },
+		(_, i) => `line ${i}: src/big.ts content`,
+	).join("\n");
+
+	function trimmableHistory(): Message[] {
+		return [
+			{
+				id: "u1",
+				sessionId: "s1",
+				role: "user",
+				parts: [{ type: "text", text: "please read" }],
+				turnId: null,
+				createdAt: 1,
+			},
+			{
+				id: "a1",
+				sessionId: "s1",
+				role: "assistant",
+				parts: [
+					{
+						type: "tool_call",
+						callId: "call-1",
+						tool: "read",
+						input: { path: "src/big.ts" },
+						output: BIG_READ,
+					},
+				],
+				turnId: null,
+				createdAt: 2,
+			},
+		];
+	}
+
+	beforeAll(() => {
+		dataDir = mkdtempSync(path.join(tmpdir(), "dilna-test-truncated-route-"));
+		oldDataDir = process.env.DILNA_DATA_DIR;
+		process.env.DILNA_DATA_DIR = dataDir;
+	});
+
+	afterAll(() => {
+		if (oldDataDir === undefined) delete process.env.DILNA_DATA_DIR;
+		else process.env.DILNA_DATA_DIR = oldDataDir;
+		rmSync(dataDir, { recursive: true, force: true });
+	});
+
+	function appWithSession(history: Message[]) {
+		const sessions = {
+			get: vi.fn().mockResolvedValue({ id: "s1", status: "idle" }),
+			getMessages: vi.fn().mockResolvedValue(history),
+		} as unknown as SessionManager;
+		return new Hono()
+			.onError(errorHandler)
+			.route("/", createSessionsRoute({ sessions, repos: {} as never }));
+	}
+
+	it("GET /:id/messages ships the trim map and stores each original under its hash", async () => {
+		const app = appWithSession(trimmableHistory());
+		const res = await app.request("/s1/messages");
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as {
+			messages: Message[];
+			trims: Record<string, { hash: string; seeded: string; reason: string }>;
+		};
+		const trim = body.trims["call-1"];
+		expect(trim).toBeDefined();
+		expect(trim.reason).toBe("size");
+		expect(trim.seeded).toContain("dilna trimmed this tool output");
+		// The route's walk is also the store's write path: the file exists by
+		// the time the link is on screen.
+		expect(readTruncatedOutput(trim.hash)).toBe(BIG_READ);
+	});
+
+	it("GET /:id/messages omits the original from the trim map (the rows carry it)", async () => {
+		const app = appWithSession(trimmableHistory());
+		const body = (await (await app.request("/s1/messages")).json()) as {
+			trims: Record<string, Record<string, unknown>>;
+		};
+		expect(body.trims["call-1"]).not.toHaveProperty("original");
+	});
+
+	it("serves a stored original read-only as inert text", async () => {
+		// Store via the messages walk (the same one the transcript ships).
+		const seeded = appWithSession(trimmableHistory());
+		const body = (await (await seeded.request("/s1/messages")).json()) as {
+			trims: Record<string, { hash: string }>;
+		};
+		const { hash } = body.trims["call-1"];
+
+		const app = appWithSession([]);
+		const res = await app.request(`/s1/truncated/${hash}`);
+		expect(res.status).toBe(200);
+		// Hono normalizes the charset parameter to upper case.
+		expect(res.headers.get("Content-Type")?.toLowerCase()).toBe(
+			"text/plain; charset=utf-8",
+		);
+		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(res.headers.get("Content-Disposition")).toContain("inline");
+		await expect(res.text()).resolves.toBe(BIG_READ);
+	});
+
+	it("404s for a well-formed hash with nothing stored", async () => {
+		const app = appWithSession([]);
+		const res = await app.request(`/s1/truncated/${"d".repeat(64)}`);
+		expect(res.status).toBe(404);
+	});
+
+	it("400s for a malformed hash before touching the store", async () => {
+		const app = appWithSession([]);
+		const res = await app.request("/s1/truncated/not-a-hash");
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as {
+			error: { message: string; status: number };
+		};
+		expect(body.error.status).toBe(400);
+	});
+
+	it("404s behind requireSession for an unknown session", async () => {
+		const sessions = {
+			get: vi.fn().mockResolvedValue(null),
+		} as unknown as SessionManager;
+		const app = new Hono()
+			.onError(errorHandler)
+			.route("/", createSessionsRoute({ sessions, repos: {} as never }));
+		const res = await app.request(`/missing/truncated/${"e".repeat(64)}`);
+		expect(res.status).toBe(404);
 	});
 });

@@ -6,6 +6,7 @@ import type { CommitInfo, Repo, RepoStats, RepoSyncStatus } from "./repo";
 import type { TurnScore } from "./scoring";
 import type { SessionView } from "./session";
 import type { RepoSkill, Skill, SkillSearchResult } from "./skill";
+import type { TrimReason } from "./toolOutputPolicy";
 import type { DiskUsage, UsageSummary } from "./usage";
 
 /**
@@ -114,8 +115,33 @@ export type SessionCacheTurn = {
 	writeTokens: number;
 };
 
-/** `GET /api/sessions/:id/messages` */
-export type SessionMessagesResponse = { messages: Message[] };
+/** The trim metadata the web needs to render a truncation marker on a
+ * persisted tool_call part (issue #273). Everything
+ * {@link TrimmedToolOutput} carries except `original` — the persisted
+ * row already holds the verbatim text, so re-sending it per trimmed
+ * part would double the payload for exactly the huge outputs this
+ * exists to manage. Computed server-side by the same walk the seed
+ * path runs (`collectSeedTrims`), so the marker a reload shows is byte
+ * -identical to what the model was seeded with. */
+export type SeedTrimView = {
+	hash: string;
+	seeded: string;
+	originalLines: number;
+	originalChars: number;
+	seededLines: number;
+	reason: TrimReason;
+};
+
+/** `GET /api/sessions/:id/messages`
+ *
+ * `trims` maps tool-call id → the trim that applies to that part at the
+ * re-seed boundary. Optional only so an older client tolerates a newer
+ * server; the server always sends it (empty when nothing in the history
+ * would be trimmed). */
+export type SessionMessagesResponse = {
+	messages: Message[];
+	trims?: Record<string, SeedTrimView>;
+};
 
 /** `GET /api/sessions/:id/changed-files` */
 export type ChangedFilesResponse = { files: ChangedFile[] };

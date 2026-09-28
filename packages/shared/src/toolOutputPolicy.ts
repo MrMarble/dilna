@@ -26,6 +26,11 @@
  * summaries, which is the point: the policy list stays short.
  */
 
+/** Why a trim fired — recorded on the marker so callers can tell a
+ * size cut from a "same as turn N" dedup without parsing the text
+ * (issue #273's UI keys off it, and so can any future counter). */
+export type TrimReason = "size" | "dedup";
+
 /** What one trim decision produces. */
 export type TrimmedToolOutput = {
 	/** The replacement text seeded into the model's context (the marker,
@@ -41,6 +46,8 @@ export type TrimmedToolOutput = {
 	originalLines: number;
 	originalChars: number;
 	seededLines: number;
+	/** What kind of trim this was (see {@link TrimReason}). */
+	reason: TrimReason;
 };
 
 /** Cross-message state the seed walk maintains so result-set dedup can say
@@ -148,6 +155,7 @@ export function applyToolOutputPolicy(
 				originalLines,
 				originalChars,
 				seededLines: 1,
+				reason: "dedup",
 			};
 		}
 		ctx.seen.set(identity, ctx.turnLabel);
@@ -212,6 +220,7 @@ function trimRead(
 		originalLines,
 		originalChars,
 		seededLines: head.length + tail.length + 1,
+		reason: "size",
 	};
 }
 
@@ -248,6 +257,7 @@ function trimBash(
 		originalLines,
 		originalChars,
 		seededLines: kept.length + 1,
+		reason: "size",
 	};
 }
 

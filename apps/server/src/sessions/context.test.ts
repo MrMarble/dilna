@@ -7,6 +7,7 @@ import { charsPerTokenFor } from "../agents/providerConfig";
 import {
 	buildInitialMessages,
 	checkSessionContext,
+	collectSeedTrims,
 	estimateAgentContextHeuristically,
 	estimateLiveAgentContext,
 	estimateSessionContext,
@@ -559,5 +560,51 @@ describe("buildInitialMessages seed trims", () => {
 		const seeded = buildInitialMessages(history(), null);
 		expect(JSON.stringify(seeded)).toContain("line 399: src/big.ts content");
 		expect(JSON.stringify(seeded)).not.toContain("identical result to");
+	});
+
+	// Issue #273: the same walk, published.
+	describe("collectSeedTrims", () => {
+		it("returns one entry per trimmed part, keyed by call id, carrying hash and seeded form", () => {
+			const trimmed = collectSeedTrims(history());
+			expect([...trimmed.keys()].sort()).toEqual(["call-a1", "call-a2"]);
+			const a1 = trimmed.get("call-a1");
+			expect(a1?.reason).toBe("size");
+			expect(a1?.hash).toMatch(/^[0-9a-f]{64}$/);
+			// The seeded form is what the seed actually swaps in — byte-identical
+			// to what buildInitialMessages produces for the same part. (Compared
+			// line-wise: JSON.stringify escapes the newlines the raw seeded
+			// string carries.)
+			const seeded = buildInitialMessages(history(), null, {
+				seen: new Map(),
+			});
+			const seededText = JSON.stringify(seeded);
+			for (const line of (a1?.seeded ?? "").split("\n")) {
+				expect(seededText).toContain(line);
+			}
+		});
+
+		it("reports dedup trims with the dedup reason", () => {
+			const trimmed = collectSeedTrims(history());
+			expect(trimmed.get("call-a2")?.reason).toBe("dedup");
+		});
+
+		it("is empty for a history with nothing trimmable", () => {
+			expect(collectSeedTrims([dilnaMessage("u1", "user", "hi", 1)])).toEqual(
+				new Map(),
+			);
+		});
+
+		it("invokes onTrim once per trim, in walk order — the disk-write hook", () => {
+			const stored: Array<{ hash: string; original: string }> = [];
+			collectSeedTrims(history(), new Map(), (t) =>
+				stored.push({ hash: t.hash, original: t.original }),
+			);
+			expect(stored).toHaveLength(2);
+			// The original is the verbatim row text, not the seeded form.
+			expect(stored[0]?.original).toContain("line 399: src/big.ts content");
+			expect(stored[0]?.hash).toMatch(/^[0-9a-f]{64}$/);
+			// Both trims of identical content share one hash — one on-disk copy.
+			expect(stored[0]?.hash).toBe(stored[1]?.hash);
+		});
 	});
 });

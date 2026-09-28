@@ -65,6 +65,11 @@ export const paths = {
 			`/api/sessions/${enc(sessionId)}/artefacts`,
 		artefact: (sessionId: string, artefactId: string) =>
 			`/api/sessions/${enc(sessionId)}/artefacts/${enc(artefactId)}`,
+		/** `GET` the full original of a trimmed tool output (issue #273),
+		 * addressed by the content hash the trim marker names. Scoped under
+		 * the Session for attribution, though the store itself is global. */
+		truncated: (sessionId: string, hash: string) =>
+			`/api/sessions/${enc(sessionId)}/truncated/${enc(hash)}`,
 		/** `GET` every turn score in the Session. */
 		scores: (sessionId: string) => `/api/sessions/${enc(sessionId)}/scores`,
 		/** `POST` to judge one turn. */

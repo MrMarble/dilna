@@ -27,6 +27,7 @@ import { createSkillsRoute } from "./routes/skills";
 import { createStreamRoute } from "./routes/stream";
 import { usageRoute } from "./routes/usage";
 import { primeVapidKeys } from "./sessions/pushSender";
+import { maybePruneTruncatedOutputs } from "./sessions/truncated";
 
 // The instance's provider/model is resolved as: web-settable override (from
 // the `llm_config` row) ?? DILNA_PROVIDER/DILNA_MODEL env fallback (see
@@ -166,6 +167,14 @@ const server = serve({ fetch: app.fetch, port }, async (info) => {
 	// repo's config is shared by all of its worktrees, so this repairs
 	// existing Sessions too.
 	await repos.ensureAllGitDefaults();
+	// Age out stored trim originals older than 30 days (issue #273) once per
+	// boot; the write path throttles itself to hourly thereafter. Best-effort:
+	// a prune failure costs disk space, not uptime.
+	try {
+		maybePruneTruncatedOutputs(Date.now(), true);
+	} catch (err) {
+		logger.warn({ err }, "truncated-output prune failed");
+	}
 });
 
 // Grace window for in-flight turns to finish and persist on a *plannable*

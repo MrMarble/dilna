@@ -92,6 +92,7 @@ import {
 	sessionCompactionOf,
 	toView,
 } from "./sessionStore";
+import { storeTruncatedOutput } from "./truncated";
 import { TurnLedger } from "./turnLedger";
 import { type Turn, TurnRegistry } from "./turnRegistry";
 import { accumulateSessionUsage } from "./usageAccounting";
@@ -2084,11 +2085,17 @@ export class SessionManager {
 		// only here: the results are verbatim in the turn that produced them
 		// (the live transcript), and become eligible for the policy at the
 		// next cold start. The seen-map is per-seed: dedup markers point to
-		// turns within the context being built.
+		// turns within the context being built. Each trim's full original is
+		// parked on disk under its content hash (issue #273) so the marker
+		// the model — and the transcript, via GET /:id/messages' identical
+		// walk — carries is recoverable from the UI.
 		const initialMessages = buildInitialMessages(
 			history,
 			sessionCompactionOf(session),
-			{ seen: new Map() },
+			{
+				seen: new Map(),
+				onTrim: (t) => storeTruncatedOutput(t.hash, t.original),
+			},
 		);
 
 		// Created before `startPi` because the tool's callback closes over it,

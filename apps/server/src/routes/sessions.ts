@@ -16,6 +16,7 @@ import {
 	type OkIdResponse,
 	type OkResponse,
 	type QueueMessageResponse,
+	type SeedTrimView,
 	type SendMessageResponse,
 	type SessionMessagesResponse,
 	type SessionResponse,
@@ -39,6 +40,7 @@ import {
 	resolveAttachments,
 	storeAttachment,
 } from "../sessions/attachments";
+import { collectSeedTrims } from "../sessions/context";
 import {
 	InvalidModelError,
 	type SessionManager,
@@ -55,6 +57,11 @@ import {
 } from "../sessions/scoring";
 import { toView } from "../sessions/sessionStore";
 import { renderTranscript } from "../sessions/transcript";
+import {
+	isValidTruncatedHash,
+	readTruncatedOutput,
+	storeTruncatedOutput,
+} from "../sessions/truncated";
 import { validate } from "./factory";
 import { runSseLoop } from "./sse";
 
@@ -236,7 +243,23 @@ export function createSessionsRoute(deps: {
 	sessionsRoute.get("/:id/messages", async (c) => {
 		const id = c.req.param("id");
 		const messages = await deps.sessions.getMessages(id);
-		const body: SessionMessagesResponse = { messages };
+		// The trim map the transcript renders from (issue #273): the same walk
+		// the cold-start seed runs, over the verbatim rows, so markers derive
+		// from persisted state and survive a reload. Storing here too (not
+		// just at seed time) is what makes the marker's recovery link work the
+		// moment it's on screen — a trim becomes visible at turn end, but the
+		// next cold start that would otherwise write the file may be hours
+		// away. The store is content-addressed and idempotent, so this GET's
+		// side effect is cache-warming: it can create `<hash>`'s file, never
+		// change what's in it.
+		const trims: Record<string, SeedTrimView> = {};
+		for (const [callId, t] of collectSeedTrims(messages, new Map(), (t) =>
+			storeTruncatedOutput(t.hash, t.original),
+		)) {
+			const { original: _original, ...view } = t;
+			trims[callId] = view;
+		}
+		const body: SessionMessagesResponse = { messages, trims };
 		return c.json(body);
 	});
 
@@ -612,6 +635,55 @@ export function createSessionsRoute(deps: {
 		// given artefact's bytes never change.
 		c.header("Cache-Control", "private, max-age=31536000, immutable");
 		return c.body(bytes.buffer as ArrayBuffer);
+	});
+
+	/**
+	 * Serve the full original of a trimmed tool output (issue #273), named by
+	 * the content hash the trim marker carries — the recovery half of
+	 * reversible trims: a truncated result stops being lossy because a human
+	 * can open the exact bytes the marker points at, read-only, from the chat
+	 * UI. Text is the only thing the trim policy ever cuts (the persistence
+	 * bridge already reduced tool results to their text blocks), so
+	 * `text/plain` is the whole contract.
+	 *
+	 * Scoped under the Session like every other transcript resource, even
+	 * though the store itself is content-addressed and global (a hash names
+	 * the same bytes from any Session): the Session in the URL is what a
+	 * marker's link is built from, and what a future retrieval counter
+	 * (issue #274) attributes the read to. 404 is also the honest answer for
+	 * an expired original — the 30-day prune may have collected it; the
+	 * marker in the transcript still says what was removed.
+	 */
+	guarded.get("/:id/truncated/:hash", (c) => {
+		const hash = c.req.param("hash");
+		if (!isValidTruncatedHash(hash)) {
+			throw new HTTPException(400, {
+				message: "malformed truncated-output hash",
+			});
+		}
+		const original = readTruncatedOutput(hash);
+		if (original === null) {
+			throw new HTTPException(404, {
+				message:
+					"no stored original for this hash (never written, or pruned after 30 days)",
+			});
+		}
+		// Same load-bearing header set as the attachment route: the bytes are
+		// tool output a model produced, served from dilna's own origin next to
+		// an unauthenticated /api surface — declared as inert text, never to
+		// be sniffed into a document.
+		c.header("Content-Type", "text/plain; charset=utf-8");
+		c.header(
+			"Content-Security-Policy",
+			"sandbox; default-src 'none'; base-uri 'none'; form-action 'none'",
+		);
+		c.header("X-Content-Type-Options", "nosniff");
+		c.header("Referrer-Policy", "no-referrer");
+		c.header(
+			"Content-Disposition",
+			`inline; filename=truncated-${hash.slice(0, 12)}.txt`,
+		);
+		return c.text(original);
 	});
 
 	sessionsRoute.post("/:id/stop", async (c) => {
