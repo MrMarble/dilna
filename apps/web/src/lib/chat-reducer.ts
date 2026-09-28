@@ -3,6 +3,7 @@ import type {
 	Message,
 	MessageContentEvent,
 	QueuedMessage,
+	SeedTrimView,
 	SessionView,
 } from "@dilna/shared";
 import {
@@ -36,6 +37,14 @@ export type ChatState = {
 	/** Authoritative persisted rows (ADR-0004: the DB is the source of truth);
 	 * `live` is the in-flight overlay merged over them at render time. */
 	messages: Message[];
+	/** Trim metadata for the persisted rows, keyed by tool-call id (issue
+	 * #273): which parts the seed policy would trim, and the seeded form +
+	 * hash to render the marker from. Arrives with `history_loaded` — it is
+	 * computed server-side from the same persisted rows, so it is exactly as
+	 * authoritative as `messages` and refreshes with them. Live-turn entries
+	 * are never trimmed (trims apply only to prior turns), so the map only
+	 * ever describes rows. */
+	trims: Record<string, SeedTrimView>;
 	/** In-flight messages keyed by id, as they stream in — the rendering
 	 * optimization that never outlives the turn it belongs to. */
 	live: Record<string, LiveMessage>;
@@ -101,7 +110,11 @@ export type ChatAction =
 	| { type: "session_changed"; sessionId: string }
 	/** `loadHistory()` landed — authoritative rows, plus a prune of any live
 	 * entry the DB now owns (its fresher copy has been superseded). */
-	| { type: "history_loaded"; messages: Message[] }
+	| {
+			type: "history_loaded";
+			messages: Message[];
+			trims: Record<string, SeedTrimView>;
+	  }
 	| { type: "queue_loaded"; queued: QueuedMessage[] }
 	/** `session.status` prop sync (the sidebar/route can change it out from
 	 * under a mounted chat). */
@@ -142,6 +155,7 @@ export function initialChatState(
 	return {
 		sessionId,
 		messages: [],
+		trims: {},
 		live: {},
 		status,
 		queued: [],
@@ -318,6 +332,7 @@ export function chatReducer(
 				...resettable(),
 				sessionId: action.sessionId,
 				messages: [],
+				trims: {},
 				queued: [],
 				error: null,
 				notice: null,
@@ -340,7 +355,12 @@ export function chatReducer(
 					if (!persistedIds.has(id)) nextLive[id] = m;
 				}
 			}
-			return { ...state, messages: action.messages, live: nextLive };
+			return {
+				...state,
+				messages: action.messages,
+				trims: action.trims,
+				live: nextLive,
+			};
 		}
 		case "queue_loaded":
 			return { ...state, queued: action.queued };

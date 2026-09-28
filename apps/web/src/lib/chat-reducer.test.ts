@@ -515,7 +515,7 @@ describe("session_changed", () => {
 describe("history_loaded", () => {
 	it("replaces messages and prunes live entries the DB now owns", () => {
 		const s = run(
-			[{ type: "history_loaded", messages: [message("m1")] }],
+			[{ type: "history_loaded", messages: [message("m1")], trims: {} }],
 			state({
 				live: {
 					m1: { id: "m1", role: "assistant", parts: [], startedAt: 1 },
@@ -536,7 +536,7 @@ describe("history_loaded", () => {
 		});
 		const after = chatReducer(
 			before,
-			{ type: "history_loaded", messages: [message("m1")] },
+			{ type: "history_loaded", messages: [message("m1")], trims: {} },
 			AT,
 		);
 		expect(after.live).toBe(before.live);
