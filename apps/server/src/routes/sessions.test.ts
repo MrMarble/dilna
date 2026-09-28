@@ -291,11 +291,11 @@ describe("truncated originals (issue #273)", () => {
 		};
 		const trim = body.trims["call-1"];
 		expect(trim).toBeDefined();
-		expect(trim.reason).toBe("size");
-		expect(trim.seeded).toContain("dilna trimmed this tool output");
+		expect(trim?.reason).toBe("size");
+		expect(trim?.seeded).toContain("dilna trimmed this tool output");
 		// The route's walk is also the store's write path: the file exists by
 		// the time the link is on screen.
-		expect(readTruncatedOutput(trim.hash)).toBe(BIG_READ);
+		expect(readTruncatedOutput(trim?.hash ?? "")).toBe(BIG_READ);
 	});
 
 	it("GET /:id/messages omits the original from the trim map (the rows carry it)", async () => {
@@ -312,7 +312,7 @@ describe("truncated originals (issue #273)", () => {
 		const body = (await (await seeded.request("/s1/messages")).json()) as {
 			trims: Record<string, { hash: string }>;
 		};
-		const { hash } = body.trims["call-1"];
+		const hash = body.trims["call-1"]?.hash ?? "";
 
 		const app = appWithSession([]);
 		const res = await app.request(`/s1/truncated/${hash}`);
@@ -324,6 +324,33 @@ describe("truncated originals (issue #273)", () => {
 		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
 		expect(res.headers.get("Content-Disposition")).toContain("inline");
 		await expect(res.text()).resolves.toBe(BIG_READ);
+	});
+
+	it("counts each successful retrieval, per Session (issue #274)", async () => {
+		// Store via the messages walk.
+		const body = (await (
+			await appWithSession(trimmableHistory()).request("/s1/messages")
+		).json()) as { trims: Record<string, { hash: string }> };
+		const hash = body.trims["call-1"]?.hash ?? "";
+
+		const { getTruncationSummary } = await import(
+			"../sessions/truncationEvents"
+		);
+		// The counters are cumulative across this file's cases — assert the
+		// delta these requests produce.
+		const before = getTruncationSummary(0);
+
+		const app = appWithSession([]);
+		await app.request(`/s1/truncated/${hash}`);
+		await app.request(`/s1/truncated/${hash}`);
+		// A 404 is not a retrieval.
+		await app.request(`/s1/truncated/${"f".repeat(64)}`);
+
+		const after = getTruncationSummary(0);
+		expect(after.retrievals - before.retrievals).toBe(2);
+		const row = after.bySession.find((r) => r.sessionId === "s1");
+		const rowBefore = before.bySession.find((r) => r.sessionId === "s1");
+		expect((row?.retrievals ?? 0) - (rowBefore?.retrievals ?? 0)).toBe(2);
 	});
 
 	it("404s for a well-formed hash with nothing stored", async () => {

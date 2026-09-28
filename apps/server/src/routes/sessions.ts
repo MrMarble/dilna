@@ -59,9 +59,10 @@ import { toView } from "../sessions/sessionStore";
 import { renderTranscript } from "../sessions/transcript";
 import {
 	isValidTruncatedHash,
+	processSeedTrim,
 	readTruncatedOutput,
-	storeTruncatedOutput,
 } from "../sessions/truncated";
+import { recordTruncationEvent } from "../sessions/truncationEvents";
 import { validate } from "./factory";
 import { runSseLoop } from "./sse";
 
@@ -253,8 +254,15 @@ export function createSessionsRoute(deps: {
 		// side effect is cache-warming: it can create `<hash>`'s file, never
 		// change what's in it.
 		const trims: Record<string, SeedTrimView> = {};
-		for (const [callId, t] of collectSeedTrims(messages, new Map(), (t) =>
-			storeTruncatedOutput(t.hash, t.original),
+		for (const [callId, t] of collectSeedTrims(
+			messages,
+			new Map(),
+			// The transcript walk stores originals so a marker's link works the
+			// moment it's on screen (see `truncated.ts`), and reports rereads —
+			// but records no savings: rendering a marker saves no tokens; only
+			// a seed that sends the trimmed form does.
+			(t, callId) =>
+				processSeedTrim(id, callId, t, { provider: "", countSavings: false }),
 		)) {
 			const { original: _original, ...view } = t;
 			trims[callId] = view;
@@ -668,6 +676,14 @@ export function createSessionsRoute(deps: {
 					"no stored original for this hash (never written, or pruned after 30 days)",
 			});
 		}
+		// Counted per request (issue #274): this is the "the trim cut
+		// something a human needed" signal, attributed to the Session whose
+		// transcript carried the marker. 404s are not retrievals.
+		recordTruncationEvent({
+			sessionId: c.get("session").id,
+			kind: "retrieval",
+			hash,
+		});
 		// Same load-bearing header set as the attachment route: the bytes are
 		// tool output a model produced, served from dilna's own origin next to
 		// an unauthenticated /api surface — declared as inert text, never to

@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createServerContext } from "../container";
 import * as messageStore from "./messageStore";
+import { getTruncationSummary } from "./truncationEvents";
 
 const execFileAsync = promisify(execFile);
 const git = (args: string[], opts?: { cwd?: string }) =>
@@ -186,11 +187,15 @@ function providerScript(body: Record<string, unknown>): Response {
 		(m) =>
 			m.role === "user" && JSON.stringify(m.content).includes("tool_result"),
 	);
+	// A re-read turn must be matched before the hasToolResult short-circuit
+	// below: the re-read turn's *seeded* history already carries turn 1's
+	// tool_result, so the short-circuit would otherwise answer it.
+	if (lastText.includes("again")) return toolReply("read", { path: "big.txt" });
 	if (hasToolResult) return textReply("done reading");
 
 	if (lastText.includes("first turn"))
 		return toolReply("read", { path: "big.txt" });
-	return textReply("done with turn 2");
+	return textReply("done reading");
 }
 
 beforeAll(async () => {
@@ -287,6 +292,45 @@ describe("seed-time tool-output trim over a live provider (issue #272)", () => {
 				expect(part.output).toContain("line 150: content");
 			}
 		}
+
+		await sessionManager.delete(session.id);
+	}, 60_000);
+
+	// Issue #274: the honest failure mode of truncation is the agent
+	// re-reading a file a trim had already cut. Drive exactly that — turn 2
+	// re-reads big.txt (unchanged, so the content hash matches turn 1's
+	// stored original) — and assert the counter increments when the next
+	// seed walk's dedup recognises it.
+	it("counts a re-read of an already-trimmed path and the seeds' savings", async () => {
+		const repo = await repoManager.clone(fixtureRepo);
+		const session = await sessionManager.create(repo.id);
+		const before = getTruncationSummary(0);
+
+		// Turn 1: read big.txt (trimmed+stored at turn 2's cold start).
+		sessionManager.beginTurn(session.id, "first turn: read big.txt");
+		await sessionManager.runTurn(session.id, "first turn: read big.txt");
+		await sessionManager.stopSession(session.id);
+
+		// Turn 2: the re-read. The seed for this turn records the trim
+		// savings; the live read lands verbatim in the rows.
+		sessionManager.beginTurn(session.id, "second turn: read big.txt again");
+		await sessionManager.runTurn(session.id, "second turn: read big.txt again");
+		await sessionManager.stopSession(session.id);
+
+		// Turn 3's seed walk sees both reads: same path, same content hash —
+		// the dedup marker fires on the re-read, whose hash is already
+		// stored. That is the counted event.
+		sessionManager.beginTurn(session.id, "third turn");
+		await sessionManager.runTurn(session.id, "third turn");
+
+		const after = getTruncationSummary(0);
+		expect(after.rereads - before.rereads).toBeGreaterThanOrEqual(1);
+		// Both seeds sent trimmed context, so savings were recorded too.
+		expect(after.tokensSaved - before.tokensSaved).toBeGreaterThan(0);
+		// The trade is attributable to this Session individually.
+		const row = after.bySession.find((r) => r.sessionId === session.id);
+		expect(row?.rereads ?? 0).toBeGreaterThanOrEqual(1);
+		expect(row?.tokensSaved ?? 0).toBeGreaterThan(0);
 
 		await sessionManager.delete(session.id);
 	}, 60_000);

@@ -33,6 +33,11 @@ export type TrimReason = "size" | "dedup";
 
 /** What one trim decision produces. */
 export type TrimmedToolOutput = {
+	/** The tool whose output was trimmed (dilna's wire name). Consumers
+	 * key behaviour off it — issue #274's re-read counter counts dedup
+	 * trims of `read` only, since a repeated grep result set is not a
+	 * re-read of a file. */
+	tool: string;
 	/** The replacement text seeded into the model's context (the marker,
 	 * plus the retained head/tail for size trims). */
 	seeded: string;
@@ -149,6 +154,7 @@ export function applyToolOutputPolicy(
 		const first = ctx.seen.get(identity);
 		if (first !== undefined) {
 			return {
+				tool,
 				seeded: dedupMarker(tool, input, first, contentHash),
 				original: output,
 				hash: contentHash,
@@ -175,9 +181,16 @@ export function applyToolOutputPolicy(
 
 	switch (tool) {
 		case "read":
-			return trimRead(input, output, originalLines, originalChars, contentHash);
+			return trimRead(
+				tool,
+				input,
+				output,
+				originalLines,
+				originalChars,
+				contentHash,
+			);
 		case "bash":
-			return trimBash(output, originalLines, originalChars, contentHash);
+			return trimBash(tool, output, originalLines, originalChars, contentHash);
 		default:
 			// grep/find first occurrences: dedup is their whole policy — a
 			// result set is only useful in full once; afterwards it is a
@@ -196,6 +209,7 @@ function hasPolicy(tool: string): boolean {
 }
 
 function trimRead(
+	tool: string,
 	input: unknown,
 	output: string,
 	originalLines: number,
@@ -214,6 +228,7 @@ function trimRead(
 		...tail,
 	].join("\n");
 	return {
+		tool,
 		seeded,
 		original: output,
 		hash: contentHash,
@@ -225,6 +240,7 @@ function trimRead(
 }
 
 function trimBash(
+	tool: string,
 	output: string,
 	originalLines: number,
 	originalChars: number,
@@ -251,6 +267,7 @@ function trimBash(
 	const keptText = kept.map(([, l]) => l).join("\n");
 	const seeded = `${keptText}\n[dilna trimmed this tool output: bash — showing the last ${TOOL_OUTPUT_POLICY.bashTailLines} lines${kept.length > TOOL_OUTPUT_POLICY.bashTailLines ? " plus error-pattern lines" : ""} of ${originalLines}; ${originalLines - kept.length} lines / ${originalChars - keptText.length} chars removed; content sha256 ${contentHash.slice(0, 16)}]`;
 	return {
+		tool,
 		seeded,
 		original: output,
 		hash: contentHash,

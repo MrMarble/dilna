@@ -128,7 +128,7 @@ export function buildInitialMessages(
 	 * disk under its hash while it walks. */
 	trims?: {
 		seen: Map<string, string>;
-		onTrim?: (trimmed: TrimmedToolOutput) => void;
+		onTrim?: (trimmed: TrimmedToolOutput, callId: string) => void;
 	},
 ): AgentMessage[] {
 	if (!compaction) {
@@ -178,8 +178,9 @@ export function collectSeedTrims(
 	/** Cross-walk dedup state — defaults to a fresh map, matching the
 	 * per-seed semantics (each cold start dedups within its own context). */
 	seen: Map<string, string> = new Map(),
-	/** Invoked once per trim, in walk order — the disk-write hook. */
-	onTrim?: (trimmed: TrimmedToolOutput) => void,
+	/** Invoked once per trim, in walk order, with the trimmed part's call
+	 * id — the disk-write/counter hook (issue #273/#274). */
+	onTrim?: (trimmed: TrimmedToolOutput, callId: string) => void,
 ): Map<string, TrimmedToolOutput> {
 	const trimmed = new Map<string, TrimmedToolOutput>();
 	let turnCount = 0;
@@ -203,7 +204,7 @@ export function collectSeedTrims(
 			);
 			if (!result) continue;
 			trimmed.set(part.callId, result);
-			onTrim?.(result);
+			onTrim?.(result, part.callId);
 		}
 	}
 	return trimmed;
@@ -225,7 +226,7 @@ function applySeedTrims(
 	history: Message[],
 	trims?: {
 		seen: Map<string, string>;
-		onTrim?: (trimmed: TrimmedToolOutput) => void;
+		onTrim?: (trimmed: TrimmedToolOutput, callId: string) => void;
 	},
 ): Message[] {
 	if (!trims) return history;

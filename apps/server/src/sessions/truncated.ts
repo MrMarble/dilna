@@ -10,7 +10,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import type { TrimmedToolOutput } from "@dilna/shared";
+import { charsPerTokenFor } from "../agents/providerConfig";
 import { getDataDir } from "../db";
+import { recordTruncationEvent } from "./truncationEvents";
 
 /**
  * The on-disk store of trimmed tool outputs (issue #273). When the seed-time
@@ -163,4 +166,58 @@ export function maybePruneTruncatedOutputs(
 	if (!force && now - lastPruneAt < PRUNE_INTERVAL_MS) return;
 	lastPruneAt = now;
 	pruneTruncatedOutputs(now);
+}
+
+/**
+ * The one seam between a seed-walk trim and its two side effects (issue
+ * #273's disk store, issue #274's counters). Both walk consumers — the
+ * cold-start seed and the transcript route — call this from `onTrim` so
+ * the ordering stays in one place:
+ *
+ * - **Reread detection precedes the store.** A dedup trim of a `read`
+ *   whose hash is *already* stored is the honest failure mode — the agent
+ *   went and re-read a file dilna had truncated. The check must run
+ *   before this entry's own original is written, because the entry may
+ *   BE that write (identical content, same hash) and would otherwise
+ *   always find its own file. Counted once per offending part: the
+ *   `truncation_events` unique index collapses repeat walks.
+ * - **The store write** lands regardless (a reread's original is already
+ *   there — idempotent no-op).
+ * - **Trim savings** are recorded only when `countSavings` is set (the
+ *   seed): `tokens_saved` is the seed-time estimate — removed chars over
+ *   the provider's chars-per-token — of the input tokens that seed didn't
+ *   pay. The transcript walk does NOT record savings: rendering a marker
+ *   saves nothing; only a request that actually carries the trimmed form
+ *   does. Rereads skip the trim event — the same part must not be both a
+ *   saving and a re-read cost in one walk.
+ */
+export function processSeedTrim(
+	sessionId: string,
+	callId: string,
+	trim: TrimmedToolOutput,
+	opts: { provider: string; countSavings: boolean },
+): void {
+	const isReread =
+		trim.reason === "dedup" &&
+		trim.tool === "read" &&
+		hasTruncatedOutput(trim.hash);
+	storeTruncatedOutput(trim.hash, trim.original);
+	if (isReread) {
+		recordTruncationEvent({
+			sessionId,
+			kind: "reread",
+			hash: trim.hash,
+			callId,
+		});
+		return;
+	}
+	if (opts.countSavings) {
+		const savedChars = Math.max(0, trim.originalChars - trim.seeded.length);
+		recordTruncationEvent({
+			sessionId,
+			kind: "trim",
+			hash: trim.hash,
+			tokensSaved: Math.round(savedChars / charsPerTokenFor(opts.provider)),
+		});
+	}
 }

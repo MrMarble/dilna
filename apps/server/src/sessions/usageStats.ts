@@ -9,13 +9,10 @@ import type {
 	UsageSummary,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
-import { and, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, gt, gte, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
-import {
-	sessionArchive as sessionArchiveTable,
-	sessions as sessionsTable,
-	usageEvents as usageEventsTable,
-} from "../db/schema";
+import { usageEvents as usageEventsTable } from "../db/schema";
+import { getTruncationSummary, resolveSessionTitles } from "./truncationEvents";
 
 /** How many top-spending Sessions the "Top sessions" table shows. */
 const TOP_SESSIONS_LIMIT = 10;
@@ -180,6 +177,11 @@ export function getUsageSummary(since: number): UsageSummary {
 		topSessions,
 		byPurpose,
 		contextDrift,
+		// The truncation trade (issue #274) reads from its own table, not
+		// `usage_events` — different grain (per seed/retrieval/re-read, not
+		// per turn) — but ships in the same summary so the dashboard's one
+		// request carries both sides of the ledger.
+		truncation: getTruncationSummary(since),
 	};
 }
 
@@ -245,31 +247,6 @@ function getContextDrift(where: ReturnType<typeof gte>): UsageContextDrift[] {
  * table and the drift list, which both outlive deletion the same way
  * (`usage_events` has no FK to either; see its schema comment).
  */
-function resolveSessionTitles(ids: string[]): Map<string, string> {
-	const db = getDb();
-	const titleById = new Map<string, string>();
-	for (const row of db
-		.select({
-			id: sessionArchiveTable.sessionId,
-			title: sessionArchiveTable.title,
-		})
-		.from(sessionArchiveTable)
-		.where(inArray(sessionArchiveTable.sessionId, ids))
-		.all()) {
-		titleById.set(row.id, row.title);
-	}
-	// Live sessions win over an archive row for the same id (shouldn't both
-	// exist, but a live row is the fresher source of truth if they do).
-	for (const row of db
-		.select({ id: sessionsTable.id, title: sessionsTable.title })
-		.from(sessionsTable)
-		.where(inArray(sessionsTable.id, ids))
-		.all()) {
-		titleById.set(row.id, row.title);
-	}
-	return titleById;
-}
-
 /**
  * Top-spending Sessions in range, with a display title resolved against
  * whichever of `sessions`/`sessionArchive` still has a row for that id —
