@@ -100,6 +100,46 @@ export type UsageSummary = {
 	 * threshold, worst first; empty when every estimator is honest (or no
 	 * turn carries both numbers yet). */
 	contextDrift: UsageContextDrift[];
+	/** The truncation trade (issue #274): what tool-output trims saved and
+	 * what they cost, read together. */
+	truncation: UsageTruncation;
+};
+
+/** One Session's truncation counters for the Metrics page breakdown.
+ * `title` resolves against the live `sessions` row or the deleted
+ * Session's `sessionArchive` row (ADR-0024), like
+ * `UsageSessionBreakdown.title` — the counts outlive the Session on
+ * purpose, so a deleted Session's trade stays on the books (its storage
+ * originals still age out after 30 days; the counts don't). */
+export type UsageTruncationSession = {
+	sessionId: string;
+	title: string | null;
+	retrievals: number;
+	rereads: number;
+	tokensSaved: number;
+};
+
+/**
+ * Aggregates over `truncation_events` (issue #274), the measurement that
+ * makes truncation policy evidence-based rather than taste-based:
+ *
+ * - `tokensSaved` — seed-time estimate of the input tokens a seed didn't
+ *   pay because prior turns' tool outputs went out as markers instead of
+ *   originals (recorded per seed walk, so a long-lived Session compounds
+ *   honestly: every cold start re-sends the trimmed form and re-saves the
+ *   delta).
+ * - `retrievals` — stored originals opened read-only from the chat UI; the
+ *   “a human needed the cut text” count.
+ * - `rereads` — dedup-recognised re-`read`s of paths whose hash was
+ *   already stored: the agent spent input tokens re-reading something the
+ *   policy had cut. High next to `tokensSaved` is the policy saying it is
+ *   too aggressive.
+ */
+export type UsageTruncation = {
+	retrievals: number;
+	rereads: number;
+	tokensSaved: number;
+	bySession: UsageTruncationSession[];
 };
 
 /**

@@ -24,6 +24,7 @@ let nextSummary: UsageSummary = {
 	topSessions: [],
 	byPurpose: [],
 	contextDrift: [],
+	truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 };
 
 vi.mock("@/api/client", () => ({
@@ -48,6 +49,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		expect(
@@ -131,6 +133,7 @@ describe("MetricsPage", () => {
 			],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 		};
 		render(
 			<MetricsPage
@@ -237,6 +240,7 @@ describe("MetricsPage", () => {
 			],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 		};
 		render(
 			<MetricsPage
@@ -295,6 +299,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 			contextDrift: [
 				{
 					sessionId: "s-over",
@@ -362,6 +367,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		// Some usage exists (the empty-state banner is gone) but no Session
@@ -370,6 +376,83 @@ describe("MetricsPage", () => {
 		expect(
 			screen.queryByText("Context estimate drift — dilna vs provider"),
 		).not.toBeInTheDocument();
+	});
+
+	it("reads the truncation trade in one glance — savings next to its costs (issue #274)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			truncation: {
+				retrievals: 2,
+				rereads: 1,
+				tokensSaved: 24_000,
+				bySession: [
+					{
+						sessionId: "s-live",
+						title: "live session",
+						retrievals: 1,
+						rereads: 1,
+						tokensSaved: 20_000,
+					},
+					{
+						sessionId: "s-gone",
+						title: null,
+						retrievals: 1,
+						rereads: 0,
+						tokensSaved: 4_000,
+					},
+				],
+			},
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+
+		// The three sides of the trade sit together, labelled plainly.
+		expect(
+			await screen.findByText("Tokens saved by trims"),
+		).toBeInTheDocument();
+		expect(screen.getByText("Originals retrieved")).toBeInTheDocument();
+		expect(screen.getByText("Re-reads of trimmed paths")).toBeInTheDocument();
+		// The per-Session breakdown keeps a deleted Session's counts on the
+		// books, titled from the archive.
+		expect(screen.getByText("live session")).toBeInTheDocument();
+		expect(screen.getByText(/deleted session s-gone/)).toBeInTheDocument();
+	});
+
+	it("hides the truncation panel entirely until a trim has happened (issue #274)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		expect(await screen.findByText(/total cost/i)).toBeInTheDocument();
+		expect(screen.queryByText("Tokens saved by trims")).toBeNull();
 	});
 
 	it("names the icon-only Back button (issue #223)", async () => {
@@ -382,6 +465,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			contextDrift: [],
+			truncation: { retrievals: 0, rereads: 0, tokensSaved: 0, bySession: [] },
 		};
 		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);
 		await screen.findByText(/no usage recorded yet/i);

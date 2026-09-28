@@ -8,6 +8,7 @@ import type {
 	UsageSessionBreakdown,
 	UsageSummary,
 	UsageTotalsDetailed,
+	UsageTruncation,
 } from "@dilna/shared";
 import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -155,6 +156,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 						/>
 						<TokenCompositionChart totals={summary.totals} />
 						<CachePanel summary={summary} repoNameById={repoNameById} />
+						<TruncationPanel truncation={summary.truncation} />
 						<ContextDriftCard
 							drift={summary.contextDrift}
 							repoNameById={repoNameById}
@@ -888,6 +890,83 @@ function RepoBreakdownTable({
  * `sessionArchive` row (ADR-0024), falling back to a short id only for the
  * rare pre-archive-feature row that has neither.
  */
+/**
+ * The truncation trade in one glance (issue #274): what the seed-time
+ * tool-output policy saved, next to what it cost — originals a human had
+ * to retrieve, and paths the agent itself re-read after a trim had cut
+ * them (the policy saying it's too aggressive, in numbers). Sits next to
+ * the cache panel because both are "what did the context strategy actually
+ * buy us" views. Hidden entirely until there's signal — an instance that
+ * has never trimmed a tool output has nothing to read here.
+ *
+ * Deleted Sessions stay on the books: counts outlive their Session (no
+ * cascade, like `usage_events`) and the title resolves from the Session
+ * archive, so the trade a deleted Session contributed is not silently
+ * dropped from the totals.
+ */
+function TruncationPanel({ truncation }: { truncation: UsageTruncation }) {
+	if (
+		truncation.tokensSaved === 0 &&
+		truncation.retrievals === 0 &&
+		truncation.rereads === 0
+	) {
+		return null;
+	}
+	return (
+		<div className="rounded-xl border border-border bg-card shadow-card">
+			<div className="grid gap-3 p-4 sm:grid-cols-3">
+				<StatCard
+					label="Tokens saved by trims"
+					value={`~${formatTokenCount(truncation.tokensSaved)}`}
+					sub="prior turns seeded as markers instead of full output"
+				/>
+				<StatCard
+					label="Originals retrieved"
+					value={String(truncation.retrievals)}
+					sub="View-original links opened"
+				/>
+				<StatCard
+					label="Re-reads of trimmed paths"
+					value={String(truncation.rereads)}
+					sub="the agent re-read a file a trim had cut — high means the policy is too aggressive"
+				/>
+			</div>
+			{truncation.bySession.length > 0 && (
+				<table className="w-full border-t border-border text-sm">
+					<thead>
+						<tr className="border-b border-border text-left text-xs text-muted-foreground">
+							<th className="px-4 py-2 font-medium">Session</th>
+							<th className="px-4 py-2 text-right font-medium">Saved</th>
+							<th className="px-4 py-2 text-right font-medium">Retrieved</th>
+							<th className="px-4 py-2 text-right font-medium">Re-reads</th>
+						</tr>
+					</thead>
+					<tbody>
+						{truncation.bySession.map((row, i) => (
+							<tr
+								key={row.sessionId}
+								className={cn(
+									"tabular-nums",
+									i > 0 && "border-t border-border",
+								)}
+							>
+								<td className="max-w-64 truncate px-4 py-2">
+									{row.title ?? `deleted session ${row.sessionId.slice(0, 8)}…`}
+								</td>
+								<td className="px-4 py-2 text-right">
+									~{formatTokenCount(row.tokensSaved)}
+								</td>
+								<td className="px-4 py-2 text-right">{row.retrievals}</td>
+								<td className="px-4 py-2 text-right">{row.rereads}</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			)}
+		</div>
+	);
+}
+
 function TopSessionsTable({
 	sessions,
 	repoNameById,

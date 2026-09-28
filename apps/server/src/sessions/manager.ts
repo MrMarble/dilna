@@ -92,7 +92,7 @@ import {
 	sessionCompactionOf,
 	toView,
 } from "./sessionStore";
-import { storeTruncatedOutput } from "./truncated";
+import { processSeedTrim } from "./truncated";
 import { TurnLedger } from "./turnLedger";
 import { type Turn, TurnRegistry } from "./turnRegistry";
 import { accumulateSessionUsage } from "./usageAccounting";
@@ -2094,7 +2094,13 @@ export class SessionManager {
 			sessionCompactionOf(session),
 			{
 				seen: new Map(),
-				onTrim: (t) => storeTruncatedOutput(t.hash, t.original),
+				// This being the seed, the walk's savings are counted too
+				// (issue #274); the store + counters live in processSeedTrim.
+				onTrim: (t, callId) =>
+					processSeedTrim(id, callId, t, {
+						provider: this.resolveProviderModel(session).provider,
+						countSavings: true,
+					}),
 			},
 		);
 

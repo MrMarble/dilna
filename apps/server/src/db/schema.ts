@@ -6,6 +6,7 @@ import {
 	real,
 	sqliteTable,
 	text,
+	uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -559,6 +560,53 @@ export const pushSubscriptions = sqliteTable("push_subscriptions", {
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 	lastSuccessAt: integer("last_success_at"),
 });
+
+/**
+ * The truncation trade, measured (issue #274): one row per counted event
+ * of trimming tool outputs — what the policy saved, and what it cost.
+ *
+ * - `"trim"` — a seed walk trimmed a tool call and sent the marker instead
+ *   of the original; `tokens_saved` is the seed-time estimate of the input
+ *   tokens that seed didn't pay. Recorded per seed, deliberately not
+ *   deduped: every cold start genuinely re-sends the trimmed form, so
+ *   every seed genuinely saves the delta again. `call_id` stays null so
+ *   the unique index below can't collapse re-trims of the same part.
+ * - `"retrieval"` — someone opened a stored original via
+ *   `GET /:id/truncated/:hash` (the UI's View-original link). One row per
+ *   request; this is the “the trim cut something a human needed” signal.
+ * - `"reread"` — the seed walk's dedup recognised a `read` of a path whose
+ *   hash is already stored: the agent went and re-read a file dilna had
+ *   already truncated. This is the honest failure mode — re-reading costs
+ *   more than the trim saved — so it is counted once per offending part:
+ *   `call_id` carries the re-read's call id and the (session, call, kind)
+ *   unique index makes repeat walks idempotent. NULL `call_id`s are never
+ *   equal in SQLite, so only `"reread"` rows ever dedupe.
+ *
+ * Like `usage_events`, this table deliberately outlives its `sessionId`
+ * (no FK/cascade): a deleted Session's counts still appear on the Metrics
+ * page, its title resolved from the `session_archive` row ADR-0024 left
+ * behind.
+ */
+export const truncationEvents = sqliteTable(
+	"truncation_events",
+	{
+		id: integer("id").primaryKey({ autoIncrement: true }),
+		sessionId: text("session_id").notNull(),
+		kind: text("kind", { enum: ["trim", "retrieval", "reread"] }).notNull(),
+		hash: text("hash").notNull(),
+		callId: text("call_id"),
+		tokensSaved: integer("tokens_saved").notNull().default(0),
+		createdAt: integer("created_at").notNull().$defaultFn(now),
+	},
+	(t) => [
+		uniqueIndex("truncation_events_dedupe_idx").on(
+			t.sessionId,
+			t.callId,
+			t.kind,
+		),
+		index("truncation_events_session_idx").on(t.sessionId),
+	],
+);
 
 export const sessionsRelations = relations(sessions, ({ many }) => ({
 	messages: many(messages),
