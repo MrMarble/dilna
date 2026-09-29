@@ -7,6 +7,8 @@ import { eq, like } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { primeCustomProviders } from "../agents/customProviders";
 import { resolveSummarizationModel } from "../agents/pi";
+import { charsPerTokenFor } from "../agents/providerConfig";
+import { builtInToolSchemaChars } from "../agents/toolSchemaWeight";
 import { closeDb, getDb } from "../db";
 import {
 	customProviders as customProvidersTable,
@@ -15,6 +17,7 @@ import {
 	turnScores as turnScoresTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
+import { MIN_TOOL_OBSERVATION_TURNS } from "./burnFindings";
 import { getUsageSummary } from "./usageStats";
 
 let dataDir: string;
@@ -828,5 +831,372 @@ describe("getBurnFindings (finding S — expensive delegation)", () => {
 		expect(findings).toHaveLength(1);
 		expect(findings[0]?.wasteUsd).toBeNull();
 		expect(findings[0]?.evidence).toContain("recorded no spend");
+	});
+});
+
+describe("getBurnFindings (finding T — unused built-in tools)", () => {
+	// Finding T's window is instance-wide — every fact-stamped ordinary
+	// turn in range contributes to the denominator and to the evidence's
+	// counts — so unlike the per-Session checks above, rows from another
+	// test would corrupt this one's verdicts. Each test therefore seeds into
+	// its own time epoch (spaced far beyond any realistic drift) and queries
+	// `since` just below it; the epochs start past every other describe's.
+	let epochCounter = 0;
+	const nextEpoch = () => 2_400_000_000 + epochCounter++ * 1_000_000;
+	afterAll(() => wipeBurnFixtures("burn-tool-"));
+
+	let catalogCost: {
+		input: number;
+		cacheRead: number;
+		cacheWrite: number;
+	};
+	beforeAll(() => {
+		const cost = resolveSummarizationModel(
+			CATALOG_PROVIDER,
+			CATALOG_MODEL,
+		)?.cost;
+		if (!cost) throw new Error("catalog fixture model must resolve");
+		catalogCost = {
+			input: cost.input,
+			cacheRead: cost.cacheRead,
+			cacheWrite: cost.cacheWrite,
+		};
+	});
+
+	/** One fact-stamped turn (issue #292 shape) on the priced catalog
+	 * model: the window counts only these — pre-feature rows carry no facts
+	 * and are never read as "called nothing". Defaults describe an ordinary
+	 * billed turn with the same token mix every test's waste math expects. */
+	function seedFactTurn(opts: {
+		id: string;
+		sessionId?: string;
+		createdAt: number;
+		provider?: string;
+		model?: string;
+		purpose?: string;
+		tools?: Record<string, number>;
+	}) {
+		const { tools = {}, ...rest } = opts;
+		seedTurn({
+			sessionId: "burn-tool-facts",
+			inputTokens: 1000,
+			outputTokens: 100,
+			cacheReadTokens: 4000,
+			cacheWriteTokens: 1000,
+			costUsd: 0.01,
+			toolFacts: { tools, skills: {} },
+			...rest,
+		});
+	}
+
+	/** Every built-in except `dilna_send_image` and `task`, one call per
+	 * turn — the floor that keeps those two the only candidates firing. */
+	const USED_TOOLS: Record<string, number> = {
+		read: 1,
+		write: 1,
+		edit: 1,
+		grep: 1,
+		find: 1,
+		ls: 1,
+		bash: 1,
+		read_repo_memory: 1,
+		update_repo_memory: 1,
+		read_skill: 1,
+		fetch: 1,
+		dilna_publish_artefact: 1,
+	};
+
+	/** The unused-tool findings in `since`'s range, keyed by the tool's
+	 * wire name (the finding's title). Other checks' findings in the same
+	 * epoch are ignored — each test scopes its assertions to T. */
+	const toolFindings = (since: number) =>
+		new Map(
+			getUsageSummary(since)
+				.burnFindings.filter((f) => f.check === "unused-tool")
+				.map((f) => [f.title, f]),
+		);
+
+	/** The expected waste for one unused tool over `turns` identical turns:
+	 * each turn's blended prompt rate (the same mix the seeder writes; rates
+	 * are $ per million tokens, pi-ai's `calculateCost` unit) times the
+	 * tool's measured schema tokens. */
+	function expectedWaste(
+		tool: string,
+		turns: number,
+		provider = CATALOG_PROVIDER,
+	) {
+		const rate =
+			(1000 * catalogCost.input +
+				4000 * catalogCost.cacheRead +
+				1000 * catalogCost.cacheWrite) /
+			1_000_000 /
+			6000;
+		return (
+			turns *
+			rate *
+			Math.ceil(
+				builtInToolSchemaChars()[tool as "bash"] / charsPerTokenFor(provider),
+			)
+		);
+	}
+
+	it("does not fire below the minimum observation window — absence of facts is not proof of disuse", () => {
+		const t = nextEpoch();
+		// One turn short of the window, with two tools never called.
+		for (let i = 0; i < MIN_TOOL_OBSERVATION_TURNS - 1; i++) {
+			seedFactTurn({
+				id: `burn-tool-nodata-${i}`,
+				sessionId: `burn-tool-nodata-s${i}`,
+				createdAt: t + i,
+				tools: USED_TOOLS,
+			});
+		}
+		// Plus pre-feature turns with NO facts — they must not count toward
+		// the window in either direction (no facts ≠ called nothing).
+		for (let i = 0; i < 10; i++) {
+			seedTurn({
+				id: `burn-tool-prefeature-${i}`,
+				sessionId: "burn-tool-prefeature",
+				createdAt: t + 100 + i,
+			});
+		}
+		expect(getUsageSummary(t - 1).burnFindings).toEqual([]);
+	});
+
+	it("fires at the minimum window: unused tools flagged, situational vs structural, waste priced", () => {
+		const t = nextEpoch();
+		for (let i = 0; i < MIN_TOOL_OBSERVATION_TURNS; i++) {
+			seedFactTurn({
+				id: `burn-tool-boundary-${i}`,
+				sessionId: `burn-tool-boundary-s${i}`,
+				createdAt: t + i,
+				tools: USED_TOOLS,
+			});
+		}
+		const byTool = toolFindings(t - 1);
+		// Exactly the two never-called tools fire; everything at or above the
+		// usage threshold is silent.
+		expect([...byTool.keys()].sort()).toEqual(["dilna_send_image", "task"]);
+		expect(byTool.get("bash")).toBeUndefined();
+
+		const image = byTool.get("dilna_send_image");
+		expect(image?.check).toBe("unused-tool");
+		// Instance-scoped: no Session, no Repo; the title IS the tool name.
+		expect(image?.sessionId).toBeNull();
+		expect(image?.repoId).toBeNull();
+		expect(image?.title).toBe("dilna_send_image");
+		expect(image?.severity).toBe("warning");
+		// Advisory only — no one-click action, unlike finding K.
+		expect(image?.action).toBeNull();
+		expect(image?.evidence).toContain("0 calls across 25 observed turns");
+		expect(image?.evidence).toContain("Situational");
+		expect(image?.evidence).toContain("$");
+		expect(image?.wasteUsd).not.toBeNull();
+
+		// task is structural: informational only, no removal implied.
+		const task = byTool.get("task");
+		expect(task?.severity).toBe("info");
+		expect(task?.evidence).toContain("Structural");
+		expect(task?.evidence).toContain("informational only");
+
+		// Waste = per-turn blended prompt rate × measured schema tokens,
+		// summed over every observed turn.
+		expect(image?.wasteUsd).toBeCloseTo(
+			expectedWaste("dilna_send_image", MIN_TOOL_OBSERVATION_TURNS),
+			8,
+		);
+	});
+
+	it("spares heavily used tools and draws the barely-used line exactly at 2%", () => {
+		const t = nextEpoch();
+		const OBSERVE = 100;
+		for (let i = 0; i < OBSERVE; i++) {
+			seedFactTurn({
+				id: `burn-tool-rare-${i}`,
+				sessionId: `burn-tool-rare-s${i}`,
+				createdAt: t + i,
+				tools: {
+					...USED_TOOLS,
+					// bash: a call every turn — heavily used, never a finding.
+					// fetch: 2 calls / 100 turns = exactly RARE_TOOL_RATE — the
+					// threshold is inclusive, so it is NOT flagged.
+					fetch: i === 0 ? 2 : 0,
+					// dilna_send_image: 1 call / 100 turns = below the line —
+					// barely used, flagged with the count in the evidence.
+					dilna_send_image: i === 1 ? 1 : 0,
+				},
+			});
+		}
+		const byTool = toolFindings(t - 1);
+		expect(byTool.get("bash")).toBeUndefined();
+		expect(byTool.get("fetch")).toBeUndefined();
+		const image = byTool.get("dilna_send_image");
+		expect(image?.evidence).toContain(
+			"1 call across 100 observed turns — under the 2% barely-used line",
+		);
+		expect(image?.evidence).toContain("$");
+	});
+
+	it("counts only ordinary Sessions' fact rows toward the window (judge and orchestrator rows excluded)", () => {
+		const t = nextEpoch();
+		for (let i = 0; i < MIN_TOOL_OBSERVATION_TURNS - 1; i++) {
+			seedFactTurn({
+				id: `burn-tool-ordinary-${i}`,
+				sessionId: `burn-tool-ordinary-s${i}`,
+				createdAt: t + i,
+				tools: USED_TOOLS,
+			});
+		}
+		// Judge rows (ADR-0046) — deliberately given facts so a missing
+		// purpose filter would count them toward the window.
+		for (let i = 0; i < 10; i++) {
+			seedFactTurn({
+				id: `burn-tool-judge-${i}`,
+				sessionId: "burn-tool-judge-session",
+				createdAt: t + 50 + i,
+				purpose: "judge",
+				tools: USED_TOOLS,
+			});
+		}
+		// Orchestrator turns (ADR-0021) run a different toolset on the same
+		// row shape — excluded by the live sessions row's kind.
+		seedSessionRow("burn-tool-orch");
+		getDb()
+			.update(sessionsTable)
+			.set({ kind: "orchestrator" })
+			.where(eq(sessionsTable.id, "burn-tool-orch"))
+			.run();
+		for (let i = 0; i < 10; i++) {
+			seedFactTurn({
+				id: `burn-tool-orch-${i}`,
+				sessionId: "burn-tool-orch",
+				createdAt: t + 70 + i,
+				tools: USED_TOOLS,
+			});
+		}
+		// 44 fact rows exist in range, but the window is the 24 ordinary ones
+		// — below the minimum, so nothing fires.
+		expect(getUsageSummary(t - 1).burnFindings).toEqual([]);
+	});
+
+	it("fires without a $ figure when no observed turn is priceable", () => {
+		const t = nextEpoch();
+		// A custom provider with an all-zero rate card — the "unpriced" case
+		// (same construction as finding D's unpriced fixture).
+		getDb()
+			.insert(customProvidersTable)
+			.values({
+				id: "burntoolbox",
+				name: "Burn Tool Box",
+				baseUrl: "http://localhost:1",
+				api: "openai-completions",
+				modelsJson: JSON.stringify([{ id: "shadow-1" }]),
+			})
+			.run();
+		primeCustomProviders();
+
+		for (let i = 0; i < MIN_TOOL_OBSERVATION_TURNS; i++) {
+			seedFactTurn({
+				id: `burn-tool-unpriced-${i}`,
+				sessionId: `burn-tool-unpriced-s${i}`,
+				createdAt: t + i,
+				provider: "burntoolbox",
+				model: "shadow-1",
+				tools: USED_TOOLS,
+			});
+		}
+		const image = toolFindings(t - 1).get("dilna_send_image");
+		expect(image?.wasteUsd).toBeNull();
+		expect(image?.evidence).toContain("has a price in the catalog");
+		expect(image?.evidence).not.toContain("$");
+		// Still fires — unmeasurable $, not an all-clear.
+		expect(image?.severity).toBe("warning");
+	});
+
+	it("prices the waste over the priceable subset when pricing is mixed", () => {
+		const t = nextEpoch();
+		for (let i = 0; i < 13; i++) {
+			seedFactTurn({
+				id: `burn-tool-mixed-cat-${i}`,
+				sessionId: `burn-tool-mixed-s${i}`,
+				createdAt: t + i,
+				tools: USED_TOOLS,
+			});
+		}
+		for (let i = 0; i < 12; i++) {
+			seedFactTurn({
+				id: `burn-tool-mixed-custom-${i}`,
+				sessionId: `burn-tool-mixed-c${i}`,
+				createdAt: t + 50 + i,
+				provider: "burntoolbox",
+				model: "shadow-1",
+				tools: USED_TOOLS,
+			});
+		}
+		const image = toolFindings(t - 1).get("dilna_send_image");
+		expect(image?.wasteUsd).not.toBeNull();
+		expect(image?.evidence).toContain("13 of 25 observed turns");
+		expect(image?.wasteUsd).toBeCloseTo(
+			expectedWaste("dilna_send_image", 13),
+			8,
+		);
+	});
+
+	it("ignores tool names outside the built-in universe (codegraph, orchestrator, MCP)", () => {
+		const t = nextEpoch();
+		for (let i = 0; i < MIN_TOOL_OBSERVATION_TURNS; i++) {
+			seedFactTurn({
+				id: `burn-tool-universe-${i}`,
+				sessionId: `burn-tool-universe-s${i}`,
+				createdAt: t + i,
+				tools:
+					i === 0
+						? {
+								...USED_TOOLS,
+								codegraph: 5,
+								dilna_list_repos: 3,
+								mcp__github: 2,
+							}
+						: USED_TOOLS,
+			});
+		}
+		const titles = [...toolFindings(t - 1).keys()];
+		expect(titles).not.toContain("codegraph");
+		expect(titles).not.toContain("dilna_list_repos");
+		expect(titles).not.toContain("mcp__github");
+		// The genuinely unused built-ins still fire.
+		expect(titles).toContain("dilna_send_image");
+		expect(titles).toContain("task");
+	});
+
+	it("shares the merged worst-first list with the session-scoped checks", () => {
+		const t = nextEpoch();
+		// A deep Session with a real depth premium ($0.10)…
+		seedSessionRow("burn-tool-deep-merged", { title: "Deep merged" });
+		[0.9, 0.9, 0.9].forEach((depth, i) => {
+			seedTurn({
+				id: `burn-tool-merged-d${i}`,
+				sessionId: "burn-tool-deep-merged",
+				createdAt: t + i,
+				providerContextTokens: Math.round(depth * WINDOW),
+				costUsd: [0.5, 0.4, 0.1][i],
+			});
+		});
+		// …and a T window with unused tools (waste in the cents range).
+		for (let i = 0; i < MIN_TOOL_OBSERVATION_TURNS; i++) {
+			seedFactTurn({
+				id: `burn-tool-merged-f${i}`,
+				sessionId: `burn-tool-merged-s${i}`,
+				createdAt: t + 50 + i,
+				tools: USED_TOOLS,
+			});
+		}
+		const findings = getUsageSummary(t - 1).burnFindings;
+		// The priced D finding outranks the smaller T waste; both checks
+		// coexist in one capped list.
+		expect(findings[0]?.check).toBe("session-overdepth");
+		expect(findings[0]?.sessionId).toBe("burn-tool-deep-merged");
+		expect(findings.some((f) => f.check === "unused-tool")).toBe(true);
+		expect(findings.length).toBeLessThanOrEqual(10);
 	});
 });

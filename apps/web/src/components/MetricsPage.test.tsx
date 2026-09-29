@@ -563,6 +563,84 @@ describe("MetricsPage", () => {
 		).toBeInTheDocument();
 	});
 
+	it("renders unused-tool findings with the tool as the subject (issue #296)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			burnFindings: [
+				// Instance-scoped: no session, no repo — the title IS the wire
+				// name, and a structural tool is informational only (info).
+				{
+					check: "unused-tool",
+					severity: "info",
+					sessionId: null,
+					repoId: null,
+					title: "task",
+					evidence:
+						"0 calls across 25 observed turns, while its ~1.6k-token schema rode in every turn's input. Estimated waste of carrying it unused: ~$0.02. Structural — dilna's coding loop depends on it, so this is informational only; zero calls over a window this long may signal a broken tool rather than a saving.",
+					wasteUsd: 0.02,
+					action: null,
+				},
+				{
+					check: "unused-tool",
+					severity: "warning",
+					sessionId: null,
+					repoId: null,
+					title: "dilna_send_image",
+					evidence:
+						"0 calls across 25 observed turns, while its ~202-token schema rode in every turn's input. No model behind these turns has a price in the catalog, so the finding carries no dollar figure — never a computed zero. Situational — consider whether it earns its keep here; advisory only, since dilna has no tool-disable switch.",
+					wasteUsd: null,
+					action: null,
+				},
+			],
+			toolUsage: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+
+		expect(
+			await screen.findByText("Burn checks — where tokens are being wasted"),
+		).toBeInTheDocument();
+
+		// The tool's wire name is the row's subject — no deleted-session
+		// fallback for instance-scoped findings.
+		expect(screen.getByText("task")).toBeInTheDocument();
+		expect(screen.getByText("dilna_send_image")).toBeInTheDocument();
+		expect(screen.getAllByText("Unused tool:")).toHaveLength(2);
+
+		// Structural = info badge; situational = warning badge.
+		expect(screen.getByText("info").className).toContain("bg-muted");
+		expect(screen.getByText("warning").className).toContain("text-warning");
+
+		// The ~$ tooltip says what THIS check's waste model measures, not
+		// finding D's median-turn comparison; the unpriced row shows the dash.
+		expect(
+			screen.getByTitle(
+				"Estimated waste of carrying the unused tool's schema on every observed turn",
+			),
+		).toHaveTextContent("~$0.02");
+		expect(
+			screen.getByTitle(
+				"No catalog price for the models in range — no $ estimate",
+			),
+		).toHaveTextContent("—");
+
+		// Advisory only: no action button renders on a null-action finding.
+		expect(screen.queryByRole("button", { name: /Disable/ })).toBeNull();
+	});
+
 	it("reads the empty Burn checks card as an explicit all-clear (issue #291)", async () => {
 		nextSummary = {
 			totals: { ...ZERO_TOTALS },

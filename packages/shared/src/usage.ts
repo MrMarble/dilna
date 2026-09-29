@@ -129,7 +129,8 @@ export type BurnCheckCode =
 	| "cache-rehydration"
 	| "model-overthinking"
 	| "expensive-delegation"
-	| "repo-unused-skill";
+	| "repo-unused-skill"
+	| "unused-tool";
 
 /** How urgently a {@link BurnFinding} deserves attention — the web renders
  * this as the row's badge color, nothing more; the evidence text carries the
