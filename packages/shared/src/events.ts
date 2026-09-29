@@ -2,6 +2,7 @@ import type { Artefact } from "./artefact";
 import type { ChangedFile } from "./diff";
 import type { Attachment, Message, QueuedMessage } from "./messages";
 import type { WireToolName } from "./tools";
+import type { TurnToolFacts } from "./usage";
 
 export type AgentStreamEvent =
 	| { type: "session_status"; status: SessionStatus }
@@ -196,6 +197,13 @@ export type AgentStreamEvent =
 			 * turn-end reconciling event as `cumulative`; per-round events
 			 * report their own billing delta without it. */
 			providerContextTokens?: number;
+			/** What the turn actually did, tool-wise (issue #292) — persisted
+			 * onto the turn's `usage_events` row next to its usage, so burn
+			 * findings aggregate recorded facts instead of re-parsing the
+			 * transcript at read time. Present only on the same turn-end
+			 * reconciling event as `cumulative`; empty (not absent) when the
+			 * turn billed nothing but called no tools. */
+			toolFacts?: TurnToolFacts;
 	  }
 	| ({
 			/** Live estimate of how much of the Session's context window is

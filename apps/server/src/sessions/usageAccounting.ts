@@ -1,4 +1,4 @@
-import type { AgentStreamEvent } from "@dilna/shared";
+import type { AgentStreamEvent, TurnToolFacts } from "@dilna/shared";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { getDb } from "../db";
@@ -11,6 +11,28 @@ import { turnDrift } from "./charCalibration";
 import { CONTEXT_DRIFT_THRESHOLD } from "./usageStats";
 
 const log = logger.child({ component: "sessions/usageAccounting" });
+
+/**
+ * Serialize the turn's tool facts for `usage_events.tool_facts_json`
+ * (issue #292) — best-effort by contract: a payload that can't be
+ * serialized is logged and dropped, never allowed to fail the usage insert
+ * or the turn (same spirit as Session title derivation). `null` when the
+ * event carries no facts — per-round `usage_update`s, pre-feature events,
+ * judge rows — which is exactly the forward-only story: no facts is null,
+ * never an empty {}
+ */
+function serializeToolFacts(facts: TurnToolFacts | undefined): string | null {
+	if (!facts) return null;
+	try {
+		return JSON.stringify(facts);
+	} catch (err) {
+		log.warn(
+			{ err },
+			"failed to serialize turn tool facts — stamping usage without them",
+		);
+		return null;
+	}
+}
 
 /**
  * Token/cost accounting for a turn, extracted from `SessionManager`
@@ -91,6 +113,9 @@ export function accumulateSessionUsage(
 				// model has fallen out of the catalog (nothing to calibrate
 				// against).
 				estimatedContextTokens: estimatedContextTokens ?? null,
+				// What the turn did, tool-wise (issue #292) — stamped by the
+				// adapter on this same turn-end event; null when absent.
+				toolFactsJson: serializeToolFacts(ev.toolFacts),
 			})
 			.run();
 		return updated;

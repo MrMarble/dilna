@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentStreamEvent } from "@dilna/shared";
+import type { AgentStreamEvent, TurnToolFacts } from "@dilna/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { closeDb, getDb } from "../db";
@@ -58,7 +58,10 @@ function seedSession(id: string) {
 
 /** The turn-end reconciling event the pi adapter emits (issue #267's
  * fixture: input 100 + output 20 + cacheRead 300 + cacheWrite 50). */
-function turnEndEvent(providerContextTokens?: number): AgentStreamEvent {
+function turnEndEvent(
+	providerContextTokens?: number,
+	toolFacts?: TurnToolFacts,
+): AgentStreamEvent {
 	return {
 		type: "usage_update",
 		messageId: "m1",
@@ -79,6 +82,7 @@ function turnEndEvent(providerContextTokens?: number): AgentStreamEvent {
 			costUsd: 0.03,
 		},
 		...(providerContextTokens === undefined ? {} : { providerContextTokens }),
+		...(toolFacts === undefined ? {} : { toolFacts }),
 	};
 }
 
@@ -147,6 +151,35 @@ describe("accumulateSessionUsage", () => {
 			model: "claude-opus-5",
 		});
 		expect(usageRowFor("s4")?.estimatedContextTokens).toBeNull();
+	});
+
+	it("stamps the turn's tool/skill facts onto the row (issue #292)", () => {
+		seedSession("s8");
+		accumulateSessionUsage(
+			"s8",
+			turnEndEvent(undefined, {
+				tools: { bash: 3, read_skill: 1 },
+				skills: { tdd: 1 },
+			}),
+			{ provider: "anthropic", model: "claude-opus-5" },
+		);
+		const row = usageRowFor("s8");
+		// Round-tripped through the same JSON the aggregator parses.
+		expect(JSON.parse(row?.toolFactsJson ?? "null")).toEqual({
+			tools: { bash: 3, read_skill: 1 },
+			skills: { tdd: 1 },
+		});
+	});
+
+	it("leaves tool facts null when the event carries none — pre-feature rows stay null, never {}", () => {
+		seedSession("s9");
+		// Absence is the forward-only marker; an empty object would fabricate
+		// "feature-era turn, zero calls" for turns that predate the capture.
+		accumulateSessionUsage("s9", turnEndEvent(), {
+			provider: "anthropic",
+			model: "claude-opus-5",
+		});
+		expect(usageRowFor("s9")?.toolFactsJson).toBeNull();
 	});
 
 	it("warns when the estimate drifts past the threshold, and stays quiet within it", () => {

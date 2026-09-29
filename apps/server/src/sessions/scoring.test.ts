@@ -257,6 +257,30 @@ describe("scoreTurn", () => {
 		});
 	});
 
+	it("records no tool facts on judge rows — scoring stays separable from the Session's own counts (issue #292)", async () => {
+		judgeComplete
+			.mockResolvedValueOnce({ text: '{"steps": ["s"]}', usage })
+			.mockResolvedValueOnce({
+				text: '{"scores": [5], "reason": "fine"}',
+				usage,
+			});
+		await scoreTurn({
+			session,
+			history,
+			turnId: "t1",
+			metric: "criteria",
+			criteria: "be thorough",
+		});
+		const rows = judgeUsageRows();
+		expect(rows.length).toBeGreaterThan(0);
+		for (const row of rows) {
+			// The judge has no tools and is not the Session's work (same rule as
+			// `purpose`); its rows must never carry facts the Metrics tool/skill
+			// table could fold into the Session's counts.
+			expect(row.toolFactsJson).toBeNull();
+		}
+	});
+
 	it("uses the judge override and still records spend when the metric fails", async () => {
 		const before = judgeUsageRows().length;
 		judgeComplete.mockResolvedValue({ text: "garbage", usage });

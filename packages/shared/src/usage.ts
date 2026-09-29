@@ -22,6 +22,31 @@ export type UsageTotalsDetailed = {
 	cacheHitRate: number | null;
 };
 
+/**
+ * What one turn actually did, tool-wise (issue #292) — recorded facts,
+ * stamped by the pi adapter onto the turn-end `usage_update` event and
+ * persisted onto the turn's `usage_events` row, so the skill/tool burn
+ * findings aggregate recorded facts instead of parsing transcript parts at
+ * read time. Best-effort by design: a turn that produced no turn-end usage
+ * row (failed before any billed round) carries no facts either — the facts
+ * never exist without the usage row they describe.
+ */
+export type TurnToolFacts = {
+	/** Tool wire name → call count over the turn, counted at
+	 * `tool_execution_start` — a call that errored still happened and still
+	 * spent a round trip. Subagent (read-only `task` delegation, ADR-0034)
+	 * tool calls are deliberately NOT folded in here: the subagent runs on
+	 * its own throwaway `Agent` whose events never enter the parent turn's
+	 * normalizer, and its spend isn't in the parent's usage row either — the
+	 * parent's facts describe the parent turn, where the `task` call itself
+	 * counts like any other tool. */
+	tools: Record<string, number>;
+	/** Skill name (the `read_skill` argument) → count of successful loads
+	 * over the turn. A failed lookup (unknown name) is not a load — the
+	 * skill's body never entered context — so it counts under `tools` only. */
+	skills: Record<string, number>;
+};
+
 /** `date` is a UTC `YYYY-MM-DD` bucket (SQLite `date(created_at, 'unixepoch')`). */
 export type UsageDailyPoint = { date: string } & UsageTotalsDetailed;
 
@@ -151,6 +176,23 @@ export type UsageSummary = {
 	 * finding (an all-clear, not "no data"). Computed server-side in
 	 * `sessions/burnFindings.ts` over the same range as every slice above. */
 	burnFindings: BurnFinding[];
+	/** Per-tool/per-skill usage over the selected range (issue #292), folded
+	 * server-side from the turns' `TurnToolFacts` (usageStats.ts), worst
+	 * (most calls) first. Empty until turns start carrying facts — the
+	 * capture is forward-only, pre-feature turns have none. */
+	toolUsage: UsageToolBreakdown[];
+};
+
+/** One row of the Metrics "Tool & skill usage" table (issue #292): how often
+ * a tool was called — or a skill loaded via `read_skill` — over the selected
+ * range, and how many distinct Sessions did so. */
+export type UsageToolBreakdown = {
+	name: string;
+	/** `"tool"` is a tool wire name (`bash`, `read_skill`, …); `"skill"` is a
+	 * skill loaded through `read_skill`, named by the skill itself. */
+	kind: "tool" | "skill";
+	calls: number;
+	sessions: number;
 };
 
 /**

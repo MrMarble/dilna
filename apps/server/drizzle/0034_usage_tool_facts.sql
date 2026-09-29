@@ -1,0 +1,1 @@
+ALTER TABLE `usage_events` ADD `tool_facts_json` text;

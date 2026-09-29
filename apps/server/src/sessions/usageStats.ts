@@ -7,9 +7,10 @@ import type {
 	UsageRepoBreakdown,
 	UsageSessionBreakdown,
 	UsageSummary,
+	UsageToolBreakdown,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
-import { and, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
 	sessionArchive as sessionArchiveTable,
@@ -160,6 +161,7 @@ export function getUsageSummary(since: number): UsageSummary {
 
 	const topSessions = getTopSessions(where);
 	const contextDrift = getContextDrift(where);
+	const toolUsage = getToolUsage(where);
 
 	// Judge spend (ADR-0046) is folded into every aggregate above — it's real
 	// spend on a real model — and split out only here, so the dashboard can say
@@ -187,7 +189,107 @@ export function getUsageSummary(since: number): UsageSummary {
 		byPurpose,
 		contextDrift,
 		burnFindings,
+		toolUsage,
 	};
+}
+
+/**
+ * Per-tool/per-skill usage over the range (issue #292): call counts and
+ * distinct Sessions per tool name, plus one row per skill loaded via
+ * `read_skill`. Folded in JS rather than SQL — the facts live in a JSON
+ * column there's no shape to GROUP BY, and the rows in range number in the
+ * turns, so the fold is small. Rows without facts (pre-feature turns, judge
+ * rows — see the column's schema comment) are excluded by the null check:
+ * the capture is forward-only, and an old turn contributes nothing rather
+ * than a fake zero. Sorted worst (most calls) first, name ascending to
+ * break ties deterministically.
+ */
+function getToolUsage(where: ReturnType<typeof gte>): UsageToolBreakdown[] {
+	const db = getDb();
+	const rows = db
+		.select({
+			sessionId: usageEventsTable.sessionId,
+			toolFactsJson: usageEventsTable.toolFactsJson,
+		})
+		.from(usageEventsTable)
+		.where(
+			and(
+				where,
+				// Structural, not incidental: judge rows are excluded by purpose,
+				// not merely by "judge rows happen to carry no facts today". If a
+				// future writer ever stamps facts onto a judge row, the Metrics
+				// table must still not count judge calls as the Session's own
+				// tool work — the same rule `purpose` encodes for the spend.
+				eq(usageEventsTable.purpose, "turn"),
+				isNotNull(usageEventsTable.toolFactsJson),
+			),
+		)
+		.all();
+
+	// Keyed by kind+name (a skill could in principle share a tool's name,
+	// and the two rows answer different questions — "the bash tool was
+	// called N times" vs "the skill named bash was loaded N times"); the
+	// entry carries its own name so nothing decodes the key back apart.
+	const seen = new Map<
+		string,
+		{
+			name: string;
+			kind: "tool" | "skill";
+			calls: number;
+			sessions: Set<string>;
+		}
+	>();
+	const bump = (
+		key: string,
+		name: string,
+		kind: "tool" | "skill",
+		count: number,
+		sessionId: string,
+	) => {
+		const entry = seen.get(key) ?? {
+			name,
+			kind,
+			calls: 0,
+			sessions: new Set(),
+		};
+		entry.calls += count;
+		entry.sessions.add(sessionId);
+		seen.set(key, entry);
+	};
+
+	for (const row of rows) {
+		let facts: {
+			tools?: Record<string, unknown>;
+			skills?: Record<string, unknown>;
+		};
+		try {
+			facts = JSON.parse(row.toolFactsJson as string);
+		} catch {
+			// dilna wrote this JSON itself, so this is corruption, not input —
+			// degrade to skipping the row rather than failing the whole
+			// dashboard for one bad row.
+			continue;
+		}
+		for (const [name, count] of Object.entries(facts.tools ?? {})) {
+			if (typeof count === "number" && count > 0) {
+				bump(`tool:${name}`, name, "tool", count, row.sessionId);
+			}
+		}
+		for (const [name, count] of Object.entries(facts.skills ?? {})) {
+			if (typeof count === "number" && count > 0) {
+				bump(`skill:${name}`, name, "skill", count, row.sessionId);
+			}
+		}
+	}
+
+	return [...seen.values()]
+		.map(({ name, kind, calls, sessions }) => ({
+			name,
+			kind,
+			calls,
+			sessions: sessions.size,
+		}))
+		.sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 }
 
 /**
