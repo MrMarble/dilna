@@ -25,6 +25,7 @@ let nextSummary: UsageSummary = {
 	byPurpose: [],
 	contextDrift: [],
 	burnFindings: [],
+	toolUsage: [],
 };
 
 vi.mock("@/api/client", () => ({
