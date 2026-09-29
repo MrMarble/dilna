@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.39.0](https://github.com/MrMarble/dilna/compare/v0.38.0...v0.39.0) (2026-09-29)
+
+
+### Features
+
+* **metrics:** burn check for unused built-in tools (finding T) ([#303](https://github.com/MrMarble/dilna/issues/303)) ([842efc8](https://github.com/MrMarble/dilna/commit/842efc867e6150895bba9f5aa783347f6064a856))
+* **metrics:** burn finding K — unused skills, with a disable-for-Repo action ([#295](https://github.com/MrMarble/dilna/issues/295)) ([#301](https://github.com/MrMarble/dilna/issues/301)) ([32f9691](https://github.com/MrMarble/dilna/commit/32f9691503a9e3c98eaa348d40c6f44340640484))
+* **metrics:** burn findings C/M/S — cache rehydration, overthinking, expensive delegation ([#294](https://github.com/MrMarble/dilna/issues/294)) ([#302](https://github.com/MrMarble/dilna/issues/302)) ([52b1a93](https://github.com/MrMarble/dilna/commit/52b1a9313dbda64fcc5026d585124c36050ee1bc))
+* **metrics:** burn findings engine + finding D, session overdepth ([#291](https://github.com/MrMarble/dilna/issues/291)) ([#297](https://github.com/MrMarble/dilna/issues/297)) ([6d07e8d](https://github.com/MrMarble/dilna/commit/6d07e8d1f76fa9261b867b53b32de72f14926127))
+* **sessions:** per-session burn timeline in the Session context panel ([#298](https://github.com/MrMarble/dilna/issues/298)) ([46eb478](https://github.com/MrMarble/dilna/commit/46eb4783a87f0ff4586275f505b35cfadbce0b50))
+* **usage:** record per-turn tool & skill facts + Metrics tool/skill usage table ([#299](https://github.com/MrMarble/dilna/issues/299)) ([d82b6c9](https://github.com/MrMarble/dilna/commit/d82b6c9cf6c8c2a008c8e94cdff624c5c837ee6b))
+
 ## [0.38.0](https://github.com/MrMarble/dilna/compare/v0.37.0...v0.38.0) (2026-09-28)
 
 
