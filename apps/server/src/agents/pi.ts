@@ -245,7 +245,11 @@ const READ_REPO_MEMORY_TOOL_DESCRIPTION = `Read this Repo's persistent memory �
 
 const readRepoMemorySchema = Type.Object({});
 
-function createReadRepoMemoryTool(
+/** Exported for `toolSchemaWeight.ts`, which reconstructs one inert instance
+ * of every built-in tool to measure its schema weight (issue #296) — the
+ * measurement must read the same declaration `startPi` registers, not a copy
+ * that can drift from it. */
+export function createReadRepoMemoryTool(
 	repoId: string,
 ): AgentTool<typeof readRepoMemorySchema> {
 	return {
@@ -276,7 +280,8 @@ Keep it to short, standalone facts, not procedures, task notes, or anything spec
 
 const updateRepoMemorySchema = Type.Object({ content: Type.String() });
 
-function createUpdateRepoMemoryTool(
+/** Exported for `toolSchemaWeight.ts` — see `createReadRepoMemoryTool`. */
+export function createUpdateRepoMemoryTool(
 	repoId: string,
 ): AgentTool<typeof updateRepoMemorySchema> {
 	return {
@@ -304,8 +309,10 @@ const readSkillSchema = Type.Object({ name: Type.String() });
  * of the system prompt (which only lists name + description) until the model
  * asks for one by name. `skills` is the already-loaded set for this Session's
  * Repo, so this never re-reads disk mid-turn.
+ *
+ * Exported for `toolSchemaWeight.ts` — see `createReadRepoMemoryTool`.
  */
-function createReadSkillTool(
+export function createReadSkillTool(
 	skills: LoadedSkill[],
 ): AgentTool<typeof readSkillSchema> {
 	return {

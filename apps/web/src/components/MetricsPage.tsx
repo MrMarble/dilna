@@ -710,6 +710,7 @@ const BURN_CHECK_LABELS: Record<BurnCheckCode, string> = {
 	"model-overthinking": "Overthinking",
 	"expensive-delegation": "Expensive delegation",
 	"repo-unused-skill": "Unused skill",
+	"unused-tool": "Unused tool",
 };
 
 /** What the $ column means per check, once priced and once when it renders
@@ -738,6 +739,11 @@ const WASTE_HINTS: Record<BurnCheckCode, { priced: string; unpriced: string }> =
 		"repo-unused-skill": {
 			priced:
 				"Prompt-line carry at the model's uncached input rate — an upper bound",
+			unpriced: "No catalog price for the models in range — no $ estimate",
+		},
+		"unused-tool": {
+			priced:
+				"Estimated waste of carrying the unused tool's schema on every observed turn",
 			unpriced: "No catalog price for the models in range — no $ estimate",
 		},
 	};

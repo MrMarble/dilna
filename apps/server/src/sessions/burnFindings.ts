@@ -1,5 +1,5 @@
-import type { BurnFinding, BurnFindingAction } from "@dilna/shared";
-import { formatTokenCount, formatUsd } from "@dilna/shared";
+import type { BurnFinding, BurnFindingAction, ToolName } from "@dilna/shared";
+import { formatTokenCount, formatUsd, TOOL_NAMES } from "@dilna/shared";
 import {
 	and,
 	asc,
@@ -13,6 +13,10 @@ import {
 } from "drizzle-orm";
 import { resolveSummarizationModel } from "../agents/pi";
 import { LIBRARY_CHARS_PER_TOKEN } from "../agents/providerConfig";
+import {
+	TOOL_BURN_CLASSIFICATION,
+	toolSchemaTokens,
+} from "../agents/toolSchemaWeight";
 import { getDb } from "../db";
 import {
 	messages as messagesTable,
@@ -36,7 +40,8 @@ import { resolveSessionTitles } from "./usageStats";
  *
  * The ticket batch's letters map to check codes (ADR-0051): D =
  * `session-overdepth` (#291), C = `cache-rehydration`, M =
- * `model-overthinking`, S = `expensive-delegation` (#294).
+ * `model-overthinking`, S = `expensive-delegation` (#294), K =
+ * `repo-unused-skill` (#295), T = `unused-tool` (#296).
  *
  * Pricing follows the empty-slice rule the rest of the summary already uses:
  * a Model with no price in the catalog (custom-provider models are built
@@ -159,6 +164,25 @@ export const MIN_FACT_TURNS = 10;
 const BURN_FINDINGS_LIMIT = 10;
 
 const SEVERITY_RANK = { critical: 2, warning: 1, info: 0 } as const;
+
+/** Smallest number of fact-stamped turns (issue #292's `tool_facts_json`)
+ * finding T's verdict may rest on. Tool-usage facts are forward-only — turns
+ * from before #292 shipped carry no facts at all — so absence of usage data
+ * is never read as proof a tool is unused: the window only counts turns that
+ * actually recorded what they did, and there must be enough of them that
+ * "never called" means something. 25 turns is a few work Sessions; below
+ * that, the honest verdict is "not observed yet", not a finding. (K's
+ * `MIN_FACT_TURNS` above is deliberately smaller — its window is per-Repo
+ * and only turns of Sessions that *carried* the skill, a far denser signal
+ * than T's instance-wide any-ordinary-turn count.) */
+export const MIN_TOOL_OBSERVATION_TURNS = 25;
+
+/** Usage rate below which a tool that *was* called still counts as barely
+ * used (finding T): fewer than one call per ~50 observed turns means the
+ * calls it did make never came close to justifying a schema riding in every
+ * single turn. A tool at or above this line earned its keep often enough
+ * that the disable question is a judgment call, not a finding. */
+export const RARE_TOOL_RATE = 0.02;
 
 /** One turn row, narrowed to what the checks read. */
 type TurnRow = {
@@ -432,21 +456,24 @@ export function getBurnFindings(since: number): BurnFinding[] {
 	candidates.push(...judgeCandidates(judgesBySession));
 
 	const skillFindings = unusedSkillFindings(since);
+	const toolFindings = unusedToolFindings(since);
 
 	// Worst first: largest estimated waste, then severity. Null waste
 	// (unpriced models, and the fan-out shape's deliberate "real work, not
 	// waste") ranks below every priced figure; ties break toward the louder
-	// severity, then deterministically. Skill findings (already shaped) ride
-	// the same list — the cap is shared, so a check earns its slot on the
-	// card against the others, not against nothing.
+	// severity, then deterministically. Skill and tool findings (already
+	// shaped) ride the same list — the cap is shared, so a check earns its
+	// slot on the card against the others, not against nothing.
 	type Merged =
 		| { kind: "candidate"; candidate: Candidate }
-		| { kind: "skill"; finding: BurnFinding };
+		| { kind: "skill"; finding: BurnFinding }
+		| { kind: "tool"; finding: BurnFinding };
 	const merged: Merged[] = [
 		...candidates.map(
 			(candidate): Merged => ({ kind: "candidate", candidate }),
 		),
 		...skillFindings.map((finding): Merged => ({ kind: "skill", finding })),
+		...toolFindings.map((finding): Merged => ({ kind: "tool", finding })),
 	];
 	const wasteOf = (m: Merged) =>
 		m.kind === "candidate" ? m.candidate.wasteUsd : m.finding.wasteUsd;
@@ -507,9 +534,8 @@ export function getBurnFindings(since: number): BurnFinding[] {
 	);
 
 	return top.map((m) =>
-		m.kind === "skill"
-			? m.finding
-			: {
+		m.kind === "candidate"
+			? {
 					check: m.candidate.check,
 					severity: m.candidate.severity,
 					sessionId: m.candidate.sessionId,
@@ -518,7 +544,8 @@ export function getBurnFindings(since: number): BurnFinding[] {
 					evidence: candidateEvidence(m.candidate, compactedById, titleById),
 					wasteUsd: m.candidate.wasteUsd,
 					action: null,
-				},
+				}
+			: m.finding,
 	);
 }
 
@@ -765,6 +792,256 @@ function unusedSkillEvidence(input: {
 /** Resolve every turn row's catalog Model once — the window drives the
  * depth, the rate card drives pricing, and all three per-turn checks read
  * both. */
+/**
+ * Finding T — unused built-in tools (issue #296). dilna registers the same
+ * 14-tool set on every ordinary Session (`startPi`), and the provider bills
+ * those declarations as prompt tokens on every turn — used or not. The
+ * per-turn facts #292 stamps record what each turn actually called, so a
+ * built-in with zero (or barely any) calls across a long enough observation
+ * window is paying rent for nothing.
+ *
+ * Instance-scoped by design (`sessionId`/`repoId` null, `title` = the
+ * tool's wire name): the toolset is identical on every Session, so the
+ * disable question — never a one-click action here — is about the
+ * instance's use, not one Session's.
+ *
+ * Deliberately more advisory than finding K: several of these tools are
+ * structural (an Agent without bash/task isn't dilna), so each finding
+ * carries the situational-vs-structural distinction
+ * (`TOOL_BURN_CLASSIFICATION`) as its severity — structural tools surface
+ * at `info` as informational-only verdicts, situational ones at `warning`
+ * — and no `BurnFindingAction` is offered for either (dilna has no
+ * tool-enablement config to drive).
+ *
+ * Thresholds (the module's "absence of data must not be read as proof a
+ * tool is unused" rule): the observation window counts only fact-stamped
+ * turn rows — pre-#292 turns carry no facts and are never read as "called
+ * nothing" — and must reach `MIN_TOOL_OBSERVATION_TURNS` before anything
+ * fires. A tool fires when it has zero calls in the window or sits under
+ * `RARE_TOOL_RATE`; anything more used produces no finding at all.
+ *
+ * Waste = the tool's measured schema weight (`toolSchemaWeight.ts`) priced
+ * at each observed turn's own blended prompt-side rate — the catalog rates
+ * over that turn's actual input/cache-read/cache-write mix, so caching
+ * discounts and compaction re-writes are reflected as they actually
+ * happened. Turns on unpriced or out-of-catalog models can't contribute a
+ * rate; they still count toward the window and the usage counts, and the
+ * finding's $ figure then covers the priceable subset (noted in the
+ * evidence) — or is null when no turn is priceable, per the module doc's
+ * empty-slice rule. This is a deliberate divergence from finding D's
+ * any-unpriced-poisons-the-finding rule: D is per-Session (one model, so
+ * one unpriceable row really does poison every number), while T aggregates
+ * across every model in the range, where mixed pricing is the normal case
+ * and nulling the finding over one unpriced Session would hide measurable
+ * waste behind it.
+ */
+function unusedToolFindings(since: number): BurnFinding[] {
+	const db = getDb();
+
+	// The orchestrator (ADR-0021) runs a completely different toolset (its
+	// own `dilna_*` tools, no filesystem tools) on the same turn-purpose
+	// rows, so its turns must neither contribute to the window nor dilute
+	// the usage counts. Live rows only: the ADR-0024 archive carries no
+	// kind, and a deleted Session's turns counting as ordinary is the same
+	// tolerance finding D already applies to deleted Sessions.
+	const orchestratorIds = new Set(
+		db
+			.select({ id: sessionsTable.id })
+			.from(sessionsTable)
+			.where(eq(sessionsTable.kind, "orchestrator"))
+			.all()
+			.map((row) => row.id),
+	);
+
+	const rows = (
+		db
+			.select({
+				sessionId: usageEventsTable.sessionId,
+				provider: usageEventsTable.provider,
+				model: usageEventsTable.model,
+				inputTokens: usageEventsTable.inputTokens,
+				cacheReadTokens: usageEventsTable.cacheReadTokens,
+				cacheWriteTokens: usageEventsTable.cacheWriteTokens,
+				toolFactsJson: usageEventsTable.toolFactsJson,
+			})
+			.from(usageEventsTable)
+			.where(
+				// Judge rows (ADR-0046) are excluded by purpose like everywhere
+				// else on this seam — they run on their own fresh context with
+				// no tools, and `recordJudgeUsage` stamps no facts anyway.
+				and(
+					gte(usageEventsTable.createdAt, since),
+					eq(usageEventsTable.purpose, "turn"),
+					isNotNull(usageEventsTable.toolFactsJson),
+				),
+			)
+			.all() as FactRow[]
+	).filter((row) => !orchestratorIds.has(row.sessionId));
+
+	// The no-data guard: without enough recorded turns the honest verdict is
+	// "not observed yet" — no finding for any tool, used or not.
+	if (rows.length < MIN_TOOL_OBSERVATION_TURNS) return [];
+
+	const calls = new Map<ToolName, number>();
+	for (const row of rows) {
+		let facts: { tools?: Record<string, unknown> };
+		try {
+			facts = JSON.parse(row.toolFactsJson as string);
+		} catch {
+			// dilna wrote this JSON itself — corruption, not input; skip the
+			// row (same degradation as `getToolUsage`) rather than fail the
+			// card.
+			continue;
+		}
+		for (const [name, count] of Object.entries(facts.tools ?? {})) {
+			// Names outside the built-in universe (codegraph — conditionally
+			// registered — the orchestrator's tools, MCP servers) are other
+			// findings' business; recording them would claim a schema weight
+			// this module never measured.
+			if (!isBuiltInToolName(name)) continue;
+			if (typeof count === "number" && count > 0) {
+				calls.set(name, (calls.get(name) ?? 0) + count);
+			}
+		}
+	}
+
+	// Per-turn blended prompt-side rate — what one token riding in that
+	// turn's prompt actually cost, given the turn's real caching mix. Null
+	// when the turn's model has no catalog price (or the row is degenerate):
+	// those turns stay in the window but can't price a schema.
+	const rateByRow = rows.map((row) => blendedPromptRate(row));
+	const pricedTurns = rateByRow.filter((r) => r !== null).length;
+
+	const findings: BurnFinding[] = [];
+	for (const name of TOOL_NAMES) {
+		const toolCalls = calls.get(name) ?? 0;
+		const usageRate = toolCalls / rows.length;
+		if (toolCalls > 0 && usageRate >= RARE_TOOL_RATE) continue;
+
+		// Waste over the priceable turns; null only when nothing is priceable
+		// (the finding still fires — see the doc's divergence note).
+		const wasteUsd =
+			pricedTurns === 0
+				? null
+				: rows.reduce(
+						(sum, row, i) =>
+							sum + (rateByRow[i] ?? 0) * toolSchemaTokens(name, row.provider),
+						0,
+					);
+
+		findings.push({
+			check: "unused-tool",
+			severity:
+				TOOL_BURN_CLASSIFICATION[name] === "structural" ? "info" : "warning",
+			sessionId: null,
+			repoId: null,
+			title: name,
+			evidence: unusedToolEvidence(
+				name,
+				toolCalls,
+				rows.length,
+				wasteUsd,
+				pricedTurns,
+			),
+			wasteUsd,
+			// No one-click resolution exists for a built-in tool — see the
+			// doc's advisory-only note.
+			action: null,
+		});
+	}
+	// Ordering is the merged worst-first sort's job (waste, then severity,
+	// then the deterministic key) — this list is unordered input to it.
+	return findings;
+}
+
+/** One fact-stamped turn row, narrowed to what finding T reads. */
+type FactRow = {
+	sessionId: string;
+	provider: string;
+	model: string;
+	inputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	toolFactsJson: unknown;
+};
+
+/** Catalog price of one token riding in the row's prompt, averaged over the
+ * turn's actual input/cache-read/cache-write mix. Null when the model is out
+ * of the catalog or unpriced (same `priced` rule as finding D), or the row
+ * records no prompt-side tokens at all. The catalog's rates are $ per
+ * million tokens — pi-ai's own `calculateCost` is the unit reference
+ * (`rates.input / 1e6 × tokens`); base rates only, ignoring `cost.tiers`,
+ * since this prices a hypothetical token, not the row's recorded spend. */
+function blendedPromptRate(row: FactRow): number | null {
+	const model = resolveSummarizationModel(row.provider, row.model);
+	const cost = model?.cost;
+	if (
+		!cost ||
+		!(
+			cost.input > 0 ||
+			cost.output > 0 ||
+			cost.cacheRead > 0 ||
+			cost.cacheWrite > 0
+		)
+	) {
+		return null;
+	}
+	const promptTokens =
+		row.inputTokens + row.cacheReadTokens + row.cacheWriteTokens;
+	if (promptTokens <= 0) return null;
+	const promptCost =
+		(row.inputTokens * cost.input +
+			row.cacheReadTokens * cost.cacheRead +
+			row.cacheWriteTokens * cost.cacheWrite) /
+		1_000_000;
+	return promptCost / promptTokens;
+}
+
+function isBuiltInToolName(name: string): name is ToolName {
+	return (TOOL_NAMES as readonly string[]).includes(name);
+}
+
+/** The finding's human-readable evidence — self-contained, rendered verbatim
+ * by the web: usage counts, the schema weight, the $ estimate, and the
+ * situational/structural verdict with its (non-)action. No leading tool
+ * name: the card renders the finding's `title` (the wire name) right beside
+ * this. */
+function unusedToolEvidence(
+	name: ToolName,
+	calls: number,
+	observedTurns: number,
+	wasteUsd: number | null,
+	pricedTurns: number,
+): string {
+	const usage =
+		calls === 0
+			? `0 calls across ${observedTurns} observed turns`
+			: `${calls} ${calls === 1 ? "call" : "calls"} across ${observedTurns} observed turns — under the ${Math.round(RARE_TOOL_RATE * 100)}% barely-used line`;
+	const parts = [
+		`${usage}, while its ~${formatTokenCount(toolSchemaTokens(name, "anthropic"))}-token schema rode in every turn's input — the declaration is billed as prompt tokens whether the tool is used or not.`,
+	];
+	if (wasteUsd == null) {
+		parts.push(
+			"No model behind these turns has a price in the catalog, so the finding carries no dollar figure — never a computed zero.",
+		);
+	} else {
+		parts.push(
+			`Estimated waste of carrying it unused: ~${formatUsd(wasteUsd)}.`,
+		);
+		if (pricedTurns < observedTurns) {
+			parts.push(
+				`The estimate covers the ${pricedTurns} of ${observedTurns} observed turns whose model has a catalog price; the rest are unmeasurable.`,
+			);
+		}
+	}
+	parts.push(
+		TOOL_BURN_CLASSIFICATION[name] === "structural"
+			? "Structural — dilna's coding loop depends on it, so this is informational only; zero calls over a window this long may signal a broken tool rather than a saving."
+			: "Situational — consider whether it earns its keep here; advisory only, since dilna has no tool-disable switch.",
+	);
+	return parts.join(" ");
+}
+
 function resolveTurns(turns: SessionTurns): ResolvedTurn[] {
 	return turns.rows.map((row) => {
 		const model = resolveSummarizationModel(row.provider, row.model);
