@@ -701,7 +701,35 @@ function CacheRateTable({
  * exhaustiveness trick as `sessionStream.ts`'s event-type map). */
 const BURN_CHECK_LABELS: Record<BurnCheckCode, string> = {
 	"session-overdepth": "Session overdepth",
+	"cache-rehydration": "Cache rehydration",
+	"model-overthinking": "Overthinking",
+	"expensive-delegation": "Expensive delegation",
 };
+
+/** What the $ column means per check, once priced and once when it renders
+ * the em dash — the waste models differ (a premium, a rate × token sum, an
+ * overspend; the fan-out shape deliberately carries no figure at all), and
+ * the tooltip is where the column stays honest about that. */
+const WASTE_HINTS: Record<BurnCheckCode, { priced: string; unpriced: string }> =
+	{
+		"session-overdepth": {
+			priced: "Estimated waste vs the Session's own median turn",
+			unpriced: "No catalog price for this model — no $ estimate",
+		},
+		"cache-rehydration": {
+			priced: "Cache-write premium over a warm cache on the flagged re-writes",
+			unpriced: "No catalog price for this model — no $ estimate",
+		},
+		"model-overthinking": {
+			priced: "Flagged reasoning tokens at the model's plain output rate",
+			unpriced: "No catalog price for this model — no $ estimate",
+		},
+		"expensive-delegation": {
+			priced: "Judge overspend vs the turn it scored",
+			unpriced:
+				"Fan-out spend is real work, not waste — the total is in the evidence",
+		},
+	};
 
 const SEVERITY_BADGE: Record<BurnFindingSeverity, string> = {
 	critical: "bg-danger/10 text-danger",
@@ -742,7 +770,11 @@ function BurnChecksCard({
 								: null;
 						return (
 							<li
-								key={`${f.check}-${f.sessionId ?? f.repoId ?? i}`}
+								// The server caps findings at ten in a stable worst-first order, but
+								// check + Session is not a unique key: finding S has two shapes
+								// (fan-out, judge) that can both flag one orchestrator.
+								// biome-ignore lint/suspicious/noArrayIndexKey: the index only disambiguates that stable-list pair
+								key={`${f.check}-${f.sessionId ?? f.repoId ?? i}-${i}`}
 								className="px-4 py-3"
 							>
 								<div className="flex items-center gap-2">
@@ -767,8 +799,8 @@ function BurnChecksCard({
 										className="ml-auto shrink-0 text-sm font-medium tabular-nums"
 										title={
 											f.wasteUsd != null
-												? "Estimated waste vs the Session's own median turn"
-												: "No catalog price for this model — no $ estimate"
+												? WASTE_HINTS[f.check].priced
+												: WASTE_HINTS[f.check].unpriced
 										}
 									>
 										{f.wasteUsd != null ? `~${formatUsd(f.wasteUsd)}` : "—"}

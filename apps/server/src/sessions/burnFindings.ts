@@ -1,10 +1,22 @@
 import type { BurnFinding } from "@dilna/shared";
 import { formatTokenCount, formatUsd } from "@dilna/shared";
-import { and, eq, gte, inArray } from "drizzle-orm";
+import {
+	and,
+	asc,
+	between,
+	eq,
+	gte,
+	inArray,
+	isNotNull,
+	or,
+	sql,
+} from "drizzle-orm";
 import { resolveSummarizationModel } from "../agents/pi";
 import { getDb } from "../db";
 import {
+	messages as messagesTable,
 	sessions as sessionsTable,
+	turnScores as turnScoresTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
 import { resolveSessionTitles } from "./usageStats";
@@ -12,17 +24,25 @@ import { resolveSessionTitles } from "./usageStats";
 /**
  * Burn findings (issue #291, ADR-0051) — the judgment layer over the spend
  * `usageStats.ts` measures. Each check turns raw `usage_events` rows (plus,
- * where relevant, the Session's compaction fields) into a `BurnFinding`: a
- * severity, human-readable evidence, and an estimated $ waste. Everything is
- * computed here, in one place, over the same time range as the usage summary
- * — the web renders the shared `BurnFinding` shape verbatim and computes
- * nothing (same single-home policy as `cacheHitRate`).
+ * where relevant, the Session's compaction/spawn-lineage fields) into a
+ * `BurnFinding`: a severity, human-readable evidence, and an estimated $
+ * waste. Everything is computed here, in one place, over the same time range
+ * as the usage summary — the web renders the shared `BurnFinding` shape
+ * verbatim and computes nothing (same single-home policy as `cacheHitRate`).
+ *
+ * The ticket batch's letters map to check codes (ADR-0051): D =
+ * `session-overdepth` (#291), C = `cache-rehydration`, M =
+ * `model-overthinking`, S = `expensive-delegation` (#294).
  *
  * Pricing follows the empty-slice rule the rest of the summary already uses:
  * a Model with no price in the catalog (custom-provider models are built
  * with an all-zero cost, and out-of-catalog ids resolve to nothing) yields a
  * finding *without* a $ figure (`wasteUsd: null`) — never a computed 0,
- * which would read as "free" rather than "unmeasurable".
+ * which would read as "free" rather than "unmeasurable". The poison is
+ * scoped to what each waste model actually reads: D's premium is relative to
+ * a baseline built from *every* turn, so any unpriced turn downgrades the
+ * whole finding, while C's and M's waste is an absolute (rate × tokens) sum
+ * over the flagged turns alone, so only those turns need a price.
  */
 
 /** Median reported context occupancy past which a Session's depth is
@@ -41,12 +61,90 @@ export const OVERDEPTH_CRITICAL_THRESHOLD = 0.85;
 /** Smallest number of provider-reported turns a depth verdict may rest on —
  * one deep turn is a one-off (a big paste, a long read), not a Session
  * sitting deep. Same "a verdict on one turn is noise" reasoning as the
- * drift list's `turns` field. */
+ * drift list's `turns` field. Shared by the overthinking check, whose
+ * median-turn share verdict rests on the same noise argument. */
 const MIN_REPORTED_TURNS = 3;
+
+/** Share of a turn's prompt prefix that must land as cache writes for the
+ * turn to count as a *rehydration* — the whole context written fresh. A warm
+ * turn re-reads most of its prefix at the (roughly 10× cheaper) cache-read
+ * rate and writes only the new tail; a turn that pays the write rate on
+ * four-fifths of its prefix didn't hit the cache at all, whether because the
+ * prefix broke (frozen system prompt mismatch, a changed tool set) or
+ * because a re-seed just replaced it wholesale. */
+export const REHYDRATION_SHARE = 0.8;
+
+/** How far the prompt prefix must shrink between two consecutive reported
+ * turns for the rehydration after it to count as *post-reset*: only a
+ * re-seed — a compaction (ADR-0023) or a tool-output trim (#272) — shrinks
+ * context mid-session, and both replace the prefix wholesale, so history
+ * otherwise only ever grows. A drop of a third is far beyond turn-to-turn
+ * noise and far below what compaction at depth actually sheds. */
+export const REHYDRATION_RESET_FACTOR = 1.5;
+
+/** Smallest number of counted rehydration turns (post-reset re-writes plus
+ * mid-session spikes) a cache finding may rest on. One is never a finding:
+ * the Session's first reported turn re-writes its prefix *by definition*
+ * (nothing is cached yet), and a lone post-reset re-write is compaction
+ * doing its job — persistence is what makes the tax worth naming. */
+export const MIN_REHYDRATION_TURNS = 2;
+
+/** Share of reported turns that must be mid-session spikes (a *growing*
+ * prefix re-written whole) before the cache finding escalates to critical —
+ * at that rate the cache is broken more often than it works, and every turn
+ * is paying full freight. */
+export const REHYDRATION_CRITICAL_SHARE = 0.5;
+
+/** Median reasoning share of generated output past which a Session is
+ * flagged for overthinking. Reasoning tokens bill at the model's plain
+ * output rate, so a Session that spends half its generation on thinking is
+ * paying roughly double for the same answers. The issue phrases this as a
+ * share of *spend*; the token share is the always-computable form of the
+ * same ratio (the $ share would need splitting the provider's blended
+ * `costUsd`, which is unavailable exactly when the model is unpriced — and
+ * reasoning cost is proportional to reasoning tokens at a fixed rate, so the
+ * two track each other). */
+export const OVERTHINK_THRESHOLD = 0.5;
+
+/** Median reasoning share past which overthinking escalates to critical —
+ * three quarters of everything the Session generates is thinking. */
+export const OVERTHINK_CRITICAL_THRESHOLD = 0.75;
+
+/** Ratio of child-Session spend to the orchestrator's own spend past which
+ * the fan-out is flagged as expensive. Some ratio is healthy — cheap
+ * coordination producing real work is the point of the orchestrator
+ * (ADR-0021) — but an order of magnitude beyond the orchestrator's own
+ * budget is delegation cost the user should see before the bill does. */
+export const FANOUT_RATIO = 5;
+
+/** Fan-out ratio past which the finding escalates to critical. */
+export const FANOUT_CRITICAL_RATIO = 25;
+
+/** Ratio past which a single judge call's cost escalates the judge finding
+ * to critical — a judge spending 5× the turn it scored is evaluating the
+ * work more expensively than doing it. */
+export const JUDGE_CRITICAL_RATIO = 5;
+
+/** How many seconds after a judge call's `usage_events` row its
+ * `turn_scores` row may land and still be paired with it. `scoreTurn`
+ * records the run's usage in a `finally` and inserts the score row
+ * immediately after — microseconds apart, same second in practice; the
+ * window only absorbs clock jitter. Scores older than their judge row (a
+ * previous run's) are never paired. */
+const JUDGE_PAIR_WINDOW_S = 60;
+
+/** How far (in seconds) a scored turn's `usage_events` row may sit from the
+ * turn's last `messages` row and still count as that turn's spend row. The
+ * row is written on the turn-end event, right after the final assistant
+ * round is persisted — same second in practice. Matches outside the window
+ * are dropped (the pair is not compared) rather than guessed. */
+const TURN_MATCH_WINDOW_S = 5;
 
 /** How many findings the Burn checks card shows, worst first — same cap
  * shape as the top-spend and drift lists. */
 const BURN_FINDINGS_LIMIT = 10;
+
+const SEVERITY_RANK = { critical: 2, warning: 1, info: 0 } as const;
 
 /** One turn row, narrowed to what the checks read. */
 type TurnRow = {
@@ -54,7 +152,24 @@ type TurnRow = {
 	provider: string;
 	model: string;
 	costUsd: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	reasoningTokens: number;
 	providerContextTokens: number | null;
+	createdAt: number;
+};
+
+/** One judge-call row (ADR-0046), narrowed to what finding S reads. */
+type JudgeRow = {
+	repoId: string;
+	provider: string;
+	model: string;
+	inputTokens: number;
+	outputTokens: number;
+	costUsd: number;
+	createdAt: number;
 };
 
 /** One Session's turn rows in range, oldest last. */
@@ -64,9 +179,34 @@ type SessionTurns = {
 	rows: TurnRow[];
 };
 
+/** A turn row with its catalog Model resolved once — the window drives the
+ * depth, the rate card drives pricing, and every check reads both, so the
+ * lookup happens once per row instead of once per check. */
+type ResolvedTurn = TurnRow & {
+	/** The catalog Model behind the row's provider/model id — the window
+	 * and rate card every priced figure comes from. Undefined when the id
+	 * is out of catalog. Named apart from `TurnRow.model` (the id string). */
+	catalog: ReturnType<typeof resolveSummarizationModel>;
+	/** Catalog window of the resolved Model; 0 when out of catalog. */
+	window: number;
+	/** `providerContextTokens / window`, when both are positive — the depth
+	 * finding D judges. Null for rows predating the provider stamp or whose
+	 * model left the catalog; never treated as zero. */
+	depth: number | null;
+	/** The prompt-side portion of the reported context — everything the
+	 * provider read or wrote before this turn's own output. Null when the
+	 * row carries no provider report. This is what a cache re-write
+	 * re-writes, so it is the denominator of the rehydration share. */
+	prefixTokens: number | null;
+	/** Whether the catalog prices this model at all (the empty-slice rule's
+	 * trigger). Custom-provider models are built with an all-zero cost. */
+	priced: boolean;
+};
+
 /** Internal finding-D verdict for one Session, before titles/compaction are
  * resolved onto the shared shape. */
 type OverdepthCandidate = {
+	check: "session-overdepth";
 	sessionId: string;
 	repoId: string;
 	severity: "warning" | "critical";
@@ -81,36 +221,161 @@ type OverdepthCandidate = {
 	wasteUsd: number | null;
 };
 
+/** Internal finding-C verdict for one Session. */
+type CacheCandidate = {
+	check: "cache-rehydration";
+	sessionId: string;
+	repoId: string;
+	severity: "info" | "warning" | "critical";
+	/** Rehydration turns counted toward the tax: post-reset re-writes plus
+	 * mid-session spikes. The Session's first reported turn is excluded —
+	 * every Session re-writes its prefix once by definition. */
+	taxTurns: number;
+	resetTurns: number;
+	spikeTurns: number;
+	reportedTurns: number;
+	/** Median cache-write volume of the counted turns — the size of the
+	 * re-written prefix. */
+	medianRewriteTokens: number;
+	/** Null when any counted turn sits on an unpriced or out-of-catalog
+	 * model: the premium is (write rate − read rate) × tokens on those turns
+	 * alone, so only they can poison it (module doc). */
+	wasteUsd: number | null;
+};
+
+/** Internal finding-M verdict for one Session. */
+type ThinkCandidate = {
+	check: "model-overthinking";
+	sessionId: string;
+	repoId: string;
+	severity: "warning" | "critical";
+	medianShare: number;
+	peakShare: number;
+	flaggedTurns: number;
+	reportedTurns: number;
+	/** Null when any flagged turn sits on an unpriced or out-of-catalog
+	 * model — the waste is the flagged reasoning at the output rate, so only
+	 * flagged turns can poison it (module doc). */
+	wasteUsd: number | null;
+};
+
+/** Internal finding-S verdict, fan-out shape: one orchestrator Session's
+ * delegation bill. */
+type FanoutCandidate = {
+	check: "expensive-delegation";
+	kind: "fanout";
+	sessionId: string;
+	repoId: string | null;
+	severity: "warning" | "critical";
+	children: number;
+	childSpend: number;
+	ownSpend: number;
+	/** Null when the orchestrator's own in-range spend is zero — there is no
+	 * ratio against nothing. */
+	ratio: number | null;
+	/** Largest child by in-range spend — named in the evidence, its title
+	 * resolved in the same batch as every candidate Session's. */
+	topChildId: string | null;
+	topChildSpend: number;
+	/** Always null: the fan-out total is real spend on real work, not waste
+	 * — no counterfactual "cheaper delegation" exists to price it against.
+	 * The evidence carries the total instead. */
+	wasteUsd: null;
+};
+
+/** Internal finding-S verdict, judge shape: one Session's judging that
+ * outspends the turns it scored. */
+type JudgeCandidate = {
+	check: "expensive-delegation";
+	kind: "judge";
+	sessionId: string;
+	repoId: string;
+	severity: "warning" | "critical";
+	compared: number;
+	overspending: number;
+	judgeTokens: number;
+	judgeSpend: number;
+	scoredSpend: number;
+	worstJudgeCost: number;
+	worstScoredCost: number;
+	/** Never null: the figures are recorded `costUsd` values, not catalog
+	 * derivations — the judge-vs-scored comparison is priceable wherever it
+	 * is computable at all. */
+	wasteUsd: number;
+};
+
+type Candidate =
+	| OverdepthCandidate
+	| CacheCandidate
+	| ThinkCandidate
+	| FanoutCandidate
+	| JudgeCandidate;
+
 /**
  * Burn findings for `createdAt >= since`, worst first. Synchronous like
  * every other `usage_events` read (better-sqlite3's driver is synchronous).
  */
 export function getBurnFindings(since: number): BurnFinding[] {
 	const db = getDb();
-	const rows = db
+	const turnRows = db
 		.select({
 			sessionId: usageEventsTable.sessionId,
 			repoId: usageEventsTable.repoId,
 			provider: usageEventsTable.provider,
 			model: usageEventsTable.model,
 			costUsd: usageEventsTable.costUsd,
+			inputTokens: usageEventsTable.inputTokens,
+			outputTokens: usageEventsTable.outputTokens,
+			cacheReadTokens: usageEventsTable.cacheReadTokens,
+			cacheWriteTokens: usageEventsTable.cacheWriteTokens,
+			reasoningTokens: usageEventsTable.reasoningTokens,
 			providerContextTokens: usageEventsTable.providerContextTokens,
 			createdAt: usageEventsTable.createdAt,
 		})
 		.from(usageEventsTable)
 		.where(
-			// Judge calls (ADR-0046) run on their own fresh context; a deep
-			// judge call says nothing about the Session it scored.
+			// Only the Session's own turns feed the per-turn checks (D/C/M):
+			// judge calls (ADR-0046) run on their own fresh context, so a deep
+			// or rehydrated judge call says nothing about the Session it
+			// scored. Finding S reads judge rows in its own query below, where
+			// the judge-vs-scored comparison *is* the question (ADR-0051 §6).
 			and(
 				gte(usageEventsTable.createdAt, since),
 				eq(usageEventsTable.purpose, "turn"),
 			),
 		)
-		.orderBy(usageEventsTable.createdAt)
+		// `createdAt` is second-resolution, so same-second turns tie; rowid is
+		// insertion order, which is turn-completion order — the tiebreak the
+		// rehydration check's "previous turn" walk depends on.
+		.orderBy(asc(usageEventsTable.createdAt), sql`rowid`)
+		.all();
+	const judgeRows = db
+		.select({
+			sessionId: usageEventsTable.sessionId,
+			repoId: usageEventsTable.repoId,
+			provider: usageEventsTable.provider,
+			model: usageEventsTable.model,
+			inputTokens: usageEventsTable.inputTokens,
+			outputTokens: usageEventsTable.outputTokens,
+			costUsd: usageEventsTable.costUsd,
+			createdAt: usageEventsTable.createdAt,
+		})
+		.from(usageEventsTable)
+		.where(
+			and(
+				gte(usageEventsTable.createdAt, since),
+				eq(usageEventsTable.purpose, "judge"),
+			),
+		)
+		.orderBy(asc(usageEventsTable.createdAt), sql`rowid`)
 		.all();
 
 	const bySession = new Map<string, SessionTurns>();
-	for (const row of rows) {
+	// Total recorded spend per Session in range, all purposes — the fan-out
+	// finding's child/own comparison. Delegated Sessions are ordinary
+	// Sessions whose spend lands here like anyone else's.
+	const spendBySession = new Map<string, number>();
+	for (const row of turnRows) {
 		let entry = bySession.get(row.sessionId);
 		if (!entry) {
 			entry = { sessionId: row.sessionId, repoId: row.repoId, rows: [] };
@@ -120,23 +385,69 @@ export function getBurnFindings(since: number): BurnFinding[] {
 		// SessionManager.resolveProviderModel for provider/model.
 		entry.repoId = row.repoId;
 		entry.rows.push(row);
+		spendBySession.set(
+			row.sessionId,
+			(spendBySession.get(row.sessionId) ?? 0) + row.costUsd,
+		);
+	}
+	const judgesBySession = new Map<string, JudgeRow[]>();
+	for (const row of judgeRows) {
+		let entry = judgesBySession.get(row.sessionId);
+		if (!entry) {
+			entry = [];
+			judgesBySession.set(row.sessionId, entry);
+		}
+		entry.push(row);
+		spendBySession.set(
+			row.sessionId,
+			(spendBySession.get(row.sessionId) ?? 0) + row.costUsd,
+		);
 	}
 
-	const candidates = [...bySession.values()]
-		.map(overdepthFinding)
-		.filter((f): f is OverdepthCandidate => f !== null);
+	const candidates: Candidate[] = [];
+	for (const session of bySession.values()) {
+		const resolved = resolveTurns(session);
+		const overdepth = overdepthFinding(session, resolved);
+		if (overdepth) candidates.push(overdepth);
+		const cache = cacheRehydrationFinding(session, resolved);
+		if (cache) candidates.push(cache);
+		const think = overthinkingFinding(session, resolved);
+		if (think) candidates.push(think);
+	}
+	candidates.push(...fanoutCandidates(spendBySession, bySession));
+	candidates.push(...judgeCandidates(judgesBySession));
 
-	// Worst first: largest estimated waste, then deepest median occupancy.
-	// Null waste (unpriced models) ranks below every priced figure.
+	// Worst first: largest estimated waste, then severity. Null waste
+	// (unpriced models, and the fan-out shape's deliberate "real work, not
+	// waste") ranks below every priced figure; ties break toward the louder
+	// severity, then deterministically by check and Session id.
 	candidates.sort((a, b) => {
 		const wasteGap = (b.wasteUsd ?? -1) - (a.wasteUsd ?? -1);
-		return wasteGap !== 0 ? wasteGap : b.medianDepth - a.medianDepth;
+		if (wasteGap !== 0) return wasteGap;
+		const severityGap = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+		if (severityGap !== 0) return severityGap;
+		return (
+			a.check.localeCompare(b.check) || a.sessionId.localeCompare(b.sessionId)
+		);
 	});
 
 	const top = candidates.slice(0, BURN_FINDINGS_LIMIT);
 	if (top.length === 0) return [];
 
-	const titleById = resolveSessionTitles(top.map((f) => f.sessionId));
+	const titleById = resolveSessionTitles([
+		...new Set([
+			...top.map((f) => f.sessionId),
+			// Fan-out evidence names the largest child, whose title resolves in
+			// the same batch.
+			...top.flatMap((f) =>
+				f.check === "expensive-delegation" && f.kind === "fanout"
+					? f.topChildId
+						? [f.topChildId]
+						: []
+					: [],
+			),
+		]),
+	]);
 	// Whether each candidate Session ever compacted (live `sessions` rows
 	// only — the ADR-0024 archive doesn't carry compaction state, so deleted
 	// Sessions' evidence just omits the compaction sentence).
@@ -158,17 +469,48 @@ export function getBurnFindings(since: number): BurnFinding[] {
 	);
 
 	return top.map((candidate) => ({
-		check: "session-overdepth" as const,
+		check: candidate.check,
 		severity: candidate.severity,
 		sessionId: candidate.sessionId,
 		repoId: candidate.repoId,
 		title: titleById.get(candidate.sessionId) ?? null,
-		evidence: overdepthEvidence(
-			candidate,
-			compactedById.get(candidate.sessionId),
-		),
+		evidence: candidateEvidence(candidate, compactedById, titleById),
 		wasteUsd: candidate.wasteUsd,
 	}));
+}
+
+/** Resolve every turn row's catalog Model once — the window drives the
+ * depth, the rate card drives pricing, and all three per-turn checks read
+ * both. */
+function resolveTurns(turns: SessionTurns): ResolvedTurn[] {
+	return turns.rows.map((row) => {
+		const model = resolveSummarizationModel(row.provider, row.model);
+		const window = model?.contextWindow ?? 0;
+		const cost = model?.cost;
+		return {
+			...row,
+			catalog: model,
+			window,
+			depth:
+				row.providerContextTokens != null &&
+				row.providerContextTokens > 0 &&
+				window > 0
+					? row.providerContextTokens / window
+					: null,
+			prefixTokens:
+				row.providerContextTokens != null && row.providerContextTokens > 0
+					? // The prompt side of the reported context: everything before
+						// this turn's own output (reasoning bills within output).
+						Math.max(0, row.providerContextTokens - row.outputTokens)
+					: null,
+			priced:
+				cost != null &&
+				(cost.input > 0 ||
+					cost.output > 0 ||
+					cost.cacheRead > 0 ||
+					cost.cacheWrite > 0),
+		};
+	});
 }
 
 /**
@@ -198,33 +540,12 @@ export function getBurnFindings(since: number): BurnFinding[] {
  * denominator left. No invented denominator, no allowance percentage —
  * the Session is only ever compared to itself.
  */
-function overdepthFinding(turns: SessionTurns): OverdepthCandidate | null {
-	// One catalog lookup per row: the resolved Model drives both the depth
-	// (its window) and the pricing (its rate card), and the previous pass
-	// resolved each row twice for those two questions.
-	const resolved = turns.rows.map((row) => {
-		const model = resolveSummarizationModel(row.provider, row.model);
-		const window = model?.contextWindow ?? 0;
-		const cost = model?.cost;
-		return {
-			costUsd: row.costUsd,
-			priced:
-				cost != null &&
-				(cost.input > 0 ||
-					cost.output > 0 ||
-					cost.cacheRead > 0 ||
-					cost.cacheWrite > 0),
-			depth:
-				row.providerContextTokens != null &&
-				row.providerContextTokens > 0 &&
-				window > 0
-					? row.providerContextTokens / window
-					: null,
-			window,
-		};
-	});
+function overdepthFinding(
+	turns: SessionTurns,
+	resolved: ResolvedTurn[],
+): OverdepthCandidate | null {
 	const comparable = resolved.filter(
-		(r): r is (typeof resolved)[number] & { depth: number } => r.depth != null,
+		(r): r is ResolvedTurn & { depth: number } => r.depth != null,
 	);
 	if (comparable.length < MIN_REPORTED_TURNS) return null;
 
@@ -247,6 +568,7 @@ function overdepthFinding(turns: SessionTurns): OverdepthCandidate | null {
 	);
 
 	return {
+		check: "session-overdepth",
 		sessionId: turns.sessionId,
 		repoId: turns.repoId,
 		severity:
@@ -289,6 +611,563 @@ function overdepthEvidence(
 		);
 	}
 	return parts.join(" ");
+}
+
+/**
+ * Finding C — cache rehydration / compaction tax. A turn whose cache-write
+ * volume covers `REHYDRATION_SHARE` of its prompt prefix didn't hit the
+ * cache at all: it paid the write rate to store the prefix anew. Two things
+ * cause that, and the prefix's own trajectory tells them apart — history
+ * only ever grows between turns, so a *shrinking* prefix means a re-seed
+ * (compaction, ADR-0023, or a tool-output trim, #272) just replaced it,
+ * while a re-write on a *growing* prefix is a mid-session spike: the broken-
+ * prompt-prefix signature, where something invalidated a cache that should
+ * have stayed warm.
+ *
+ * The Session's first reported turn is excluded from the tax — every
+ * Session re-writes its prefix once at birth (nothing is cached yet), so
+ * counting it would flag every Session equally. A finding needs
+ * `MIN_REHYDRATION_TURNS` counted turns; the counted turns report as two
+ * populations because the remedy differs (re-seeds are the price of
+ * compaction, worth seeing at depth; spikes are a defect to investigate).
+ *
+ * Waste = the rehydration premium over a warm cache: each counted turn's
+ * cache-write tokens at the catalog's (write − read) rate spread. This is
+ * an absolute sum over the counted turns alone — no baseline mixes other
+ * turns in — so only counted turns can poison it to `null` (module doc).
+ */
+function cacheRehydrationFinding(
+	turns: SessionTurns,
+	resolved: ResolvedTurn[],
+): CacheCandidate | null {
+	const comparable = resolved.filter((r) => r.prefixTokens != null);
+	if (comparable.length === 0) return null;
+
+	// Walk consecutive reported turns; rows are oldest-last (the query's
+	// createdAt/rowid order), so `previous` is exactly the turn a re-seed
+	// would have rewritten over.
+	let previous: ResolvedTurn | null = null;
+	const resets: ResolvedTurn[] = [];
+	const spikes: ResolvedTurn[] = [];
+	for (const row of comparable) {
+		const prefix = row.prefixTokens as number;
+		const rehydrated = row.cacheWriteTokens >= REHYDRATION_SHARE * prefix;
+		if (rehydrated) {
+			if (
+				previous != null &&
+				(previous.prefixTokens as number) >= REHYDRATION_RESET_FACTOR * prefix
+			) {
+				// The prefix shrank: a re-seed replaced it, and this turn paid
+				// to re-write the compacted/trimmed context — the expected tax.
+				resets.push(row);
+			} else if (previous != null) {
+				// A continuing, growing prefix written whole: the cache broke
+				// mid-session.
+				spikes.push(row);
+			}
+			// previous == null: the Session's first reported turn — excluded
+			// from the tax (every Session pays it once at birth).
+		}
+		previous = row;
+	}
+
+	const counted = [...resets, ...spikes];
+	if (counted.length < MIN_REHYDRATION_TURNS) return null;
+
+	// Every counted turn re-writes roughly the prefix it rehydrated; the
+	// median across them sizes the re-write in the evidence.
+	const medianRewriteTokens = median(counted.map((r) => r.cacheWriteTokens));
+	const wasteUsd = counted.every((r) => r.priced)
+		? counted.reduce((sum, r) => {
+				const cost = r.catalog?.cost;
+				if (!cost) return sum;
+				return (
+					sum +
+					(r.cacheWriteTokens * Math.max(0, cost.cacheWrite - cost.cacheRead)) /
+						1_000_000
+				);
+			}, 0)
+		: null;
+
+	const spikeTurns = spikes.length;
+	const severity: CacheCandidate["severity"] =
+		spikeTurns >= REHYDRATION_CRITICAL_SHARE * comparable.length
+			? "critical"
+			: spikeTurns > 0
+				? "warning"
+				: "info";
+
+	return {
+		check: "cache-rehydration",
+		sessionId: turns.sessionId,
+		repoId: turns.repoId,
+		severity,
+		taxTurns: counted.length,
+		resetTurns: resets.length,
+		spikeTurns,
+		reportedTurns: comparable.length,
+		medianRewriteTokens,
+		wasteUsd,
+	};
+}
+
+function cacheEvidence(candidate: CacheCandidate): string {
+	const parts = [
+		`${candidate.taxTurns} of ${candidate.reportedTurns} reported turns re-wrote their whole prompt prefix as fresh cache writes (median ${formatTokenCount(candidate.medianRewriteTokens)} tokens per re-write): ${candidate.resetTurns} after a context reset — the expected re-write of the compacted or trimmed prefix — and ${candidate.spikeTurns} mid-session, where the prefix kept growing but the provider re-read none of it, the broken-prefix signature to investigate.`,
+	];
+	parts.push(
+		candidate.wasteUsd != null
+			? `Cache-write premium over a warm cache on those turns: ~${formatUsd(candidate.wasteUsd)}.`
+			: `The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.`,
+	);
+	return parts.join(" ");
+}
+
+/**
+ * Finding M — model overthinking. A Session whose *median* turn spends
+ * `OVERTHINK_THRESHOLD` of its generated output on reasoning tokens is
+ * thinking more than answering: reasoning bills at the model's plain output
+ * rate, so every point of reasoning share is output-rate spend. The metric
+ * is the token share of output rather than a share of blended `costUsd` —
+ * the token ratio is computable on every turn with any output, while the $
+ * share needs the provider's blended cost split, which is unavailable
+ * exactly when the model is unpriced (and the two track each other, since
+ * reasoning cost is reasoning tokens × the fixed output rate).
+ *
+ * Comparable turns need any output at all (the share's denominator); turns
+ * without output say nothing about thinking. Waste = the flagged turns'
+ * reasoning tokens at the catalog's output rate — an absolute sum over the
+ * flagged turns alone, so only they can poison it to `null` (module doc).
+ */
+function overthinkingFinding(
+	turns: SessionTurns,
+	resolved: ResolvedTurn[],
+): ThinkCandidate | null {
+	const comparable = resolved.filter((r) => r.outputTokens > 0);
+	if (comparable.length < MIN_REPORTED_TURNS) return null;
+
+	const shares = comparable.map((r) => r.reasoningTokens / r.outputTokens);
+	const medianShare = median(shares);
+	if (medianShare < OVERTHINK_THRESHOLD) return null;
+
+	const flagged = comparable.filter(
+		(r) => r.reasoningTokens / r.outputTokens >= OVERTHINK_THRESHOLD,
+	);
+	const wasteUsd = flagged.every((r) => r.priced)
+		? flagged.reduce((sum, r) => {
+				const outputRate = r.catalog?.cost?.output ?? 0;
+				return sum + (r.reasoningTokens * outputRate) / 1_000_000;
+			}, 0)
+		: null;
+
+	return {
+		check: "model-overthinking",
+		sessionId: turns.sessionId,
+		repoId: turns.repoId,
+		severity:
+			medianShare >= OVERTHINK_CRITICAL_THRESHOLD ? "critical" : "warning",
+		medianShare,
+		peakShare: Math.max(...shares),
+		flaggedTurns: flagged.length,
+		reportedTurns: comparable.length,
+		wasteUsd,
+	};
+}
+
+function thinkEvidence(candidate: ThinkCandidate): string {
+	const pct = (fraction: number) => `${Math.round(fraction * 100)}%`;
+	const parts = [
+		`Reasoning is ${pct(candidate.medianShare)} of generated output at the median turn (peak ${pct(candidate.peakShare)}); ${candidate.flaggedTurns} of ${candidate.reportedTurns} turns spent more tokens thinking than answering.`,
+	];
+	parts.push(
+		candidate.wasteUsd != null
+			? `Reasoning tokens bill at the model's plain output rate, so the flagged thinking cost ~${formatUsd(candidate.wasteUsd)} — the addressable part of this Session's spend.`
+			: `The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.`,
+	);
+	return parts.join(" ");
+}
+
+/**
+ * Finding S, fan-out shape — expensive delegation (issue #294). Children
+ * linked via `sessions.spawnedBy` (ADR-0025) are full Sessions whose spend
+ * lands in `usage_events` like anyone's; the finding surfaces an
+ * orchestrator whose fan-out costs `FANOUT_RATIO` its own budget — the
+ * delegation bill a spend dashboard shows only scattered across child
+ * Sessions. Child spend is real work, not waste, so `wasteUsd` stays null
+ * and the evidence carries the total.
+ *
+ * Known undercount, stated on the finding rather than silently absorbed:
+ * task-tool subagents (ADR-0034) run on a throwaway in-process `Agent`
+ * whose events never reach the usage normalizer — their spend is *not* in
+ * `usage_events`, so the fan-out total covers spawned Sessions and judges
+ * only. Fixing the capture would need a new usage purpose to avoid
+ * corrupting per-turn semantics (the timeline numbers `purpose="turn"`
+ * rows), which is out of scope for a read-side finding.
+ */
+function fanoutCandidates(
+	spendBySession: Map<string, number>,
+	bySession: Map<string, SessionTurns>,
+): Candidate[] {
+	const db = getDb();
+	const childrenByOrchestrator = new Map<
+		string,
+		{ id: string; repoId: string }[]
+	>();
+	for (const row of db
+		.select({
+			id: sessionsTable.id,
+			repoId: sessionsTable.repoId,
+			spawnedBy: sessionsTable.spawnedBy,
+		})
+		.from(sessionsTable)
+		.where(isNotNull(sessionsTable.spawnedBy))
+		.all()) {
+		// spawnedBy is non-null by the WHERE, but drizzle's nullable type
+		// needs the narrowing before it can key a map.
+		if (row.spawnedBy == null) continue;
+		let entry = childrenByOrchestrator.get(row.spawnedBy);
+		if (!entry) {
+			entry = [];
+			childrenByOrchestrator.set(row.spawnedBy, entry);
+		}
+		entry.push({ id: row.id, repoId: row.repoId });
+	}
+
+	const orchestratorIds = [...childrenByOrchestrator.keys()];
+	const liveRepoId = new Map(
+		orchestratorIds.length
+			? db
+					.select({ id: sessionsTable.id, repoId: sessionsTable.repoId })
+					.from(sessionsTable)
+					.where(inArray(sessionsTable.id, orchestratorIds))
+					.all()
+					.map((row) => [row.id, row.repoId] as const)
+			: [],
+	);
+
+	const candidates: Candidate[] = [];
+	for (const [orchestratorId, children] of childrenByOrchestrator) {
+		let childSpend = 0;
+		let childrenWithSpend = 0;
+		let topChildId: string | null = null;
+		let topChildSpend = 0;
+		for (const child of children) {
+			const spend = spendBySession.get(child.id) ?? 0;
+			if (spend <= 0) continue;
+			childrenWithSpend++;
+			childSpend += spend;
+			if (spend > topChildSpend) {
+				topChildId = child.id;
+				topChildSpend = spend;
+			}
+		}
+		if (childrenWithSpend === 0) continue;
+
+		const ownSpend = spendBySession.get(orchestratorId) ?? 0;
+		const fires = ownSpend > 0 ? childSpend >= FANOUT_RATIO * ownSpend : true;
+		if (!fires) continue;
+		const ratio = ownSpend > 0 ? childSpend / ownSpend : null;
+
+		candidates.push({
+			check: "expensive-delegation",
+			kind: "fanout",
+			sessionId: orchestratorId,
+			// The fan-out happened in the orchestrator's Repo: its own latest
+			// in-range row's attribution, falling back to the live row's.
+			repoId:
+				bySession.get(orchestratorId)?.repoId ??
+				liveRepoId.get(orchestratorId) ??
+				null,
+			severity:
+				ratio != null && ratio >= FANOUT_CRITICAL_RATIO
+					? "critical"
+					: "warning",
+			children: childrenWithSpend,
+			childSpend,
+			ownSpend,
+			ratio,
+			topChildId,
+			topChildSpend,
+			wasteUsd: null,
+		});
+	}
+	return candidates;
+}
+
+function fanoutEvidence(
+	candidate: Extract<Candidate, { kind: "fanout" }>,
+	titleById: Map<string, string>,
+): string {
+	const scale =
+		candidate.ownSpend > 0
+			? `${Math.round(candidate.ratio ?? 0)}× the orchestrator's own ${formatUsd(candidate.ownSpend)}`
+			: `while the orchestrator itself recorded no spend in range`;
+	const topChild = candidate.topChildId
+		? ` Largest child: ${titleById.get(candidate.topChildId) ?? `session ${candidate.topChildId.slice(0, 8)}…`} at ${formatUsd(candidate.topChildSpend)}.`
+		: "";
+	return [
+		`Fan-out to ${candidate.children} child Session${candidate.children === 1 ? "" : "s"} spent ${formatUsd(candidate.childSpend)} this range — ${scale}. Child Sessions are full Sessions on their own models (ADR-0021, fire-and-forget).${topChild} Task-tool subagent spend (ADR-0034) is not in these totals — the read-only subagent's throwaway Agent never writes a usage_events row — so true delegation cost is higher than shown.`,
+	].join(" ");
+}
+
+/**
+ * Finding S, judge shape — judge calls (ADR-0046, `purpose="judge"`) that
+ * cost more than the turn they scored. The scored turn is resolved through
+ * the `turn_scores` row each scoring run writes immediately after its usage
+ * row (nearest score at-or-after the judge row, within
+ * `JUDGE_PAIR_WINDOW_S`), then through that turn's last `messages` row —
+ * the timestamp the turn's own `purpose="turn"` usage row lands next to.
+ * Pairs that can't be attributed (deleted Session — its messages are gone —
+ * or no usage row within `TURN_MATCH_WINDOW_S`) are dropped rather than
+ * guessed at; the finding reports how many calls it actually compared.
+ *
+ * Waste = Σ over paired calls of (judge cost − scored cost), floored at
+ * zero per pair — a judge that came in cheaper contributes nothing. The
+ * figures are recorded `costUsd` values, never catalog derivations, so the
+ * comparison is priceable wherever it is computable at all and `wasteUsd`
+ * is never null when the finding fires.
+ */
+function judgeCandidates(
+	judgesBySession: Map<string, JudgeRow[]>,
+): Candidate[] {
+	if (judgesBySession.size === 0) return [];
+	const db = getDb();
+
+	// The pairing anchor: one `turn_scores` row per scoring run, written
+	// right after that run's usage row.
+	const scoresBySession = new Map<
+		string,
+		{ turnId: string; createdAt: number }[]
+	>();
+	const sessionIds = [...judgesBySession.keys()];
+	for (const row of db
+		.select({
+			sessionId: turnScoresTable.sessionId,
+			turnId: turnScoresTable.turnId,
+			createdAt: turnScoresTable.createdAt,
+		})
+		.from(turnScoresTable)
+		.where(inArray(turnScoresTable.sessionId, sessionIds))
+		.orderBy(asc(turnScoresTable.createdAt))
+		.all()) {
+		let entry = scoresBySession.get(row.sessionId);
+		if (!entry) {
+			entry = [];
+			scoresBySession.set(row.sessionId, entry);
+		}
+		entry.push({ turnId: row.turnId, createdAt: row.createdAt });
+	}
+
+	type Pair = { sessionId: string; turnId: string; judge: JudgeRow };
+	const pairs: Pair[] = [];
+	for (const [sessionId, judges] of judgesBySession) {
+		// Two-pointer over rows sorted by createdAt (both queries order so):
+		// each judge takes the first unpaired score at-or-after it, so two
+		// same-second runs pair in order and an older run's score is never
+		// reused.
+		const scores = scoresBySession.get(sessionId) ?? [];
+		let si = 0;
+		for (const judge of judges) {
+			let next = scores[si];
+			while (next && next.createdAt < judge.createdAt) {
+				si++;
+				next = scores[si];
+			}
+			if (next && next.createdAt - judge.createdAt <= JUDGE_PAIR_WINDOW_S) {
+				pairs.push({ sessionId, turnId: next.turnId, judge });
+				si++;
+			}
+		}
+	}
+	if (pairs.length === 0) return [];
+
+	// Scored-turn end = the turn's last message (batched over all pairs).
+	const turnEndByTurnId = new Map<string, number>();
+	const turnIds = [...new Set(pairs.map((p) => p.turnId))];
+	for (const row of db
+		.select({
+			turnId: messagesTable.turnId,
+			turnEnd: sql<number>`max(${messagesTable.createdAt})`.mapWith(Number),
+		})
+		.from(messagesTable)
+		.where(inArray(messagesTable.turnId, turnIds))
+		.groupBy(messagesTable.turnId)
+		.all()) {
+		if (row.turnId != null) turnEndByTurnId.set(row.turnId, row.turnEnd);
+	}
+
+	// Scored-turn spend: the `purpose="turn"` row nearest each turn end.
+	// One batched point query — scored turns may predate the selected range
+	// (old turns stay scoreable), so the in-range rows already loaded can't
+	// answer this alone.
+	const scoredCostByKey = new Map<string, number>();
+	const windowKeys = new Map<string, { sessionId: string; turnEnd: number }>();
+	for (const pair of pairs) {
+		const end = turnEndByTurnId.get(pair.turnId);
+		if (end != null) {
+			windowKeys.set(`${pair.sessionId}:${end}`, {
+				sessionId: pair.sessionId,
+				turnEnd: end,
+			});
+		}
+	}
+	if (windowKeys.size > 0) {
+		const rows = db
+			.select({
+				sessionId: usageEventsTable.sessionId,
+				costUsd: usageEventsTable.costUsd,
+				createdAt: usageEventsTable.createdAt,
+			})
+			.from(usageEventsTable)
+			.where(
+				and(
+					eq(usageEventsTable.purpose, "turn"),
+					or(
+						...[...windowKeys.values()].map((k) =>
+							and(
+								eq(usageEventsTable.sessionId, k.sessionId),
+								between(
+									usageEventsTable.createdAt,
+									k.turnEnd - TURN_MATCH_WINDOW_S,
+									k.turnEnd + TURN_MATCH_WINDOW_S,
+								),
+							),
+						),
+					),
+				),
+			)
+			.all();
+		for (const [key, k] of windowKeys) {
+			const inWindow = rows.filter(
+				(r) =>
+					r.sessionId === k.sessionId &&
+					Math.abs(r.createdAt - k.turnEnd) <= TURN_MATCH_WINDOW_S,
+			);
+			const nearest = inWindow.reduce<number | null>(
+				(best, r) =>
+					best == null ||
+					Math.abs(r.createdAt - k.turnEnd) < Math.abs(best - k.turnEnd)
+						? r.createdAt
+						: best,
+				null,
+			);
+			const match = inWindow.find((r) => r.createdAt === nearest);
+			if (match) scoredCostByKey.set(key, match.costUsd);
+		}
+	}
+
+	const agg = new Map<
+		string,
+		{
+			repoId: string;
+			compared: number;
+			overspending: number;
+			judgeTokens: number;
+			judgeSpend: number;
+			scoredSpend: number;
+			worstJudgeCost: number;
+			worstScoredCost: number;
+			worstRatio: number;
+			wasteUsd: number;
+		}
+	>();
+	for (const pair of pairs) {
+		const turnEnd = turnEndByTurnId.get(pair.turnId);
+		if (turnEnd == null) continue;
+		const scoredCost = scoredCostByKey.get(`${pair.sessionId}:${turnEnd}`);
+		if (scoredCost == null) continue;
+		let entry = agg.get(pair.sessionId);
+		if (!entry) {
+			entry = {
+				repoId: pair.judge.repoId,
+				compared: 0,
+				overspending: 0,
+				judgeTokens: 0,
+				judgeSpend: 0,
+				scoredSpend: 0,
+				worstJudgeCost: 0,
+				worstScoredCost: 0,
+				worstRatio: 0,
+				wasteUsd: 0,
+			};
+			agg.set(pair.sessionId, entry);
+		}
+		entry.compared++;
+		entry.judgeTokens += pair.judge.inputTokens + pair.judge.outputTokens;
+		entry.judgeSpend += pair.judge.costUsd;
+		entry.scoredSpend += scoredCost;
+		if (pair.judge.costUsd > scoredCost) {
+			entry.overspending++;
+			entry.wasteUsd += pair.judge.costUsd - scoredCost;
+			const ratio = scoredCost > 0 ? pair.judge.costUsd / scoredCost : 0;
+			if (
+				ratio >= entry.worstRatio &&
+				pair.judge.costUsd >= entry.worstJudgeCost
+			) {
+				entry.worstRatio = ratio;
+				entry.worstJudgeCost = pair.judge.costUsd;
+				entry.worstScoredCost = scoredCost;
+			}
+		}
+	}
+
+	const candidates: Candidate[] = [];
+	for (const [sessionId, entry] of agg) {
+		if (entry.overspending === 0) continue;
+		candidates.push({
+			check: "expensive-delegation",
+			kind: "judge",
+			sessionId,
+			repoId: entry.repoId,
+			severity:
+				entry.worstScoredCost > 0 && entry.worstRatio >= JUDGE_CRITICAL_RATIO
+					? "critical"
+					: "warning",
+			compared: entry.compared,
+			overspending: entry.overspending,
+			judgeTokens: entry.judgeTokens,
+			judgeSpend: entry.judgeSpend,
+			scoredSpend: entry.scoredSpend,
+			worstJudgeCost: entry.worstJudgeCost,
+			worstScoredCost: entry.worstScoredCost,
+			wasteUsd: entry.wasteUsd,
+		});
+	}
+	return candidates;
+}
+
+function judgeEvidence(
+	candidate: Extract<Candidate, { kind: "judge" }>,
+): string {
+	const worst =
+		candidate.worstScoredCost > 0
+			? `Worst call: ${formatUsd(candidate.worstJudgeCost)} to judge a ${formatUsd(candidate.worstScoredCost)} turn (${Math.round(candidate.worstJudgeCost / candidate.worstScoredCost)}×).`
+			: `Worst call: ${formatUsd(candidate.worstJudgeCost)} to judge a turn that recorded no spend.`;
+	return [
+		`${candidate.overspending} of ${candidate.compared} judge calls outspent the turn they scored — ${formatTokenCount(candidate.judgeTokens)} judging tokens and ${formatUsd(candidate.judgeSpend)} of judging against ${formatUsd(candidate.scoredSpend)} of scored turns. ${worst} The judge reads the whole turn in a fresh context (ADR-0046); when judging costs more than the work it evaluates, the metric or its criteria need trimming.`,
+	].join(" ");
+}
+
+function candidateEvidence(
+	candidate: Candidate,
+	compactedById: Map<string, boolean>,
+	titleById: Map<string, string>,
+): string {
+	switch (candidate.check) {
+		case "session-overdepth":
+			return overdepthEvidence(
+				candidate,
+				compactedById.get(candidate.sessionId),
+			);
+		case "cache-rehydration":
+			return cacheEvidence(candidate);
+		case "model-overthinking":
+			return thinkEvidence(candidate);
+		case "expensive-delegation":
+			return candidate.kind === "fanout"
+				? fanoutEvidence(candidate, titleById)
+				: judgeEvidence(candidate);
+	}
 }
 
 function median(values: number[]): number {

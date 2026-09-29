@@ -471,6 +471,86 @@ describe("MetricsPage", () => {
 		).toBeInTheDocument();
 	});
 
+	it("renders the C/M/S check labels and per-check waste hints (issue #294)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			burnFindings: [
+				{
+					check: "cache-rehydration",
+					severity: "warning",
+					sessionId: "s-cache",
+					repoId: "repo-1",
+					title: "Cache breaker",
+					evidence:
+						"3 of 9 reported turns re-wrote their whole prompt prefix as fresh cache writes (median 41k tokens per re-write). Cache-write premium over a warm cache on those turns: ~$0.03.",
+					wasteUsd: 0.03,
+				},
+				{
+					check: "model-overthinking",
+					severity: "info",
+					sessionId: "s-think",
+					repoId: "repo-1",
+					title: "Deep thinker",
+					evidence:
+						"Reasoning is 60% of generated output at the median turn (peak 81%); 4 of 9 turns spent more tokens thinking than answering. The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.",
+					wasteUsd: null,
+				},
+				{
+					check: "expensive-delegation",
+					severity: "warning",
+					sessionId: "s-orch",
+					repoId: "repo-1",
+					title: "The orchestrator",
+					evidence:
+						"Fan-out to 3 child Sessions spent $1.20 this range — 12× the orchestrator's own $0.10.",
+					wasteUsd: null,
+				},
+			],
+			toolUsage: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+
+		expect(
+			await screen.findByText("Burn checks — where tokens are being wasted"),
+		).toBeInTheDocument();
+
+		// Every new check code gets its display label.
+		expect(screen.getByText("Cache rehydration:")).toBeInTheDocument();
+		expect(screen.getByText("Overthinking:")).toBeInTheDocument();
+		expect(screen.getByText("Expensive delegation:")).toBeInTheDocument();
+
+		// The $ column's tooltip follows the finding's own waste model, not
+		// one global sentence.
+		expect(
+			screen.getByTitle(
+				"Cache-write premium over a warm cache on the flagged re-writes",
+			),
+		).toBeInTheDocument();
+		expect(
+			screen.getByTitle(
+				"Fan-out spend is real work, not waste — the total is in the evidence",
+			),
+		).toBeInTheDocument();
+		// …and the unpriced overthinking finding keeps the generic dash hint.
+		expect(
+			screen.getByTitle("No catalog price for this model — no $ estimate"),
+		).toBeInTheDocument();
+	});
+
 	it("reads the empty Burn checks card as an explicit all-clear (issue #291)", async () => {
 		nextSummary = {
 			totals: { ...ZERO_TOTALS },

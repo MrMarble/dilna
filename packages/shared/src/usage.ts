@@ -116,11 +116,18 @@ export type UsageContextDrift = {
 /**
  * Which burn check produced a {@link BurnFinding} — one member per check, and
  * only checks whose server-side computation actually exists (`sessions/
- * burnFindings.ts`); the web never invents findings from raw numbers. New
- * findings land here alongside their computation (issues #292–#296 build on
- * the seam #291 establishes).
+ * burnFindings.ts`); the web never invents findings from raw numbers. The
+ * ticket batch's letter names map onto these codes (ADR-0051: D =
+ * `session-overdepth`, and later tickets name their own codes the same way,
+ * so a finding row in code is always greppable back to its ticket):
+ * C = `cache-rehydration`, M = `model-overthinking`,
+ * S = `expensive-delegation` (issue #294).
  */
-export type BurnCheckCode = "session-overdepth";
+export type BurnCheckCode =
+	| "session-overdepth"
+	| "cache-rehydration"
+	| "model-overthinking"
+	| "expensive-delegation";
 
 /** How urgently a {@link BurnFinding} deserves attention — the web renders
  * this as the row's badge color, nothing more; the evidence text carries the
