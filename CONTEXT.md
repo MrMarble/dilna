@@ -28,6 +28,10 @@ _Avoid_: backend (see Agent)
 The specific LLM a **Provider** serves — e.g. Claude Opus, DeepSeek-V3, Kimi K2, GLM-4.7. Selected alongside Provider via the same env var; see ADR-0020.
 _Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
 
+**Burn finding**:
+One actionable statement about where tokens are being wasted, computed entirely server-side from `usage_events` plus the Session's compaction fields (`sessions/burnFindings.ts`, issue #291) and rendered verbatim on the Metrics page's **Burn checks** card, worst first. Each finding names the check that fired (its `check` code), a severity, the Session/Repo it happened to, self-contained human-readable evidence, and an estimated $ waste — `null`, never a computed zero, when the Model has no price in the catalog. The web computes nothing from raw numbers; it renders the shared `BurnFinding` shape only.
+_Avoid_: burn check (the **check** is the kind of verdict — "session overdepth" — the finding is one fired instance of it), insight, anomaly
+
 **Artefact**:
 A file an **Agent** produced and explicitly *published* for the user to **open** — an HTML report, markdown document, PDF or image. An Artefact belongs to exactly one **Session** and is stored outside every **Worktree**; see ADR-0032 and ADR-0043. Distinct from an Agent-sent **Attachment**, which the user *sees inline in the conversation* rather than opens from a panel: an Agent that wants to show a picture sends an image, an Agent that wants to hand over a document publishes an Artefact. An Artefact is an immutable *copy* taken at publish time, not a pointer at a Worktree file: republishing a regenerated report mints a second Artefact so the two versions can be compared. A file the Agent merely wrote into its Worktree is not an Artefact until it publishes it.
 _Avoid_: output, export, report (a report is one *kind* of Artefact), asset

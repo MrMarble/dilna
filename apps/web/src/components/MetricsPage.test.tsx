@@ -24,6 +24,7 @@ let nextSummary: UsageSummary = {
 	topSessions: [],
 	byPurpose: [],
 	contextDrift: [],
+	burnFindings: [],
 };
 
 vi.mock("@/api/client", () => ({
@@ -47,6 +48,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			burnFindings: [],
 			contextDrift: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
@@ -130,6 +132,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			byPurpose: [],
+			burnFindings: [],
 			contextDrift: [],
 		};
 		render(
@@ -236,6 +239,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			byPurpose: [],
+			burnFindings: [],
 			contextDrift: [],
 		};
 		render(
@@ -311,6 +315,7 @@ describe("MetricsPage", () => {
 					turns: 5,
 				},
 			],
+			burnFindings: [],
 		};
 		render(
 			<MetricsPage
@@ -361,6 +366,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			burnFindings: [],
 			contextDrift: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
@@ -372,6 +378,118 @@ describe("MetricsPage", () => {
 		).not.toBeInTheDocument();
 	});
 
+	it("lists burn findings worst-first with severity, evidence, and waste (issue #291)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			// Server order is worst first; the card renders it verbatim.
+			burnFindings: [
+				{
+					check: "session-overdepth",
+					severity: "critical",
+					sessionId: "s-deep",
+					repoId: "repo-1",
+					title: "Deep diver",
+					evidence:
+						"Context sits at 90% of its model's 200k window at the median turn (deepest 96%); 3 of 3 reported turns land past the 70% line, and those turns are the Session's most expensive. Depth premium over the Session's own median turn: ~$0.10.",
+					wasteUsd: 0.1,
+				},
+				{
+					check: "session-overdepth",
+					severity: "warning",
+					sessionId: "s-unpriced",
+					repoId: "repo-1",
+					title: null,
+					evidence:
+						"Context sits at 75% of its model's 128k window at the median turn (deepest 80%); 3 of 3 reported turns land past the 70% line, and those turns are the Session's most expensive. The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.",
+					wasteUsd: null,
+				},
+			],
+		};
+		render(
+			<MetricsPage
+				repos={[
+					{
+						id: "repo-1",
+						slug: "my-repo",
+						path: "/tmp/my-repo",
+						defaultBranch: "main",
+						remoteUrl: "https://example.com/my-repo.git",
+						createdAt: 0,
+					},
+				]}
+				onBack={() => {}}
+			/>,
+		);
+
+		expect(
+			await screen.findByText("Burn checks — where tokens are being wasted"),
+		).toBeInTheDocument();
+
+		// Document order is the server's worst-first order: the critical
+		// finding's title precedes the unpriced one's deleted-session fallback.
+		const deep = screen.getByText("Deep diver");
+		const unpriced = screen.getByText("deleted session s-unpric…");
+		expect(
+			deep.compareDocumentPosition(unpriced) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+
+		// Severity is the only thing the web derives: badge tone per level.
+		expect(screen.getByText("critical").className).toContain("text-danger");
+		expect(screen.getByText("warning").className).toContain("text-warning");
+
+		// Waste renders from the number; the unpriced finding shows an em
+		// dash, never a computed zero. The dash is asserted via its tooltip —
+		// the page has other em dashes (null cache-hit rates render as one).
+		expect(screen.getByText("~$0.10")).toBeInTheDocument();
+		expect(
+			screen.getByTitle("No catalog price for this model — no $ estimate"),
+		).toHaveTextContent("—");
+		// Evidence renders verbatim — the web computes nothing.
+		expect(
+			screen.getByText(/Depth premium over the Session's own median turn/),
+		).toBeInTheDocument();
+	});
+
+	it("reads the empty Burn checks card as an explicit all-clear (issue #291)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			burnFindings: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		await screen.findByText("Cache health");
+		expect(
+			screen.getByText(/All clear — nothing in this range is burning/i),
+		).toBeInTheDocument();
+	});
+
 	it("names the icon-only Back button (issue #223)", async () => {
 		nextSummary = {
 			totals: { ...ZERO_TOTALS },
@@ -381,6 +499,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			burnFindings: [],
 			contextDrift: [],
 		};
 		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);

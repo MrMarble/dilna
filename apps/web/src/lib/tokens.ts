@@ -1,5 +1,4 @@
-export function formatTokenCount(n: number): string {
-	if (n < 1_000) return String(n);
-	if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
-	return `${(n / 1_000_000).toFixed(1)}m`;
-}
+// Re-export: the implementation moved to `packages/shared` (issue #291) so
+// the server's burn-finding evidence text and this dashboard agree on token
+// formatting by construction. Existing `@/lib/tokens` imports keep working.
+export { formatTokenCount } from "@dilna/shared";

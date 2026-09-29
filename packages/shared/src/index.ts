@@ -15,6 +15,10 @@ export * from "./apiSchemas";
 export * from "./artefact";
 export type * from "./diff";
 export type * from "./events";
+// Not type-only: the USD/token-count formatters are presentation rules both
+// server and web need — the server stamps them into burn-finding evidence
+// text, the web renders the same figures in dashboards (issue #291).
+export * from "./format";
 // Not type-only: the extension→language map and the name union, so the web's
 // colour/icon map can be typed as a total `Record<DilnaLanguage, …>`.
 export * from "./languages";

@@ -1,4 +1,7 @@
 import type {
+	BurnCheckCode,
+	BurnFinding,
+	BurnFindingSeverity,
 	DiskUsage,
 	Repo,
 	UsageContextDrift,
@@ -9,6 +12,7 @@ import type {
 	UsageSummary,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
+import { formatUsd } from "@dilna/shared";
 import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/api/client";
@@ -35,17 +39,6 @@ const RANGE_OPTIONS: RangeOption[] = [
 	{ label: "90d", days: 90 },
 	{ label: "All", days: "all" },
 ];
-
-function formatUsd(n: number): string {
-	if (n === 0) return "$0.00";
-	// Cheap/cached-heavy turns routinely cost a fraction of a cent — 4 decimals
-	// alone rounds anything under $0.0001 down to a misleading "$0.0000",
-	// hiding real spend. Widen precision as the value gets smaller instead.
-	if (n < 0.000001) return "<$0.000001";
-	if (n < 0.0001) return `$${n.toFixed(6)}`;
-	if (n < 0.01) return `$${n.toFixed(4)}`;
-	return `$${n.toFixed(2)}`;
-}
 
 /** Human-size bytes (base-1024) — "1.2 GB", "600 MB", "512 B". */
 function formatBytes(n: number): string {
@@ -155,6 +148,10 @@ export function MetricsPage({ repos, onBack }: Props) {
 						/>
 						<TokenCompositionChart totals={summary.totals} />
 						<CachePanel summary={summary} repoNameById={repoNameById} />
+						<BurnChecksCard
+							findings={summary.burnFindings}
+							repoNameById={repoNameById}
+						/>
 						<ContextDriftCard
 							drift={summary.contextDrift}
 							repoNameById={repoNameById}
@@ -697,6 +694,105 @@ function CacheRateTable({
  * negatives, amber for over-counting (which merely wastes context on early
  * compaction).
  */
+/** Display label per burn check — exhaustive over `BurnCheckCode`, so a new
+ * check added server-side fails to typecheck here until it's named (same
+ * exhaustiveness trick as `sessionStream.ts`'s event-type map). */
+const BURN_CHECK_LABELS: Record<BurnCheckCode, string> = {
+	"session-overdepth": "Session overdepth",
+};
+
+const SEVERITY_BADGE: Record<BurnFindingSeverity, string> = {
+	critical: "bg-danger/10 text-danger",
+	warning: "bg-warning/10 text-warning",
+	info: "bg-muted text-muted-foreground",
+};
+
+/**
+ * The judgment layer over the spend every card above measures (issue #291):
+ * burn findings computed entirely server-side (`sessions/burnFindings.ts`),
+ * worst first, rendered from the shared `BurnFinding` shape only. Empty
+ * reads as an explicit all-clear — an absence of findings is a verdict, not
+ * missing data.
+ */
+function BurnChecksCard({
+	findings,
+	repoNameById,
+}: {
+	findings: BurnFinding[];
+	repoNameById: Record<string, string>;
+}) {
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				Burn checks — where tokens are being wasted
+			</div>
+			{findings.length === 0 ? (
+				<p className="px-4 py-3 text-sm text-muted-foreground">
+					All clear — nothing in this range is burning tokens out of proportion.
+				</p>
+			) : (
+				<ul className="divide-y divide-border">
+					{findings.map((f, i) => {
+						const repo =
+							f.repoId != null
+								? (repoNameById[f.repoId] ??
+									`${f.repoId.slice(0, 8)}… (deleted)`)
+								: null;
+						return (
+							<li
+								key={`${f.check}-${f.sessionId ?? f.repoId ?? i}`}
+								className="px-4 py-3"
+							>
+								<div className="flex items-center gap-2">
+									<span
+										className={cn(
+											"shrink-0 rounded px-1.5 py-0.5 text-xs font-medium",
+											SEVERITY_BADGE[f.severity],
+										)}
+									>
+										{f.severity}
+									</span>
+									<span className="truncate font-medium">
+										{f.title ??
+											`deleted session ${(f.sessionId ?? "").slice(0, 8)}…`}
+									</span>
+									{repo && (
+										<span className="hidden font-mono text-xs text-muted-foreground sm:inline">
+											{repo}
+										</span>
+									)}
+									<span
+										className="ml-auto shrink-0 text-sm font-medium tabular-nums"
+										title={
+											f.wasteUsd != null
+												? "Estimated waste vs the Session's own median turn"
+												: "No catalog price for this model — no $ estimate"
+										}
+									>
+										{f.wasteUsd != null ? `~${formatUsd(f.wasteUsd)}` : "—"}
+									</span>
+								</div>
+								<p className="mt-1 text-xs text-muted-foreground">
+									<span className="font-medium text-foreground">
+										{BURN_CHECK_LABELS[f.check]}:
+									</span>{" "}
+									{f.evidence}
+								</p>
+							</li>
+						);
+					})}
+				</ul>
+			)}
+			<p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
+				Computed server-side from the same usage as every card above, scoped to
+				the selected range. Estimated waste compares flagged turns to the
+				Session's own median turn; a model with no price in the catalog yields a
+				finding without a $ figure, never a guessed zero.
+			</p>
+		</div>
+	);
+}
+
 function ContextDriftCard({
 	drift,
 	repoNameById,
