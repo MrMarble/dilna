@@ -88,6 +88,52 @@ export type UsageContextDrift = {
 	turns: number;
 };
 
+/**
+ * Which burn check produced a {@link BurnFinding} — one member per check, and
+ * only checks whose server-side computation actually exists (`sessions/
+ * burnFindings.ts`); the web never invents findings from raw numbers. New
+ * findings land here alongside their computation (issues #292–#296 build on
+ * the seam #291 establishes).
+ */
+export type BurnCheckCode = "session-overdepth";
+
+/** How urgently a {@link BurnFinding} deserves attention — the web renders
+ * this as the row's badge color, nothing more; the evidence text carries the
+ * specifics. */
+export type BurnFindingSeverity = "info" | "warning" | "critical";
+
+/**
+ * One actionable statement about where tokens are being wasted, produced
+ * entirely server-side (issue #291) and rendered verbatim on the Metrics
+ * page's Burn checks card, worst first. The judgment layer over the spend
+ * the rest of `UsageSummary` measures: every finding names the check that
+ * fired, how bad it is, who it happened to, the evidence behind the verdict,
+ * and — when the model's catalog price makes the figure verifiable — the
+ * estimated $ waste.
+ */
+export type BurnFinding = {
+	check: BurnCheckCode;
+	severity: BurnFindingSeverity;
+	/** The Session the finding is about, when it attaches to one. Null for
+	 * findings scoped to a Repo or the instance rather than a single Session
+	 * (later checks on this seam); finding D always sets it. */
+	sessionId: string | null;
+	/** The Repo the finding happened in — same dangling-id tolerance as
+	 * `UsageSessionBreakdown` (renders "unknown" after a Repo is deleted). */
+	repoId: string | null;
+	/** Resolved server-side against the live `sessions` row or the
+	 * `sessionArchive` row (ADR-0024) — same rule as `UsageSessionBreakdown`. */
+	title: string | null;
+	/** The verdict's evidence, human-readable and self-contained — counts,
+	 * percentages, and $ figures already formatted. The web renders this
+	 * string as-is; it computes nothing. */
+	evidence: string;
+	/** Estimated wasted $, per the check's own waste model. Null — never a
+	 * computed 0 — when the model behind the spend has no price in the catalog
+	 * and the figure would be invented; the web renders "—" for null. */
+	wasteUsd: number | null;
+};
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
@@ -100,6 +146,11 @@ export type UsageSummary = {
 	 * threshold, worst first; empty when every estimator is honest (or no
 	 * turn carries both numbers yet). */
 	contextDrift: UsageContextDrift[];
+	/** Burn findings (issue #291) — actionable statements about where tokens
+	 * are being wasted, worst first; empty when nothing in range warrants a
+	 * finding (an all-clear, not "no data"). Computed server-side in
+	 * `sessions/burnFindings.ts` over the same range as every slice above. */
+	burnFindings: BurnFinding[];
 };
 
 /**

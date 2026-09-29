@@ -16,6 +16,7 @@ import {
 	sessions as sessionsTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
+import { getBurnFindings } from "./burnFindings";
 
 /** How many top-spending Sessions the "Top sessions" table shows. */
 const TOP_SESSIONS_LIMIT = 10;
@@ -171,6 +172,11 @@ export function getUsageSummary(since: number): UsageSummary {
 		.all()
 		.map(withCacheHitRate) as UsagePurposeBreakdown[];
 
+	// The judgment layer (issue #291): same range, same `usage_events`, one
+	// home for the verdicts (`sessions/burnFindings.ts`) — the web renders
+	// the shared shape and computes nothing.
+	const burnFindings = getBurnFindings(since);
+
 	return {
 		totals: withCacheHitRate(totals ?? { ...ZERO_TOTALS }),
 		daily,
@@ -180,6 +186,7 @@ export function getUsageSummary(since: number): UsageSummary {
 		topSessions,
 		byPurpose,
 		contextDrift,
+		burnFindings,
 	};
 }
 
@@ -242,10 +249,10 @@ function getContextDrift(where: ReturnType<typeof gte>): UsageContextDrift[] {
 /**
  * Display title for each Session id, resolved against whichever of
  * `sessions`/`sessionArchive` still has a row — shared by the top-spend
- * table and the drift list, which both outlive deletion the same way
- * (`usage_events` has no FK to either; see its schema comment).
+ * table, the drift list, and the burn findings (all three outlive deletion
+ * the same way; `usage_events` has no FK to either table).
  */
-function resolveSessionTitles(ids: string[]): Map<string, string> {
+export function resolveSessionTitles(ids: string[]): Map<string, string> {
 	const db = getDb();
 	const titleById = new Map<string, string>();
 	for (const row of db

@@ -135,6 +135,7 @@ vi.mock("@/api/client", () => ({
 					topSessions: [],
 					byPurpose: [],
 					contextDrift: [],
+					burnFindings: [],
 				},
 			}),
 			disk: async () => ({ disk: { totalBytes: 10_000, freeBytes: 4_000 } }),
