@@ -10,7 +10,7 @@ import type {
 	UsageToolBreakdown,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
-import { and, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
 	sessionArchive as sessionArchiveTable,
@@ -212,23 +212,46 @@ function getToolUsage(where: ReturnType<typeof gte>): UsageToolBreakdown[] {
 			toolFactsJson: usageEventsTable.toolFactsJson,
 		})
 		.from(usageEventsTable)
-		.where(and(where, isNotNull(usageEventsTable.toolFactsJson)))
+		.where(
+			and(
+				where,
+				// Structural, not incidental: judge rows are excluded by purpose,
+				// not merely by "judge rows happen to carry no facts today". If a
+				// future writer ever stamps facts onto a judge row, the Metrics
+				// table must still not count judge calls as the Session's own
+				// tool work — the same rule `purpose` encodes for the spend.
+				eq(usageEventsTable.purpose, "turn"),
+				isNotNull(usageEventsTable.toolFactsJson),
+			),
+		)
 		.all();
 
-	// Keyed by kind+name: a skill could in principle share a tool's name,
-	// and the two rows answer different questions ("the bash tool was called
-	// N times" vs "the skill named bash was loaded N times").
+	// Keyed by kind+name (a skill could in principle share a tool's name,
+	// and the two rows answer different questions — "the bash tool was
+	// called N times" vs "the skill named bash was loaded N times"); the
+	// entry carries its own name so nothing decodes the key back apart.
 	const seen = new Map<
 		string,
-		{ kind: "tool" | "skill"; calls: number; sessions: Set<string> }
+		{
+			name: string;
+			kind: "tool" | "skill";
+			calls: number;
+			sessions: Set<string>;
+		}
 	>();
 	const bump = (
 		key: string,
+		name: string,
 		kind: "tool" | "skill",
 		count: number,
 		sessionId: string,
 	) => {
-		const entry = seen.get(key) ?? { kind, calls: 0, sessions: new Set() };
+		const entry = seen.get(key) ?? {
+			name,
+			kind,
+			calls: 0,
+			sessions: new Set(),
+		};
 		entry.calls += count;
 		entry.sessions.add(sessionId);
 		seen.set(key, entry);
@@ -249,22 +272,22 @@ function getToolUsage(where: ReturnType<typeof gte>): UsageToolBreakdown[] {
 		}
 		for (const [name, count] of Object.entries(facts.tools ?? {})) {
 			if (typeof count === "number" && count > 0) {
-				bump(`tool:${name}`, "tool", count, row.sessionId);
+				bump(`tool:${name}`, name, "tool", count, row.sessionId);
 			}
 		}
 		for (const [name, count] of Object.entries(facts.skills ?? {})) {
 			if (typeof count === "number" && count > 0) {
-				bump(`skill:${name}`, "skill", count, row.sessionId);
+				bump(`skill:${name}`, name, "skill", count, row.sessionId);
 			}
 		}
 	}
 
-	return [...seen.entries()]
-		.map(([key, e]) => ({
-			name: key.slice(key.indexOf(":") + 1),
-			kind: e.kind,
-			calls: e.calls,
-			sessions: e.sessions.size,
+	return [...seen.values()]
+		.map(({ name, kind, calls, sessions }) => ({
+			name,
+			kind,
+			calls,
+			sessions: sessions.size,
 		}))
 		.sort((a, b) => b.calls - a.calls || a.name.localeCompare(b.name));
 }

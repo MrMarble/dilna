@@ -394,4 +394,22 @@ describe("getUsageSummary", () => {
 		});
 		expect(getUsageSummary(0).toolUsage).toEqual(before);
 	});
+
+	it("excludes judge rows structurally, even if one ever carried facts (issue #292)", () => {
+		// Pins the query's purpose = 'turn' filter, not just today's invariant
+		// that recordJudgeUsage writes no facts: if a future writer ever
+		// stamped facts onto a judge row, the Metrics table must still not
+		// count judge calls as the Session's own tool work.
+		seedRow({
+			id: "tj2",
+			repoId: "repo-1",
+			createdAt: Math.floor(Date.now() / 1000),
+			purpose: "judge",
+			inputTokens: 10,
+			toolFactsJson: JSON.stringify({ tools: { judge_only_tool: 7 } }),
+		});
+		expect(
+			getUsageSummary(0).toolUsage.find((t) => t.name === "judge_only_tool"),
+		).toBeUndefined();
+	});
 });
