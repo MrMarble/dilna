@@ -854,6 +854,176 @@ describe("normalizePiEvent", () => {
 			false,
 		);
 	});
+
+	// Issue #292: per-turn tool/skill facts ride the same turn-end event as
+	// the usage they're stamped next to. Runs one billed round plus a list of
+	// tool calls, the shape a real tool-using turn produces.
+	function runToolTurn(
+		state: ReturnType<typeof createNormalizeState>,
+		tools: Array<{
+			callId: string;
+			toolName: string;
+			args?: unknown;
+			isError?: boolean;
+		}>,
+	): AgentStreamEvent[] {
+		const out: AgentStreamEvent[] = [];
+		out.push(
+			...normalizePiEvent(
+				{
+					type: "message_start",
+					message: { role: "assistant", content: [] },
+				} as unknown as AgentEvent,
+				state,
+			),
+		);
+		for (const t of tools) {
+			out.push(
+				...normalizePiEvent(
+					{
+						type: "tool_execution_start",
+						toolCallId: t.callId,
+						toolName: t.toolName,
+						args: t.args ?? {},
+					} as unknown as AgentEvent,
+					state,
+				),
+			);
+			out.push(
+				...normalizePiEvent(
+					{
+						type: "tool_execution_end",
+						toolCallId: t.callId,
+						toolName: t.toolName,
+						result: { content: [{ type: "text", text: "ok" }] },
+						isError: t.isError ?? false,
+					} as unknown as AgentEvent,
+					state,
+				),
+			);
+		}
+		out.push(
+			...normalizePiEvent(
+				{
+					type: "message_end",
+					message: { role: "assistant", content: [], usage: reportedUsage },
+				} as unknown as AgentEvent,
+				state,
+			),
+		);
+		out.push(
+			...normalizePiEvent(
+				{ type: "agent_end", messages: [] } as unknown as AgentEvent,
+				state,
+			),
+		);
+		return out;
+	}
+
+	function turnEndOf(events: AgentStreamEvent[]): AgentStreamEvent | undefined {
+		return events.find((e) => e.type === "usage_update" && e.cumulative);
+	}
+
+	it("stamps the turn's tool calls and skill loads onto the turn-end usage_update (issue #292)", () => {
+		const state = createNormalizeState();
+		const turnEnd = turnEndOf(
+			runToolTurn(state, [
+				{ callId: "c1", toolName: "bash", args: { command: "ls" } },
+				{ callId: "c2", toolName: "bash", args: { command: "git status" } },
+				{ callId: "c3", toolName: "read_skill", args: { name: "tdd" } },
+				{ callId: "c4", toolName: "read_skill", args: { name: "grill-me" } },
+				{ callId: "c5", toolName: "read_skill", args: { name: "tdd" } },
+			]),
+		);
+		expect(
+			turnEnd && "toolFacts" in turnEnd ? turnEnd.toolFacts : undefined,
+		).toEqual({
+			tools: { bash: 2, read_skill: 3 },
+			skills: { tdd: 2, "grill-me": 1 },
+		});
+	});
+
+	it("counts a failed read_skill as a call, but not as a skill load (issue #292)", () => {
+		// A failed lookup never put the skill's body into context — that's the
+		// burn the skills count exists to measure.
+		const state = createNormalizeState();
+		const turnEnd = turnEndOf(
+			runToolTurn(state, [
+				{ callId: "c1", toolName: "read_skill", args: { name: "tdd" } },
+				{
+					callId: "c2",
+					toolName: "read_skill",
+					args: { name: "nope" },
+					isError: true,
+				},
+			]),
+		);
+		expect(
+			turnEnd && "toolFacts" in turnEnd ? turnEnd.toolFacts : undefined,
+		).toEqual({
+			tools: { read_skill: 2 },
+			skills: { tdd: 1 },
+		});
+	});
+
+	it("stamps empty facts, not absent ones, for a tool-less billed turn (issue #292)", () => {
+		// Empty objects read as "feature-era turn, zero tool calls"; absence is
+		// reserved for pre-feature rows (null column) — the forward-only story.
+		const state = createNormalizeState();
+		const turnEnd = turnEndOf(runToolTurn(state, []));
+		expect(
+			turnEnd && "toolFacts" in turnEnd ? turnEnd.toolFacts : undefined,
+		).toEqual({ tools: {}, skills: {} });
+	});
+
+	it("resets tool facts on agent_end — the next turn doesn't inherit them (issue #292)", () => {
+		const state = createNormalizeState();
+		const first = turnEndOf(
+			runToolTurn(state, [{ callId: "c1", toolName: "bash", args: {} }]),
+		);
+		expect(first && "toolFacts" in first ? first.toolFacts : undefined).toEqual(
+			{ tools: { bash: 1 }, skills: {} },
+		);
+
+		const second = turnEndOf(
+			runToolTurn(state, [
+				{ callId: "c2", toolName: "read", args: { path: "x" } },
+			]),
+		);
+		expect(
+			second && "toolFacts" in second ? second.toolFacts : undefined,
+		).toEqual({ tools: { read: 1 }, skills: {} });
+	});
+
+	it("omits toolFacts from per-round usage_update events (issue #292)", () => {
+		const state = createNormalizeState();
+		normalizePiEvent(
+			{
+				type: "message_start",
+				message: { role: "assistant", content: [] },
+			} as unknown as AgentEvent,
+			state,
+		);
+		normalizePiEvent(
+			{
+				type: "tool_execution_start",
+				toolCallId: "c1",
+				toolName: "bash",
+				args: {},
+			} as unknown as AgentEvent,
+			state,
+		);
+		const perRound = normalizePiEvent(
+			{
+				type: "message_end",
+				message: { role: "assistant", content: [], usage: reportedUsage },
+			} as unknown as AgentEvent,
+			state,
+		);
+		const [perRoundEvent] = perRound;
+		expect(perRoundEvent).toBeDefined();
+		expect("toolFacts" in (perRoundEvent as AgentStreamEvent)).toBe(false);
+	});
 });
 
 /** A minimal-but-real GLM-style SSE body — the same shape the real z.ai

@@ -39,6 +39,7 @@ function seedRow(overrides: {
 	cacheWriteTokens?: number;
 	estimatedContextTokens?: number;
 	providerContextTokens?: number;
+	toolFactsJson?: string;
 }) {
 	getDb()
 		.insert(usageEventsTable)
@@ -308,6 +309,46 @@ describe("getUsageSummary", () => {
 		expect(over?.repoId).toBe("repo-drift");
 	});
 
+	it("folds per-turn tool facts into per-tool/per-skill rows, worst first (issue #292)", () => {
+		const now = Math.floor(Date.now() / 1000);
+		// Two turns in two Sessions both calling bash and loading tdd — calls
+		// sum, Sessions dedupe.
+		seedRow({
+			id: "tf1",
+			repoId: "repo-1",
+			createdAt: now,
+			toolFactsJson: JSON.stringify({
+				tools: { bash: 3, read: 1 },
+				skills: { tdd: 1 },
+			}),
+		});
+		seedRow({
+			id: "tf2",
+			repoId: "repo-1",
+			createdAt: now,
+			sessionId: "session-2",
+			toolFactsJson: JSON.stringify({ tools: { bash: 1 }, skills: { tdd: 2 } }),
+			inputTokens: 10,
+		});
+		// A pre-feature turn (no facts) contributes nothing — not a zero.
+		seedRow({ id: "tf3", repoId: "repo-1", createdAt: now, inputTokens: 10 });
+		// Out of range entirely.
+		seedRow({
+			id: "tf-old",
+			repoId: "repo-1",
+			createdAt: now - 10 * DAY,
+			toolFactsJson: JSON.stringify({ tools: { bash: 100 } }),
+			inputTokens: 10,
+		});
+
+		const summary = getUsageSummary(now - 2 * DAY);
+		expect(summary.toolUsage).toEqual([
+			{ name: "bash", kind: "tool", calls: 4, sessions: 2 },
+			{ name: "tdd", kind: "skill", calls: 3, sessions: 2 },
+			{ name: "read", kind: "tool", calls: 1, sessions: 1 },
+		]);
+	});
+
 	it("since=0 includes every row regardless of age", () => {
 		const summary = getUsageSummary(0);
 		expect(summary.totals.inputTokens).toBeGreaterThanOrEqual(400);
@@ -334,5 +375,23 @@ describe("getUsageSummary", () => {
 				}),
 			]),
 		);
+	});
+
+	it("excludes judge rows from tool usage — scoring never counts as the Session's own tool work (issue #292)", () => {
+		// Kept after the purpose-split test above: the db is file-cumulative,
+		// and this file's other tests already own the cost arithmetic. Seeding
+		// here only asserts the delta — a judge row must add nothing to
+		// toolUsage. recordJudgeUsage writes no facts (pinned in
+		// scoring.test.ts), so a judge row reads like every pre-feature row:
+		// null column, no contribution.
+		const before = getUsageSummary(0).toolUsage;
+		seedRow({
+			id: "tj1",
+			repoId: "repo-1",
+			createdAt: Math.floor(Date.now() / 1000),
+			purpose: "judge",
+			inputTokens: 10,
+		});
+		expect(getUsageSummary(0).toolUsage).toEqual(before);
 	});
 });

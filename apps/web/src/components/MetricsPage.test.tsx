@@ -49,6 +49,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			burnFindings: [],
+			toolUsage: [],
 			contextDrift: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
@@ -133,6 +134,7 @@ describe("MetricsPage", () => {
 			],
 			byPurpose: [],
 			burnFindings: [],
+			toolUsage: [],
 			contextDrift: [],
 		};
 		render(
@@ -240,6 +242,7 @@ describe("MetricsPage", () => {
 			],
 			byPurpose: [],
 			burnFindings: [],
+			toolUsage: [],
 			contextDrift: [],
 		};
 		render(
@@ -316,6 +319,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			burnFindings: [],
+			toolUsage: [],
 		};
 		render(
 			<MetricsPage
@@ -367,6 +371,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			burnFindings: [],
+			toolUsage: [],
 			contextDrift: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
@@ -418,6 +423,7 @@ describe("MetricsPage", () => {
 					wasteUsd: null,
 				},
 			],
+			toolUsage: [],
 		};
 		render(
 			<MetricsPage
@@ -482,12 +488,80 @@ describe("MetricsPage", () => {
 			byPurpose: [],
 			contextDrift: [],
 			burnFindings: [],
+			toolUsage: [],
 		};
 		render(<MetricsPage repos={[]} onBack={() => {}} />);
 		await screen.findByText("Cache health");
 		expect(
 			screen.getByText(/All clear — nothing in this range is burning/i),
 		).toBeInTheDocument();
+	});
+
+	it("renders the tool & skill usage table when turns carry facts (issue #292)", async () => {
+		nextSummary = {
+			totals: {
+				...ZERO_TOTALS,
+				inputTokens: 100,
+				cacheHitRate: 0.9,
+			},
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 100,
+					costUsd: 0.005,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			burnFindings: [],
+			toolUsage: [
+				{ name: "bash", kind: "tool", calls: 12, sessions: 3 },
+				{ name: "tdd", kind: "skill", calls: 4, sessions: 2 },
+			],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		await screen.findByText("Tool & skill usage");
+		expect(screen.getByText("bash")).toBeInTheDocument();
+		// A skill row is labelled as one — its calls are read_skill loads, not
+		// tool invocations, and the two must not read as the same thing.
+		expect(screen.getByText("tdd")).toBeInTheDocument();
+		expect(screen.getByText("· skill")).toBeInTheDocument();
+	});
+
+	it("hides the tool & skill usage table while no turn carries facts (issue #292)", async () => {
+		nextSummary = {
+			totals: {
+				...ZERO_TOTALS,
+				inputTokens: 100,
+				cacheHitRate: 0.9,
+			},
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 100,
+					costUsd: 0.005,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			burnFindings: [],
+			toolUsage: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		// Usage exists, but it's all pre-feature turns — the capture is
+		// forward-only, so the table is absent rather than full of zeros.
+		await screen.findByText("Cache health");
+		expect(screen.queryByText("Tool & skill usage")).not.toBeInTheDocument();
 	});
 
 	it("names the icon-only Back button (issue #223)", async () => {
@@ -500,6 +574,7 @@ describe("MetricsPage", () => {
 			topSessions: [],
 			byPurpose: [],
 			burnFindings: [],
+			toolUsage: [],
 			contextDrift: [],
 		};
 		const { container } = render(<MetricsPage repos={[]} onBack={() => {}} />);

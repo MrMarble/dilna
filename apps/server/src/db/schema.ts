@@ -453,6 +453,20 @@ export const usageEvents = sqliteTable("usage_events", {
 	 * the Metrics page. Null for rows written before the column existed or
 	 * turns whose model had fallen out of the catalog; never read as zero. */
 	estimatedContextTokens: integer("estimated_context_tokens"),
+	/** What the turn actually did, tool-wise (issue #292): JSON following the
+	 * `messages.parts_json` convention — a plain `TurnToolFacts` object from
+	 * `packages/shared` (`{ tools: Record<name, count>, skills:
+	 * Record<skillName, count> }`), parsed at the call site rather than via
+	 * drizzle's json column mode. Stamped by the pi adapter on the same
+	 * turn-end event as the usage above, so the skill/tool burn findings
+	 * aggregate recorded facts instead of parsing transcript parts at read
+	 * time. Deliberately a JSON column on this row rather than a side table
+	 * keyed by turn: the facts are written once, never updated, and only
+	 * ever read together with the very row they describe. Null for rows
+	 * written before the column existed (forward-only — no backfill) and for
+	 * judge rows: a judge call is not the Session's work (same rule as
+	 * `purpose`), and it never invokes tools to begin with. */
+	toolFactsJson: text("tool_facts_json"),
 	createdAt: integer("created_at").notNull().$defaultFn(now),
 });
 

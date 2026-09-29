@@ -8,6 +8,7 @@ import type {
 	Attachment,
 	Message,
 	MessagePart,
+	TurnToolFacts,
 	UsageTotals,
 } from "@dilna/shared";
 import { asWireToolName } from "@dilna/shared";
@@ -873,6 +874,29 @@ export type NormalizeState = {
 	 * `usage_events.provider_context_tokens`. Reset on `agent_end`.
 	 */
 	turnProviderContextTokens: number | null;
+	/**
+	 * Per-turn tool/skill facts (issue #292): what this turn actually did —
+	 * tool wire name → call count, plus skill name → successful
+	 * `read_skill` loads. Emitted on the turn-end reconciling
+	 * `usage_update` alongside `turnUsage` and persisted onto the turn's
+	 * `usage_events` row, so the burn findings aggregate recorded facts
+	 * instead of parsing transcript parts at read time. Tools are counted at
+	 * `tool_execution_start` (an errored call still happened and still spent
+	 * the round trip); a skill only counts once its load *succeeded*
+	 * (`tool_execution_end` without `isError`) — a failed lookup never put
+	 * the skill's body into context. Subagent tool calls are deliberately
+	 * absent: the read-only `task` delegation (ADR-0034) runs on its own
+	 * throwaway `Agent` whose events never reach this normalizer, and the
+	 * subagent's spend isn't in the parent turn's usage row either — the
+	 * parent's facts describe the parent turn, where the `task` call itself
+	 * counts like any other tool. Reset on `agent_end`.
+	 */
+	turnToolCalls: Map<string, number>;
+	/** callId → the skill name a `read_skill` call asked for, recorded at
+	 * `tool_execution_start` so `tool_execution_end` (which carries no args)
+	 * can resolve whether the load succeeded. */
+	pendingSkillLoads: Map<string, string>;
+	turnSkillLoads: Map<string, number>;
 };
 
 const ZERO_TURN_USAGE: UsageTotals = {
@@ -890,6 +914,21 @@ export function createNormalizeState(): NormalizeState {
 		toolCallMessageId: new Map(),
 		turnUsage: { ...ZERO_TURN_USAGE },
 		turnProviderContextTokens: null,
+		turnToolCalls: new Map(),
+		pendingSkillLoads: new Map(),
+		turnSkillLoads: new Map(),
+	};
+}
+
+/** Fold the turn's accumulated tool/skill counts into the wire shape. Both
+ * maps are always present in the result (empty objects, never undefined
+ * keys) so a persisted row reads unambiguously as "feature-era turn, zero
+ * tool calls" rather than "no facts recorded" — that's what the null
+ * `tool_facts_json` column is for. */
+function turnToolFacts(state: NormalizeState): TurnToolFacts {
+	return {
+		tools: Object.fromEntries(state.turnToolCalls),
+		skills: Object.fromEntries(state.turnSkillLoads),
 	};
 }
 
@@ -965,6 +1004,22 @@ export function normalizePiEvent(
 			if (opened) state.currentMessageId = randomUUID();
 			const messageId = state.currentMessageId as string;
 			state.toolCallMessageId.set(event.toolCallId, messageId);
+			// Issue #292: count the call now — an errored call still happened
+			// and still spent its round trip. A `read_skill` call's name is
+			// remembered per callId so the end event (which carries no args)
+			// can decide whether the load actually succeeded.
+			state.turnToolCalls.set(
+				event.toolName,
+				(state.turnToolCalls.get(event.toolName) ?? 0) + 1,
+			);
+			if (event.toolName === "read_skill") {
+				const name =
+					typeof (event.args as { name?: unknown } | undefined)?.name ===
+					"string"
+						? (event.args as { name: string }).name
+						: null;
+				if (name) state.pendingSkillLoads.set(event.toolCallId, name);
+			}
 			return [
 				...(opened
 					? [
@@ -987,6 +1042,19 @@ export function normalizePiEvent(
 		case "tool_execution_end": {
 			const messageId = state.toolCallMessageId.get(event.toolCallId);
 			if (!messageId) return [];
+			// Issue #292: only a clean result means the skill's body actually
+			// entered context — a failed lookup (unknown name, empty library) is
+			// counted under `tools` from the start event, but is not a load.
+			if (!event.isError) {
+				const skill = state.pendingSkillLoads.get(event.toolCallId);
+				if (skill) {
+					state.turnSkillLoads.set(
+						skill,
+						(state.turnSkillLoads.get(skill) ?? 0) + 1,
+					);
+				}
+			}
+			state.pendingSkillLoads.delete(event.toolCallId);
 			const result = event.result as
 				| { content?: (TextContent | ImageContent)[] }
 				| undefined;
@@ -1031,7 +1099,9 @@ export function normalizePiEvent(
 			// SessionManager.accumulateSessionUsage folds it into the session's
 			// persisted lifetime total — the only place it looks for that field.
 			// `providerContextTokens` rides along so the same event also stamps
-			// the provider's context report onto the turn's `usage_events` row.
+			// the provider's context report onto the turn's `usage_events` row,
+			// and `toolFacts` (issue #292) stamps what the turn actually did,
+			// tool-wise, onto the same row.
 			const events: AgentStreamEvent[] =
 				state.currentMessageId &&
 				(state.turnUsage.inputTokens > 0 || state.turnUsage.outputTokens > 0)
@@ -1046,6 +1116,7 @@ export function normalizePiEvent(
 											providerContextTokens: state.turnProviderContextTokens,
 										}
 									: {}),
+								toolFacts: turnToolFacts(state),
 							},
 						]
 					: [];
@@ -1053,6 +1124,9 @@ export function normalizePiEvent(
 			state.toolCallMessageId.clear();
 			state.turnUsage = { ...ZERO_TURN_USAGE };
 			state.turnProviderContextTokens = null;
+			state.turnToolCalls.clear();
+			state.pendingSkillLoads.clear();
+			state.turnSkillLoads.clear();
 			return events;
 		}
 		default:

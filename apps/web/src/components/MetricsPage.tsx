@@ -10,6 +10,7 @@ import type {
 	UsageModelBreakdown,
 	UsageSessionBreakdown,
 	UsageSummary,
+	UsageToolBreakdown,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
 import { formatUsd } from "@dilna/shared";
@@ -156,6 +157,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 							drift={summary.contextDrift}
 							repoNameById={repoNameById}
 						/>
+						<ToolUsageTable tools={summary.toolUsage} />
 						<ModelBreakdownTable models={summary.byModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 						<TopSessionsTable
@@ -853,6 +855,55 @@ function ContextDriftCard({
 				itself reported, per turn. Recalibrate charsPerTokenFor() once enough
 				turns have accumulated (see scripts/measure-chars-per-token.ts).
 			</p>
+		</div>
+	);
+}
+
+/**
+ * What the Agent actually did over the selected range (issue #292), one row
+ * per tool — plus one per skill loaded via `read_skill`, which is how a
+ * skill's burn (its body entering context) becomes countable at all.
+ * Computed server-side from the per-turn facts the pi adapter stamps at
+ * turn end (`usage_events.tool_facts_json`); the web renders from the shared
+ * type only. Hidden entirely while the range has no facts rows: the capture
+ * is forward-only, so pre-feature turns mean an absent table, not a table
+ * of zeros.
+ */
+function ToolUsageTable({ tools }: { tools: UsageToolBreakdown[] }) {
+	if (tools.length === 0) return null;
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				Tool &amp; skill usage
+			</div>
+			<table className="w-full text-sm">
+				<thead>
+					<tr className="border-b border-border text-left text-xs text-muted-foreground">
+						<th className="px-4 py-2 font-medium">Tool / skill</th>
+						<th className="px-4 py-2 text-right font-medium">Calls</th>
+						<th className="px-4 py-2 text-right font-medium">Sessions</th>
+					</tr>
+				</thead>
+				<tbody>
+					{tools.map((t, i) => (
+						<tr
+							key={`${t.kind}:${t.name}`}
+							className={cn("tabular-nums", i > 0 && "border-t border-border")}
+						>
+							<td className="px-4 py-2">
+								<span className="font-mono text-xs">{t.name}</span>
+								{t.kind === "skill" && (
+									<span className="ml-1 text-xs text-muted-foreground">
+										· skill
+									</span>
+								)}
+							</td>
+							<td className="px-4 py-2 text-right">{t.calls}</td>
+							<td className="px-4 py-2 text-right">{t.sessions}</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
 		</div>
 	);
 }
