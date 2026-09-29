@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import type { TurnToolFacts } from "@dilna/shared";
 import { formatUsd } from "@dilna/shared";
 import { eq, like } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -53,6 +54,7 @@ function seedTurn(overrides: {
 	cacheReadTokens?: number;
 	cacheWriteTokens?: number;
 	reasoningTokens?: number;
+	toolFacts?: TurnToolFacts;
 }) {
 	getDb()
 		.insert(usageEventsTable)
@@ -63,6 +65,9 @@ function seedTurn(overrides: {
 			createdAt: Math.floor(Date.now() / 1000),
 			costUsd: 0.01,
 			purpose: "turn",
+			...(overrides.toolFacts
+				? { toolFactsJson: JSON.stringify(overrides.toolFacts) }
+				: {}),
 			...overrides,
 		})
 		.run();
@@ -82,20 +87,31 @@ function seedDeepSession(sessionId: string, depths: number[], costs: number[]) {
 }
 
 /** Insert a live `sessions` row (defaults suffice — only compaction state
- * and title matter here). */
+ * and title matter here; `createdAt` matters for finding K's carry test). */
 function seedSessionRow(
 	id: string,
-	{ title, compacted }: { title?: string; compacted?: boolean } = {},
+	{
+		title,
+		compacted,
+		repoId,
+		createdAt,
+	}: {
+		title?: string;
+		compacted?: boolean;
+		repoId?: string;
+		createdAt?: number;
+	} = {},
 ) {
 	getDb()
 		.insert(sessionsTable)
 		.values({
 			id,
-			repoId: "repo-burn",
+			repoId: repoId ?? "repo-burn",
 			worktreePath: `/tmp/${id}`,
 			worktreeDirName: id,
 			branchName: `${id}-branch`,
 			title: title ?? `Session ${id}`,
+			...(createdAt != null ? { createdAt } : {}),
 			...(compacted ? { compactedSummary: "earlier context, summarized" } : {}),
 		})
 		.run();

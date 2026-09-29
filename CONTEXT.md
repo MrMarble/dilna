@@ -29,7 +29,7 @@ The specific LLM a **Provider** serves — e.g. Claude Opus, DeepSeek-V3, Kimi K
 _Avoid_: using "model" for the **Agent** itself (see Agent's _Avoid_)
 
 **Burn finding**:
-One actionable statement about where tokens are being wasted, computed entirely server-side from `usage_events` plus the Session's compaction fields (`sessions/burnFindings.ts`, issue #291) and rendered verbatim on the Metrics page's **Burn checks** card, worst first. Each finding names the check that fired (its `check` code), a severity, the Session/Repo it happened to, self-contained human-readable evidence, and an estimated $ waste — `null`, never a computed zero, when the Model has no price in the catalog. The web computes nothing from raw numbers; it renders the shared `BurnFinding` shape only.
+One actionable statement about where tokens are being wasted, computed entirely server-side from `usage_events` plus the Session's compaction fields (`sessions/burnFindings.ts`, issue #291) and rendered verbatim on the Metrics page's **Burn checks** card, worst first. Each finding names the check that fired (its `check` code), a severity, the Session/Repo it happened to, self-contained human-readable evidence, and an estimated $ waste — `null`, never a computed zero, when the Model has no price in the catalog. A finding may carry a server-declared **action** (ADR-0052): the one one-click resolution the web may offer on the row, which always targets the API that already owns the affected state. The web computes nothing from raw numbers; it renders the shared `BurnFinding` shape only.
 _Avoid_: burn check (the **check** is the kind of verdict — "session overdepth" — the finding is one fired instance of it), insight, anomaly
 
 **Artefact**:
