@@ -4,6 +4,7 @@ import type {
 	ArtefactsResponse,
 	Attachment,
 	AttachmentResponse,
+	BurnTimelineResponse,
 	CancelOAuthBody,
 	ChangedFile,
 	ChangedFilesResponse,
@@ -376,6 +377,10 @@ export const api = {
 			request<CommitsResponse>(paths.sessions.commits(id)),
 		artefacts: (id: string) =>
 			request<ArtefactsResponse>(paths.sessions.artefacts(id)),
+		/** Seeds the context panel's burn tab — freshness policy on
+		 * `BurnTimelineResponse` (fetched once, refreshed on turn end). */
+		burnTimeline: (id: string) =>
+			request<BurnTimelineResponse>(paths.sessions.burnTimeline(id)),
 		/** Every judged turn score in the Session (ADR-0046). */
 		scores: (id: string) =>
 			request<TurnScoresResponse>(paths.sessions.scores(id)),

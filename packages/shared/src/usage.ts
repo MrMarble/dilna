@@ -159,6 +159,52 @@ export type BurnFinding = {
 	wasteUsd: number | null;
 };
 
+/**
+ * One entry in a Session's burn timeline (issue #293) — one `usage_events`
+ * row, i.e. one completed Agent turn or one judge call (ADR-0046), ordered
+ * oldest first. Answers "why did this Session cost what it cost" with facts
+ * that already exist: composition, cost and context occupancy are stamped on
+ * the row at turn end; only `contextWindow` is resolved at read time (from
+ * dilna's model catalog, `null` once the row's model has left it). No
+ * transcript text — the chat itself covers content.
+ */
+export type SessionBurnTurn = {
+	/** 1-based ordinal among the Session's completed Agent turns, oldest
+	 * first. `null` for judge-call rows (`purpose: "judge"`), which aren't
+	 * turns — they render as markers in the timeline and don't consume a turn
+	 * number. */
+	turn: number | null;
+	/** Epoch seconds the row was written — the turn's (or judge call's) end. */
+	at: number;
+	purpose: UsagePurpose;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	reasoningTokens: number;
+	costUsd: number;
+	/** Context occupancy the provider itself reported for this turn (issue
+	 * #267) — the solid half of the occupancy line. Null for rows written
+	 * before the stamp existed and adapters that don't report it; never
+	 * coerced to 0. */
+	providerContextTokens: number | null;
+	/** dilna's own estimate for the same turn (issue #270) — the comparison
+	 * half of the occupancy line. Null when not computable (pre-#270 rows, or
+	 * the row's model has left the catalog). */
+	estimatedContextTokens: number | null;
+	/** The row's model's context window — the scale the two occupancy figures
+	 * read against. Null when the row's provider/model is no longer in
+	 * dilna's catalog. */
+	contextWindow: number | null;
+	/** True when the Session's *current* compaction (ADR-0023) landed at this
+	 * turn — the turn containing `sessions.compactedThroughMessageId`, whose
+	 * end folded history into the summary. Only that one compaction is marked:
+	 * the sessions row keeps a single compaction (each chains into the previous
+	 * summary and overwrites the fields), so earlier ones surface only as the
+	 * drops the occupancy figures take across the timeline. */
+	compacted: boolean;
+};
+
 export type UsageSummary = {
 	totals: UsageTotalsDetailed;
 	daily: UsageDailyPoint[];
