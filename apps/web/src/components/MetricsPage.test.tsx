@@ -1,9 +1,15 @@
 import type { UsageSummary } from "@dilna/shared";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MetricsPage } from "@/components/MetricsPage";
 import { expectEveryButtonNamed } from "@/test/accessible-name";
 import type { PartialApi } from "@/test/api-mock";
+
+/** The one finding action a test acts on — hoisted so the mocked client can
+ * reference it without TDZ trouble (the factory runs during import). */
+const skillsApi = vi.hoisted(() => ({
+	setEnabled: vi.fn(async () => ({ ok: true })),
+}));
 
 const ZERO_TOTALS = {
 	inputTokens: 0,
@@ -36,6 +42,7 @@ vi.mock("@/api/client", () => ({
 				disk: { totalBytes: 10_000, freeBytes: 4_000 },
 			}),
 		},
+		skills: skillsApi,
 	} satisfies PartialApi,
 }));
 
@@ -412,6 +419,7 @@ describe("MetricsPage", () => {
 					evidence:
 						"Context sits at 90% of its model's 200k window at the median turn (deepest 96%); 3 of 3 reported turns land past the 70% line, and those turns are the Session's most expensive. Depth premium over the Session's own median turn: ~$0.10.",
 					wasteUsd: 0.1,
+					action: null,
 				},
 				{
 					check: "session-overdepth",
@@ -422,6 +430,7 @@ describe("MetricsPage", () => {
 					evidence:
 						"Context sits at 75% of its model's 128k window at the median turn (deepest 80%); 3 of 3 reported turns land past the 70% line, and those turns are the Session's most expensive. The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.",
 					wasteUsd: null,
+					action: null,
 				},
 			],
 			toolUsage: [],
@@ -498,6 +507,7 @@ describe("MetricsPage", () => {
 					evidence:
 						"3 of 9 reported turns re-wrote their whole prompt prefix as fresh cache writes (median 41k tokens per re-write). Cache-write premium over a warm cache on those turns: ~$0.03.",
 					wasteUsd: 0.03,
+					action: null,
 				},
 				{
 					check: "model-overthinking",
@@ -508,6 +518,7 @@ describe("MetricsPage", () => {
 					evidence:
 						"Reasoning is 60% of generated output at the median turn (peak 81%); 4 of 9 turns spent more tokens thinking than answering. The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.",
 					wasteUsd: null,
+					action: null,
 				},
 				{
 					check: "expensive-delegation",
@@ -518,6 +529,7 @@ describe("MetricsPage", () => {
 					evidence:
 						"Fan-out to 3 child Sessions spent $1.20 this range — 12× the orchestrator's own $0.10.",
 					wasteUsd: null,
+					action: null,
 				},
 			],
 			toolUsage: [],
@@ -575,6 +587,82 @@ describe("MetricsPage", () => {
 		await screen.findByText("Cache health");
 		expect(
 			screen.getByText(/All clear — nothing in this range is burning/i),
+		).toBeInTheDocument();
+	});
+
+	it("executes a finding's disable-for-Repo action and re-reads the summary (issue #295)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS },
+			daily: [
+				{
+					date: "2026-08-27",
+					...ZERO_TOTALS,
+					inputTokens: 500,
+					costUsd: 0.01,
+				},
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			contextDrift: [],
+			burnFindings: [
+				{
+					check: "repo-unused-skill",
+					severity: "info",
+					sessionId: null,
+					repoId: "repo-1",
+					title: "tdd",
+					evidence:
+						"Never loaded via read_skill in the range, yet enabled for this repo — progressive disclosure still puts its name + description (~8 per turn) in every Session's system prompt.",
+					wasteUsd: 0.0012,
+					action: {
+						kind: "disable-skill-for-repo",
+						skillId: "owner/repo/tdd",
+						skillName: "tdd",
+					},
+				},
+			],
+			toolUsage: [],
+		};
+		render(
+			<MetricsPage
+				repos={[
+					{
+						id: "repo-1",
+						slug: "my-repo",
+						path: "/tmp/my-repo",
+						defaultBranch: "main",
+						remoteUrl: "https://example.com/my-repo.git",
+						createdAt: 0,
+					},
+				]}
+				onBack={() => {}}
+			/>,
+		);
+
+		const button = await screen.findByRole("button", {
+			name: 'Disable "tdd" for this repo',
+		});
+		fireEvent.click(button);
+
+		// The disable goes to the enablement API the finding declared — the
+		// web does not re-derive which action a check supports (ADR-0052).
+		expect(skillsApi.setEnabled).toHaveBeenCalledWith(
+			"owner/repo/tdd",
+			"repo-1",
+			false,
+		);
+
+		// The re-fetch returns the post-disable summary: the finding has
+		// cleared and the card says so, not just the stale row.
+		nextSummary = {
+			...nextSummary,
+			burnFindings: [],
+		};
+		expect(
+			await screen.findByText(/All clear — nothing in this range is burning/i),
 		).toBeInTheDocument();
 	});
 

@@ -69,7 +69,11 @@ export function MetricsPage({ repos, onBack }: Props) {
 	const [summary, setSummary] = useState<UsageSummary | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	// Bumped when a burn finding's action resolves, so the card re-reads the
+	// summary and cleared findings disappear immediately.
+	const [actionNonce, setActionNonce] = useState(0);
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: actionNonce is a deliberate re-fetch trigger — it is bumped when a burn finding's action resolves, and the effect must re-run to show the post-action summary even though it never reads the nonce itself.
 	useEffect(() => {
 		let cancelled = false;
 		setLoading(true);
@@ -90,7 +94,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 		return () => {
 			cancelled = true;
 		};
-	}, [days]);
+	}, [days, actionNonce]);
 
 	const repoNameById = Object.fromEntries(repos.map((r) => [r.id, r.slug]));
 	const isEmpty = summary !== null && summary.daily.length === 0;
@@ -152,6 +156,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 						<BurnChecksCard
 							findings={summary.burnFindings}
 							repoNameById={repoNameById}
+							onActionComplete={() => setActionNonce((n) => n + 1)}
 						/>
 						<ContextDriftCard
 							drift={summary.contextDrift}
@@ -704,6 +709,7 @@ const BURN_CHECK_LABELS: Record<BurnCheckCode, string> = {
 	"cache-rehydration": "Cache rehydration",
 	"model-overthinking": "Overthinking",
 	"expensive-delegation": "Expensive delegation",
+	"repo-unused-skill": "Unused skill",
 };
 
 /** What the $ column means per check, once priced and once when it renders
@@ -729,6 +735,11 @@ const WASTE_HINTS: Record<BurnCheckCode, { priced: string; unpriced: string }> =
 			unpriced:
 				"Fan-out spend is real work, not waste — the total is in the evidence",
 		},
+		"repo-unused-skill": {
+			priced:
+				"Prompt-line carry at the model's uncached input rate — an upper bound",
+			unpriced: "No catalog price for the models in range — no $ estimate",
+		},
 	};
 
 const SEVERITY_BADGE: Record<BurnFindingSeverity, string> = {
@@ -740,17 +751,43 @@ const SEVERITY_BADGE: Record<BurnFindingSeverity, string> = {
 /**
  * The judgment layer over the spend every card above measures (issue #291):
  * burn findings computed entirely server-side (`sessions/burnFindings.ts`),
- * worst first, rendered from the shared `BurnFinding` shape only. Empty
- * reads as an explicit all-clear — an absence of findings is a verdict, not
- * missing data.
+ * worst first, rendered from the shared `BurnFinding` shape only. A finding
+ * may carry a server-declared `action` (ADR-0052): a one-click resolution
+ * executed from the row, after which the summary is re-fetched (via
+ * `onActionComplete`) so resolved findings disappear instead of lingering
+ * until the next range switch. Empty reads as an explicit all-clear — an
+ * absence of findings is a verdict, not missing data.
  */
 function BurnChecksCard({
 	findings,
 	repoNameById,
+	onActionComplete,
 }: {
 	findings: BurnFinding[];
 	repoNameById: Record<string, string>;
+	onActionComplete?: () => void;
 }) {
+	const [busyAction, setBusyAction] = useState<string | null>(null);
+	const [actionError, setActionError] = useState<string | null>(null);
+
+	const runAction = async (finding: BurnFinding) => {
+		const action = finding.action;
+		if (action?.kind !== "disable-skill-for-repo" || finding.repoId == null)
+			return;
+		setBusyAction(actionKey(finding));
+		setActionError(null);
+		try {
+			await api.skills.setEnabled(action.skillId, finding.repoId, false);
+			onActionComplete?.();
+		} catch (err) {
+			setActionError(
+				err instanceof Error ? err.message : "Failed to disable skill.",
+			);
+		} finally {
+			setBusyAction(null);
+		}
+	};
+
 	return (
 		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
 			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
@@ -768,13 +805,21 @@ function BurnChecksCard({
 								? (repoNameById[f.repoId] ??
 									`${f.repoId.slice(0, 8)}… (deleted)`)
 								: null;
+						// Session findings fall back to the id; Repo-scoped ones have
+						// no Session to name, so the server always sets a title for
+						// them — "unknown" is a defensive last resort.
+						const subject =
+							f.title ??
+							(f.sessionId != null
+								? `deleted session ${f.sessionId.slice(0, 8)}…`
+								: "unknown");
 						return (
 							<li
 								// The server caps findings at ten in a stable worst-first order, but
 								// check + Session is not a unique key: finding S has two shapes
 								// (fan-out, judge) that can both flag one orchestrator.
 								// biome-ignore lint/suspicious/noArrayIndexKey: the index only disambiguates that stable-list pair
-								key={`${f.check}-${f.sessionId ?? f.repoId ?? i}-${i}`}
+								key={`${actionKey(f)}-${i}`}
 								className="px-4 py-3"
 							>
 								<div className="flex items-center gap-2">
@@ -786,10 +831,7 @@ function BurnChecksCard({
 									>
 										{f.severity}
 									</span>
-									<span className="truncate font-medium">
-										{f.title ??
-											`deleted session ${(f.sessionId ?? "").slice(0, 8)}…`}
-									</span>
+									<span className="truncate font-medium">{subject}</span>
 									{repo && (
 										<span className="hidden font-mono text-xs text-muted-foreground sm:inline">
 											{repo}
@@ -812,6 +854,25 @@ function BurnChecksCard({
 									</span>{" "}
 									{f.evidence}
 								</p>
+								{f.action && (
+									<div className="mt-2">
+										<Button
+											variant="outline"
+											size="sm"
+											disabled={busyAction != null}
+											onClick={() => void runAction(f)}
+										>
+											{busyAction === actionKey(f)
+												? "Disabling…"
+												: f.action.kind === "disable-skill-for-repo"
+													? `Disable "${f.action.skillName}" for this repo`
+													: null}
+										</Button>
+									</div>
+								)}
+								{actionError && (
+									<p className="mt-2 text-xs text-destructive">{actionError}</p>
+								)}
 							</li>
 						);
 					})}
@@ -819,12 +880,23 @@ function BurnChecksCard({
 			)}
 			<p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
 				Computed server-side from the same usage as every card above, scoped to
-				the selected range. Estimated waste compares flagged turns to the
-				Session's own median turn; a model with no price in the catalog yields a
-				finding without a $ figure, never a guessed zero.
+				the selected range; where an estimate comes from is on each finding's
+				evidence line. A model with no price in the catalog yields a finding
+				without a $ figure, never a guessed zero.
 			</p>
 		</div>
 	);
+}
+
+/** Stable React key for a finding row — check + Session id, or check +
+ * Repo + action target (two unused skills on one Repo are two rows). */
+function actionKey(finding: BurnFinding): string {
+	if (finding.sessionId != null) return `${finding.check}-${finding.sessionId}`;
+	return `${finding.check}-${finding.repoId ?? ""}-${
+		finding.action?.kind === "disable-skill-for-repo"
+			? finding.action.skillId
+			: ""
+	}`;
 }
 
 function ContextDriftCard({

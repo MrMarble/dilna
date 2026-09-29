@@ -1,4 +1,4 @@
-import type { BurnFinding } from "@dilna/shared";
+import type { BurnFinding, BurnFindingAction } from "@dilna/shared";
 import { formatTokenCount, formatUsd } from "@dilna/shared";
 import {
 	and,
@@ -12,10 +12,14 @@ import {
 	sql,
 } from "drizzle-orm";
 import { resolveSummarizationModel } from "../agents/pi";
+import { LIBRARY_CHARS_PER_TOKEN } from "../agents/providerConfig";
 import { getDb } from "../db";
 import {
 	messages as messagesTable,
+	repoSkills as repoSkillsTable,
+	sessionArchive as sessionArchiveTable,
 	sessions as sessionsTable,
+	skills as skillsTable,
 	turnScores as turnScoresTable,
 	usageEvents as usageEventsTable,
 } from "../db/schema";
@@ -44,7 +48,6 @@ import { resolveSessionTitles } from "./usageStats";
  * whole finding, while C's and M's waste is an absolute (rate × tokens) sum
  * over the flagged turns alone, so only those turns need a price.
  */
-
 /** Median reported context occupancy past which a Session's depth is
  * flagged: a Session whose *median* turn sits at or beyond this share of its
  * model's window is paying the depth premium (prompt-side tokens scale with
@@ -139,6 +142,17 @@ const JUDGE_PAIR_WINDOW_S = 60;
  * round is persisted — same second in practice. Matches outside the window
  * are dropped (the pair is not compared) rather than guessed. */
 const TURN_MATCH_WINDOW_S = 5;
+
+/** Smallest number of observed turns an unused-skill verdict may rest on:
+ * turns of Sessions that actually carried the skill (started while it was
+ * enabled) and recorded tool/skill facts. This is the check's minimum
+ * observation window, and it is what keeps the forward-only fact capture
+ * honest — "no read_skill facts yet" (facts only exist for turns after
+ * issue #292 shipped) must never read as "the skill was never read". Ten
+ * turns is enough relevant-task opportunities to distinguish "never
+ * relevant" from "hasn't come up yet" while staying small enough that a
+ * genuinely dead skill surfaces within the default 7d range. */
+export const MIN_FACT_TURNS = 10;
 
 /** How many findings the Burn checks card shows, worst first — same cap
  * shape as the top-spend and drift lists. */
@@ -417,32 +431,56 @@ export function getBurnFindings(since: number): BurnFinding[] {
 	candidates.push(...fanoutCandidates(spendBySession, bySession));
 	candidates.push(...judgeCandidates(judgesBySession));
 
+	const skillFindings = unusedSkillFindings(since);
+
 	// Worst first: largest estimated waste, then severity. Null waste
 	// (unpriced models, and the fan-out shape's deliberate "real work, not
 	// waste") ranks below every priced figure; ties break toward the louder
-	// severity, then deterministically by check and Session id.
-	candidates.sort((a, b) => {
-		const wasteGap = (b.wasteUsd ?? -1) - (a.wasteUsd ?? -1);
+	// severity, then deterministically. Skill findings (already shaped) ride
+	// the same list — the cap is shared, so a check earns its slot on the
+	// card against the others, not against nothing.
+	type Merged =
+		| { kind: "candidate"; candidate: Candidate }
+		| { kind: "skill"; finding: BurnFinding };
+	const merged: Merged[] = [
+		...candidates.map(
+			(candidate): Merged => ({ kind: "candidate", candidate }),
+		),
+		...skillFindings.map((finding): Merged => ({ kind: "skill", finding })),
+	];
+	const wasteOf = (m: Merged) =>
+		m.kind === "candidate" ? m.candidate.wasteUsd : m.finding.wasteUsd;
+	const severityOf = (m: Merged) =>
+		m.kind === "candidate" ? m.candidate.severity : m.finding.severity;
+	merged.sort((a, b) => {
+		const wasteGap = (wasteOf(b) ?? -1) - (wasteOf(a) ?? -1);
 		if (wasteGap !== 0) return wasteGap;
-		const severityGap = SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity];
+		const severityGap =
+			SEVERITY_RANK[severityOf(b)] - SEVERITY_RANK[severityOf(a)];
 		if (severityGap !== 0) return severityGap;
-		return (
-			a.check.localeCompare(b.check) || a.sessionId.localeCompare(b.sessionId)
-		);
+		const keyOf = (m: Merged) =>
+			m.kind === "candidate"
+				? `${m.candidate.check}\u0000${m.candidate.sessionId}`
+				: `${m.finding.check}\u0000${m.finding.repoId ?? ""}\u0000${m.finding.title ?? ""}`;
+		return keyOf(a).localeCompare(keyOf(b));
 	});
 
-	const top = candidates.slice(0, BURN_FINDINGS_LIMIT);
+	const top = merged.slice(0, BURN_FINDINGS_LIMIT);
 	if (top.length === 0) return [];
 
+	const candidateTop = top.filter(
+		(m): m is Extract<Merged, { kind: "candidate" }> => m.kind === "candidate",
+	);
 	const titleById = resolveSessionTitles([
 		...new Set([
-			...top.map((f) => f.sessionId),
+			...candidateTop.map((m) => m.candidate.sessionId),
 			// Fan-out evidence names the largest child, whose title resolves in
 			// the same batch.
-			...top.flatMap((f) =>
-				f.check === "expensive-delegation" && f.kind === "fanout"
-					? f.topChildId
-						? [f.topChildId]
+			...candidateTop.flatMap((m) =>
+				m.candidate.check === "expensive-delegation" &&
+				m.candidate.kind === "fanout"
+					? m.candidate.topChildId
+						? [m.candidate.topChildId]
 						: []
 					: [],
 			),
@@ -461,22 +499,267 @@ export function getBurnFindings(since: number): BurnFinding[] {
 			.where(
 				inArray(
 					sessionsTable.id,
-					top.map((f) => f.sessionId),
+					candidateTop.map((m) => m.candidate.sessionId),
 				),
 			)
 			.all()
 			.map((row) => [row.id, row.compactedSummary != null] as const),
 	);
 
-	return top.map((candidate) => ({
-		check: candidate.check,
-		severity: candidate.severity,
-		sessionId: candidate.sessionId,
-		repoId: candidate.repoId,
-		title: titleById.get(candidate.sessionId) ?? null,
-		evidence: candidateEvidence(candidate, compactedById, titleById),
-		wasteUsd: candidate.wasteUsd,
-	}));
+	return top.map((m) =>
+		m.kind === "skill"
+			? m.finding
+			: {
+					check: m.candidate.check,
+					severity: m.candidate.severity,
+					sessionId: m.candidate.sessionId,
+					repoId: m.candidate.repoId,
+					title: titleById.get(m.candidate.sessionId) ?? null,
+					evidence: candidateEvidence(m.candidate, compactedById, titleById),
+					wasteUsd: m.candidate.wasteUsd,
+					action: null,
+				},
+	);
+}
+
+/** One (provider, model) row of a Repo's in-range model mix, with its
+ * resolved uncached input rate (null when out-of-catalog/unpriced). */
+type ModelMixRow = {
+	provider: string;
+	model: string;
+	turns: number;
+	rate: number | null;
+};
+
+/**
+ * Finding K — unused skills (issue #295). A skill enabled for a Repo but
+ * never loaded via `read_skill` in the range. Its cost is real but small
+ * per turn: progressive disclosure puts only the skill's name + description
+ * (one prompt line) in every Session's system prompt, so the waste is that
+ * line's size × the turns it was carried through × the input price of the
+ * model the Repo actually ran. Hence `info` severity — a hygiene finding,
+ * not an incident. Unlike every other burn check, the finding is directly
+ * actionable in-dilna: dilna *is* the config, so the shared
+ * `BurnFindingAction` carries a disable-for-Repo affordance whose execution
+ * (the existing `POST /api/skills/:id/enabled` with `enabled: false`) both
+ * stops the carry on Sessions started afterwards and clears the finding.
+ *
+ * The verdict is deliberately conservative about the forward-only fact
+ * capture (issue #292): a Repo only has turns *of opportunity* for a skill
+ * once turns that (a) carry tool/skill facts and (b) belong to Sessions
+ * started while the skill was enabled — the system prompt freezes at
+ * Session start (ADR-0049), so earlier Sessions never carried it — number
+ * at least `MIN_FACT_TURNS`. Below that, "never loaded" is
+ * indistinguishable from "no data yet" and the check stays silent; an
+ * empty or thin fact set is never read as evidence of disuse. A skill
+ * loaded at least once in the range (by name, matching what `read_skill`
+ * was called with) produces no finding, however rarely it was used.
+ *
+ * Waste figure: the dominant priced model in the Repo's range (most turns
+ * first) supplies the rate; if no model in range has a catalog input price,
+ * the finding ships without a $ figure (empty-slice rule). The rate is the
+ * *uncached* input price — an upper bound, since prompt caching absorbs
+ * most of a stable prefix in practice — and the evidence says so. Turn
+ * counts use the Session's start time (live row, else ADR-0024 archive,
+ * else the turn's own stamp — an orphaned turn can only over-qualify its
+ * Session, never under-qualify a verdict's window).
+ */
+function unusedSkillFindings(since: number): BurnFinding[] {
+	const db = getDb();
+
+	// Every turn in range that carries facts, joined to whatever recorded the
+	// Session's start. Judge rows are excluded structurally by purpose (same
+	// rule as finding D and the tool-usage table): a judge call never invokes
+	// `read_skill` and is nobody's Session work.
+	const factRows = db
+		.select({
+			repoId: usageEventsTable.repoId,
+			createdAt: usageEventsTable.createdAt,
+			toolFactsJson: usageEventsTable.toolFactsJson,
+			sessionCreatedAt: sessionsTable.createdAt,
+			archivedCreatedAt: sessionArchiveTable.createdAt,
+		})
+		.from(usageEventsTable)
+		.leftJoin(sessionsTable, eq(sessionsTable.id, usageEventsTable.sessionId))
+		.leftJoin(
+			sessionArchiveTable,
+			eq(sessionArchiveTable.sessionId, usageEventsTable.sessionId),
+		)
+		.where(
+			and(
+				gte(usageEventsTable.createdAt, since),
+				eq(usageEventsTable.purpose, "turn"),
+				isNotNull(usageEventsTable.toolFactsJson),
+			),
+		)
+		.all();
+
+	// Per Repo: which skills `read_skill` loaded in range, and when each
+	// fact-carrying turn's Session started (the carry test is against
+	// `repo_skills.enabled_at`, not the turn's own date).
+	const loadedByRepo = new Map<string, Set<string>>();
+	const sessionStartsByRepo = new Map<string, number[]>();
+	for (const row of factRows) {
+		let facts: { skills?: Record<string, unknown> };
+		try {
+			facts = JSON.parse(row.toolFactsJson as string);
+		} catch {
+			// dilna wrote this JSON itself; skip a corrupt row rather than fail
+			// the whole card (same degradation as the tool-usage table).
+			continue;
+		}
+		let loaded = loadedByRepo.get(row.repoId);
+		if (!loaded) {
+			loaded = new Set();
+			loadedByRepo.set(row.repoId, loaded);
+		}
+		for (const [name, count] of Object.entries(facts.skills ?? {})) {
+			if (typeof count === "number" && count > 0) loaded.add(name);
+		}
+		const starts = sessionStartsByRepo.get(row.repoId) ?? [];
+		starts.push(row.sessionCreatedAt ?? row.archivedCreatedAt ?? row.createdAt);
+		sessionStartsByRepo.set(row.repoId, starts);
+	}
+
+	// The Repo's model mix in range (all turn rows, facts or not) decides
+	// whose price the waste figure borrows: the dominant priced model.
+	const mix = db
+		.select({
+			repoId: usageEventsTable.repoId,
+			provider: usageEventsTable.provider,
+			model: usageEventsTable.model,
+			turns: sql<number>`count(*)`,
+		})
+		.from(usageEventsTable)
+		.where(
+			and(
+				gte(usageEventsTable.createdAt, since),
+				eq(usageEventsTable.purpose, "turn"),
+			),
+		)
+		.groupBy(
+			usageEventsTable.repoId,
+			usageEventsTable.provider,
+			usageEventsTable.model,
+		)
+		.all();
+
+	const modelByRepo = new Map<string, ModelMixRow>();
+	const rateMemo = new Map<string, number | null>();
+	const inputRateOf = (provider: string, model: string): number | null => {
+		const key = `${provider}\u0000${model}`;
+		let rate = rateMemo.get(key);
+		if (rate === undefined) {
+			const resolved = resolveSummarizationModel(provider, model);
+			rate = resolved && resolved.cost.input > 0 ? resolved.cost.input : null;
+			rateMemo.set(key, rate);
+		}
+		return rate;
+	};
+	// Dominant model per Repo: most turns first, deterministic on ties; the
+	// most-used model carries the estimate, and only if it (then each
+	// runner-up) has no catalog price does the finding go figure-less.
+	const perRepo = new Map<string, ModelMixRow[]>();
+	for (const row of mix) {
+		const list = perRepo.get(row.repoId) ?? [];
+		list.push({
+			provider: row.provider,
+			model: row.model,
+			turns: row.turns,
+			rate: inputRateOf(row.provider, row.model),
+		});
+		perRepo.set(row.repoId, list);
+	}
+	for (const [repoId, list] of perRepo) {
+		list.sort(
+			(a, b) =>
+				b.turns - a.turns ||
+				a.provider.localeCompare(b.provider) ||
+				a.model.localeCompare(b.model),
+		);
+		const priced = list.find((m) => m.rate != null);
+		if (priced) modelByRepo.set(repoId, priced);
+	}
+
+	const enabled = db
+		.select({
+			skillId: skillsTable.id,
+			name: skillsTable.name,
+			description: skillsTable.description,
+			repoId: repoSkillsTable.repoId,
+			enabledAt: repoSkillsTable.enabledAt,
+		})
+		.from(repoSkillsTable)
+		.innerJoin(skillsTable, eq(skillsTable.id, repoSkillsTable.skillId))
+		.all();
+
+	const findings: BurnFinding[] = [];
+	for (const row of enabled) {
+		const starts = sessionStartsByRepo.get(row.repoId) ?? [];
+		const carried = starts.filter((start) => start >= row.enabledAt).length;
+		// Sparse/absent facts are "no verdict yet", not "unused" — the
+		// observation window is the whole point of MIN_FACT_TURNS.
+		if (carried < MIN_FACT_TURNS) continue;
+		if (loadedByRepo.get(row.repoId)?.has(row.name)) continue;
+
+		// What progressive disclosure actually inserts per Session: one line
+		// of `formatSkillsPrompt`'s listing, tokens estimated at the library's
+		// flat chars/4 — a couple of prose lines whose provider mix the skill
+		// doesn't control.
+		const line = `- ${row.name}: ${row.description}`;
+		const descTokens = Math.ceil(line.length / LIBRARY_CHARS_PER_TOKEN);
+		const pricedModel = modelByRepo.get(row.repoId);
+		const rate = pricedModel?.rate ?? null;
+		const wasteUsd =
+			rate != null ? (descTokens * carried * rate) / 1_000_000 : null;
+
+		const action: BurnFindingAction = {
+			kind: "disable-skill-for-repo",
+			skillId: row.skillId,
+			skillName: row.name,
+		};
+		findings.push({
+			check: "repo-unused-skill",
+			severity: "info",
+			sessionId: null,
+			repoId: row.repoId,
+			title: row.name,
+			evidence: unusedSkillEvidence({
+				name: row.name,
+				descTokens,
+				carried,
+				pricedModel: pricedModel ?? null,
+				wasteUsd,
+			}),
+			wasteUsd,
+			action,
+		});
+	}
+	return findings;
+}
+
+/** Finding K's evidence — self-contained, rendered verbatim by the web:
+ * what is unused, what carrying it costs, on whose price the estimate sits,
+ * and what doing something about it does. */
+function unusedSkillEvidence(input: {
+	name: string;
+	descTokens: number;
+	carried: number;
+	pricedModel: { provider: string; model: string } | null;
+	wasteUsd: number | null;
+}): string {
+	const parts = [
+		`Never loaded via read_skill in the range, yet enabled for this repo — progressive disclosure still puts its name + description (~${formatTokenCount(input.descTokens)} per turn) in every Session's system prompt.`,
+	];
+	parts.push(
+		input.wasteUsd != null && input.pricedModel
+			? `Carried through ${input.carried} turns of Sessions started while it was enabled, ≈ ${formatUsd(input.wasteUsd)} at ${input.pricedModel.provider}/${input.pricedModel.model}'s uncached input rate — an upper bound; prompt caching usually absorbs most of a stable prefix.`
+			: `Carried through ${input.carried} turns of Sessions started while it was enabled; the models used in range have no price in the catalog, so the finding carries no dollar figure — never a computed zero.`,
+	);
+	parts.push(
+		"Disabling it for this repo stops the carry on Sessions started afterwards and clears this finding.",
+	);
+	return parts.join(" ");
 }
 
 /** Resolve every turn row's catalog Model once — the window drives the

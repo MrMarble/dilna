@@ -121,18 +121,38 @@ export type UsageContextDrift = {
  * `session-overdepth`, and later tickets name their own codes the same way,
  * so a finding row in code is always greppable back to its ticket):
  * C = `cache-rehydration`, M = `model-overthinking`,
- * S = `expensive-delegation` (issue #294).
+ * S = `expensive-delegation` (issue #294), K = `repo-unused-skill`
+ * (issue #295).
  */
 export type BurnCheckCode =
 	| "session-overdepth"
 	| "cache-rehydration"
 	| "model-overthinking"
-	| "expensive-delegation";
+	| "expensive-delegation"
+	| "repo-unused-skill";
 
 /** How urgently a {@link BurnFinding} deserves attention — the web renders
  * this as the row's badge color, nothing more; the evidence text carries the
  * specifics. */
 export type BurnFindingSeverity = "info" | "warning" | "critical";
+
+/**
+ * An affordance the web renders directly on a {@link BurnFinding} — the
+ * one action that resolves the finding, declared server-side so the web
+ * never has to know which check maps to which API call (ADR-0052; the
+ * "web computes nothing" rule of ADR-0051, extended to actions). Null on
+ * findings with no one-click resolution.
+ */
+export type BurnFindingAction = {
+	/** The only member today: remove the Repo→skill enablement, so
+	 * subsequent Sessions stop carrying the skill and the finding clears. */
+	kind: "disable-skill-for-repo";
+	/** The skill's catalog id (`{source}/{slug}`) — the id `skills.setEnabled`
+	 * takes (the web base64url-encodes it onto the wire itself). */
+	skillId: string;
+	/** The skill's frontmatter name, for button/confirm copy. */
+	skillName: string;
+};
 
 /**
  * One actionable statement about where tokens are being wasted, produced
@@ -164,6 +184,9 @@ export type BurnFinding = {
 	 * computed 0 — when the model behind the spend has no price in the catalog
 	 * and the figure would be invented; the web renders "—" for null. */
 	wasteUsd: number | null;
+	/** The one-click resolution the web may offer on this finding, when it
+	 * has one (null when not — see {@link BurnFindingAction}). */
+	action: BurnFindingAction | null;
 };
 
 /**
