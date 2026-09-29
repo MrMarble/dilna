@@ -1,4 +1,5 @@
 import type { BurnFinding } from "@dilna/shared";
+import { formatTokenCount, formatUsd } from "@dilna/shared";
 import { and, eq, gte, inArray } from "drizzle-orm";
 import { resolveSummarizationModel } from "../agents/pi";
 import { getDb } from "../db";
@@ -9,7 +10,7 @@ import {
 import { resolveSessionTitles } from "./usageStats";
 
 /**
- * Burn findings (issue #291) — the judgment layer over the spend
+ * Burn findings (issue #291, ADR-0051) — the judgment layer over the spend
  * `usageStats.ts` measures. Each check turns raw `usage_events` rows (plus,
  * where relevant, the Session's compaction fields) into a `BurnFinding`: a
  * severity, human-readable evidence, and an estimated $ waste. Everything is
@@ -171,53 +172,77 @@ export function getBurnFindings(since: number): BurnFinding[] {
 }
 
 /**
- * Finding D — session overdepth. A Session whose provider-reported context
- * occupancy (`usage_events.provider_context_tokens` against the catalog
- * Model's window) sits *persistently* deep: the median of its comparable
- * turns at or past `OVERDEPTH_THRESHOLD`. The deepest turns of a Session are
- * its most expensive — every prompt-side token scales with occupancy — and
- * the Session's compaction state corroborates: depth is what forces
- * compaction, and the turn after each one re-writes the whole context as
- * cache writes.
+ * Finding D — session overdepth (the "D" in the issue's A–F finding list).
+ * A Session whose provider-reported context occupancy
+ * (`usage_events.provider_context_tokens` against the catalog Model's
+ * window) sits *persistently* deep: the median of its comparable turns at
+ * or past `OVERDEPTH_THRESHOLD`. The deepest turns of a Session are its
+ * most expensive — every prompt-side token scales with occupancy — and the
+ * Session's compaction state corroborates: depth is what forces compaction,
+ * and the turn after each one re-writes the whole context as cache writes.
  *
- * Comparable turns need a positive provider-reported stamp and a Model still
- * in the catalog (else there is no window to be deep *of*); rows predating
- * the stamp are never treated as zero, matching the column's contract.
+ * Comparable turns need a positive provider-reported stamp and a Model
+ * still in the catalog (else there is no window to be deep *of*); rows
+ * predating the stamp are never treated as zero, matching the column's
+ * contract.
  *
- * Waste = the depth premium over the Session's own median turn: each deep
- * turn's `costUsd` minus the median `costUsd` of the Session's turns in
- * range, floored at zero (a deep turn that still came in cheap contributes
- * nothing — you can't unspend by being deep). No invented denominator, no
- * allowance percentage — the Session is only ever compared to itself.
+ * Waste = the depth premium over the Session's *normal* turns: each deep
+ * turn's `costUsd` minus the median cost of the Session's turns that are
+ * NOT flagged deep (shallow comparable turns and rows predating the
+ * provider stamp), floored at zero — a deep turn that still came in cheap
+ * contributes nothing, since you can't unspend by being deep. The baseline
+ * deliberately excludes the penalized turns themselves: with them in the
+ * median, a Session whose turns are mostly deep drags its own baseline up
+ * and understates the premium. When every turn is deep the Session's data
+ * offers no cheaper baseline, so its overall median is the only honest
+ * denominator left. No invented denominator, no allowance percentage —
+ * the Session is only ever compared to itself.
  */
 function overdepthFinding(turns: SessionTurns): OverdepthCandidate | null {
-	const comparable = turns.rows.flatMap((row) => {
-		const window =
-			resolveSummarizationModel(row.provider, row.model)?.contextWindow ?? 0;
-		if (
-			row.providerContextTokens == null ||
-			row.providerContextTokens <= 0 ||
-			window <= 0
-		) {
-			return [];
-		}
-		return [
-			{
-				costUsd: row.costUsd,
-				depth: row.providerContextTokens / window,
-				window,
-			},
-		];
+	// One catalog lookup per row: the resolved Model drives both the depth
+	// (its window) and the pricing (its rate card), and the previous pass
+	// resolved each row twice for those two questions.
+	const resolved = turns.rows.map((row) => {
+		const model = resolveSummarizationModel(row.provider, row.model);
+		const window = model?.contextWindow ?? 0;
+		const cost = model?.cost;
+		return {
+			costUsd: row.costUsd,
+			priced:
+				cost != null &&
+				(cost.input > 0 ||
+					cost.output > 0 ||
+					cost.cacheRead > 0 ||
+					cost.cacheWrite > 0),
+			depth:
+				row.providerContextTokens != null &&
+				row.providerContextTokens > 0 &&
+				window > 0
+					? row.providerContextTokens / window
+					: null,
+			window,
+		};
 	});
+	const comparable = resolved.filter(
+		(r): r is (typeof resolved)[number] & { depth: number } => r.depth != null,
+	);
 	if (comparable.length < MIN_REPORTED_TURNS) return null;
 
-	const medianDepth = median(comparable.map((c) => c.depth));
+	const depths = comparable.map((r) => r.depth);
+	const medianDepth = median(depths);
 	if (medianDepth < OVERDEPTH_THRESHOLD) return null;
 
-	const medianCost = median(turns.rows.map((row) => row.costUsd));
-	const deep = comparable.filter((c) => c.depth >= OVERDEPTH_THRESHOLD);
+	const deep = resolved.filter((r) => (r.depth ?? 0) >= OVERDEPTH_THRESHOLD);
+	const baselineCosts = resolved
+		.filter((r) => (r.depth ?? 0) < OVERDEPTH_THRESHOLD)
+		.map((r) => r.costUsd);
+	const baselineCost =
+		baselineCosts.length > 0
+			? median(baselineCosts)
+			: // Every turn is deep: no cheaper turn exists to baseline against.
+				median(resolved.map((r) => r.costUsd));
 	const premium = deep.reduce(
-		(sum, c) => sum + Math.max(0, c.costUsd - medianCost),
+		(sum, r) => sum + Math.max(0, r.costUsd - baselineCost),
 		0,
 	);
 
@@ -227,30 +252,15 @@ function overdepthFinding(turns: SessionTurns): OverdepthCandidate | null {
 		severity:
 			medianDepth >= OVERDEPTH_CRITICAL_THRESHOLD ? "critical" : "warning",
 		medianDepth,
-		maxDepth: Math.max(...comparable.map((c) => c.depth)),
+		maxDepth: Math.max(...depths),
 		deepTurns: deep.length,
 		reportedTurns: comparable.length,
-		windowTokens: median(comparable.map((c) => c.window)),
-		wasteUsd: allTurnsPriced(turns) ? premium : null,
+		windowTokens: median(comparable.map((r) => r.window)),
+		// One unmeasurable $ anywhere poisons the baseline and the premiums
+		// alike, so a single unpriced/unresolvable turn downgrades the whole
+		// finding to no $ figure (module doc's empty-slice rule).
+		wasteUsd: resolved.every((r) => r.priced) ? premium : null,
 	};
-}
-
-/** True when every turn row's provider/model resolves to a catalog Model
- * with a non-zero price anywhere on its rate card. `resolveSummarizationModel`
- * covers builtin and custom-provider models; custom ones carry an all-zero
- * cost, which counts as unpriced. One unmeasurable $ poisons the median and
- * the premiums alike, so a single such turn downgrades the whole finding. */
-function allTurnsPriced(turns: SessionTurns): boolean {
-	return turns.rows.every((row) => {
-		const cost = resolveSummarizationModel(row.provider, row.model)?.cost;
-		return (
-			cost != null &&
-			(cost.input > 0 ||
-				cost.output > 0 ||
-				cost.cacheRead > 0 ||
-				cost.cacheWrite > 0)
-		);
-	});
 }
 
 /** The finding's human-readable evidence — self-contained, rendered verbatim
@@ -262,11 +272,11 @@ function overdepthEvidence(
 ): string {
 	const pct = (fraction: number) => `${Math.round(fraction * 100)}%`;
 	const parts = [
-		`Context sits at ${pct(candidate.medianDepth)} of its model's ${formatTokens(candidate.windowTokens)} window at the median turn (deepest ${pct(candidate.maxDepth)}); ${candidate.deepTurns} of ${candidate.reportedTurns} reported turns land past the ${pct(OVERDEPTH_THRESHOLD)} line, and those turns are the Session's most expensive.`,
+		`Context sits at ${pct(candidate.medianDepth)} of its model's ${formatTokenCount(candidate.windowTokens)} window at the median turn (deepest ${pct(candidate.maxDepth)}); ${candidate.deepTurns} of ${candidate.reportedTurns} reported turns land past the ${pct(OVERDEPTH_THRESHOLD)} line, and those turns are the Session's most expensive.`,
 	];
 	parts.push(
 		candidate.wasteUsd != null
-			? `Depth premium over the Session's own median turn: ~${formatUsd(candidate.wasteUsd)}.`
+			? `Depth premium over the Session's own normal turns: ~${formatUsd(candidate.wasteUsd)}.`
 			: `The model has no price in the catalog, so the finding carries no dollar figure — never a computed zero.`,
 	);
 	if (compacted === true) {
@@ -279,23 +289,6 @@ function overdepthEvidence(
 		);
 	}
 	return parts.join(" ");
-}
-
-/** Compact token counts for evidence text — "200k", "1M" (kept local; the
- * web's formatTokenCount is presentation-layer and this module must not
- * import from the web app). */
-function formatTokens(tokens: number): string {
-	if (tokens >= 1_000_000) return `${wholeOrTenth(tokens / 1_000_000)}M`;
-	if (tokens >= 1_000) return `${wholeOrTenth(tokens / 1_000)}k`;
-	return String(tokens);
-}
-
-function wholeOrTenth(n: number): string {
-	return n % 1 === 0 ? String(n) : n.toFixed(1);
-}
-
-function formatUsd(usd: number): string {
-	return usd >= 0.01 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(4)}`;
 }
 
 function median(values: number[]): number {

@@ -104,7 +104,7 @@ export type BurnFindingSeverity = "info" | "warning" | "critical";
 
 /**
  * One actionable statement about where tokens are being wasted, produced
- * entirely server-side (issue #291) and rendered verbatim on the Metrics
+ * entirely server-side (issue #291, ADR-0051) and rendered verbatim on the Metrics
  * page's Burn checks card, worst first. The judgment layer over the spend
  * the rest of `UsageSummary` measures: every finding names the check that
  * fired, how bad it is, who it happened to, the evidence behind the verdict,

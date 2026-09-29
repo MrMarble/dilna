@@ -98,6 +98,9 @@ const findingsFor = (...sessionIds: string[]) =>
 
 describe("getBurnFindings (finding D — session overdepth)", () => {
 	it("fires exactly at the depth threshold and not below it (issue #291 boundary)", () => {
+		// All three turns deep: the all-deep fallback applies — the Session's
+		// overall median is the only baseline its data offers, and with equal
+		// costs the premium is 0 (the finding still fires).
 		seedDeepSession("burn-boundary", [0.7, 0.7, 0.72], [0.1, 0.1, 0.1]);
 		seedDeepSession("burn-shallow", [0.69, 0.7 - 0.005, 0.65], [0.1, 0.1, 0.1]);
 
@@ -149,18 +152,16 @@ describe("getBurnFindings (finding D — session overdepth)", () => {
 		expect(findingsFor("burn-judge-only")).toEqual([]);
 	});
 
-	it("estimates waste as the depth premium over the Session's own median turn, worst first (issue #291)", () => {
-		// Critical: median depth 0.9; deep-turn premium over the median cost.
-		seedDeepSession(
-			"burn-critical",
-			[0.9, 0.9, 0.9],
-			[0.5, 0.4, 0.1], // median 0.4 → premium (0.5-0.4) + 0 + 0 (clamped)
-		);
+	it("estimates waste as the depth premium over the Session's own normal turns, worst first (issue #291)", () => {
+		// All turns deep: the all-deep fallback applies — overall median
+		// (0.4) is the baseline, so the premium is 0.5−0.4 (the 0.1 turn is
+		// clamped at zero).
+		seedDeepSession("burn-critical", [0.9, 0.9, 0.9], [0.5, 0.4, 0.1]);
 		// Warning with less waste — must rank second.
 		seedDeepSession(
 			"burn-warning",
 			[0.75, 0.75, 0.75],
-			[0.06, 0.05, 0.04], // median 0.05 → premium 0.01
+			[0.06, 0.05, 0.04], // all-deep fallback: median 0.05 → premium 0.01
 		);
 
 		const findings = findingsFor("burn-critical", "burn-warning");
@@ -178,6 +179,22 @@ describe("getBurnFindings (finding D — session overdepth)", () => {
 		expect(findings[0]?.evidence).toContain("3 of 3");
 		expect(findings[0]?.evidence).toContain("$0.10");
 		expect(findings[1]?.evidence).toContain("75%");
+	});
+
+	it("baselines waste on the Session's normal turns, not the deep ones it penalizes (review fix)", () => {
+		// Three deep turns out of five: the median over ALL turns would be a
+		// deep turn's own cost (0.4), understating the premium to 0.2. The
+		// baseline is the median of the two normal turns (0.045), so the
+		// premium reads 0.455 + 0.455 + 0.355 = 1.265.
+		seedDeepSession(
+			"burn-baseline",
+			[0.9, 0.9, 0.9, 0.2, 0.2],
+			[0.5, 0.5, 0.4, 0.05, 0.04],
+		);
+		const findings = findingsFor("burn-baseline");
+		expect(findings[0]?.wasteUsd).toBeCloseTo(1.265, 6);
+		expect(findings[0]?.evidence).toContain("$1.27");
+		expect(findings[0]?.evidence).toContain("3 of 5");
 	});
 
 	it("resolves titles and corroborates with the Session's compaction state", () => {

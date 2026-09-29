@@ -12,6 +12,7 @@ import type {
 	UsageSummary,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
+import { formatUsd } from "@dilna/shared";
 import { ArrowLeft, HardDrive } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "@/api/client";
@@ -38,17 +39,6 @@ const RANGE_OPTIONS: RangeOption[] = [
 	{ label: "90d", days: 90 },
 	{ label: "All", days: "all" },
 ];
-
-function formatUsd(n: number): string {
-	if (n === 0) return "$0.00";
-	// Cheap/cached-heavy turns routinely cost a fraction of a cent — 4 decimals
-	// alone rounds anything under $0.0001 down to a misleading "$0.0000",
-	// hiding real spend. Widen precision as the value gets smaller instead.
-	if (n < 0.000001) return "<$0.000001";
-	if (n < 0.0001) return `$${n.toFixed(6)}`;
-	if (n < 0.01) return `$${n.toFixed(4)}`;
-	return `$${n.toFixed(2)}`;
-}
 
 /** Human-size bytes (base-1024) — "1.2 GB", "600 MB", "512 B". */
 function formatBytes(n: number): string {
