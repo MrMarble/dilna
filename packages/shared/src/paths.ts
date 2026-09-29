@@ -72,6 +72,9 @@ export const paths = {
 			`/api/sessions/${enc(sessionId)}/truncated/${enc(hash)}`,
 		/** `GET` every turn score in the Session. */
 		scores: (sessionId: string) => `/api/sessions/${enc(sessionId)}/scores`,
+		/** `GET` the Session's per-turn burn timeline (issue #293). */
+		burnTimeline: (sessionId: string) =>
+			`/api/sessions/${enc(sessionId)}/burn-timeline`,
 		/** `POST` to judge one turn. */
 		turnScores: (sessionId: string, turnId: string) =>
 			`/api/sessions/${enc(sessionId)}/turns/${enc(turnId)}/scores`,

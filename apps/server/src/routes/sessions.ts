@@ -4,6 +4,7 @@ import {
 	type ArtefactsResponse,
 	type Attachment,
 	type AttachmentResponse,
+	type BurnTimelineResponse,
 	type ChangedFilesResponse,
 	type CommitsResponse,
 	commitsQuerySchema,
@@ -40,6 +41,7 @@ import {
 	resolveAttachments,
 	storeAttachment,
 } from "../sessions/attachments";
+import { getBurnTimeline } from "../sessions/burnTimeline";
 import { collectSeedTrims } from "../sessions/context";
 import {
 	InvalidModelError,
@@ -170,6 +172,17 @@ export function createSessionsRoute(deps: {
 	guarded.get("/:id/queue", (c) => {
 		const body: ListQueuedResponse = {
 			queued: deps.sessions.listQueuedMessages(c.get("session").id),
+		};
+		return c.json(body);
+	});
+
+	// The Session's per-turn burn timeline (issue #293) — a stateless,
+	// Session-scoped read over rows that already exist (see burnTimeline.ts).
+	// The client's fetch/refresh policy is documented on the shared
+	// `BurnTimelineResponse` envelope.
+	guarded.get("/:id/burn-timeline", (c) => {
+		const body: BurnTimelineResponse = {
+			turns: getBurnTimeline(c.get("session").id),
 		};
 		return c.json(body);
 	});

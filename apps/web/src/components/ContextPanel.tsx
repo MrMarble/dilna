@@ -21,6 +21,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, artefactUrl } from "@/api/client";
 import { ArtefactViewer } from "@/components/ArtefactViewer";
 import { ARTEFACT_KIND_ICONS } from "@/components/artefact-render";
+import { BurnTimeline } from "@/components/BurnTimeline";
 import { useSessionCacheTurns } from "@/hooks/useSessionCacheTurns";
 import { useSessionContextUsage } from "@/hooks/useSessionContextUsage";
 import { useSessionUsage } from "@/hooks/useSessionUsage";
@@ -370,16 +371,72 @@ function SessionSection({
 	 * leaves this section as-is. */
 	showTokens?: boolean;
 }) {
+	// Two views of the same Session (issue #293): the live "now" facts and
+	// the per-turn burn history. Staying on Burn across a session switch is
+	// deliberate — comparing Sessions is one of its uses; the data resets
+	// under it via the hook's sessionId effect.
+	const [view, setView] = useState<"overview" | "burn">("overview");
 	return (
-		<SectionCard title="Current session">
-			<div className="flex flex-col gap-1">
-				<FactRow label="Started" value={formatDateTime(session.createdAt)} />
-				<FactRow label="Last active" value={timeAgo(session.lastActiveAt)} />
-				{showTokens && <SessionTokensRow sessionId={session.id} />}
-				<SessionContextRow sessionId={session.id} />
-				<SessionCacheHealthRow sessionId={session.id} />
-			</div>
+		<SectionCard
+			title="Current session"
+			badge={
+				<div className="ml-auto flex rounded-md bg-muted p-0.5">
+					<ViewToggleButton
+						active={view === "overview"}
+						onClick={() => setView("overview")}
+					>
+						Overview
+					</ViewToggleButton>
+					<ViewToggleButton
+						active={view === "burn"}
+						onClick={() => setView("burn")}
+					>
+						Burn
+					</ViewToggleButton>
+				</div>
+			}
+		>
+			{view === "burn" ? (
+				<BurnTimeline sessionId={session.id} />
+			) : (
+				<div className="flex flex-col gap-1">
+					<FactRow label="Started" value={formatDateTime(session.createdAt)} />
+					<FactRow label="Last active" value={timeAgo(session.lastActiveAt)} />
+					{showTokens && <SessionTokensRow sessionId={session.id} />}
+					<SessionContextRow sessionId={session.id} />
+					<SessionCacheHealthRow sessionId={session.id} />
+				</div>
+			)}
 		</SectionCard>
+	);
+}
+
+/** One segment of the card-header view toggle — a hand-rolled two-button
+ * segmented control (there's no Tabs primitive in ui/, and a full one for
+ * two labels would be more machinery than the card header wants). */
+function ViewToggleButton({
+	active,
+	onClick,
+	children,
+}: {
+	active: boolean;
+	onClick: () => void;
+	children: React.ReactNode;
+}) {
+	return (
+		<button
+			type="button"
+			aria-pressed={active}
+			onClick={onClick}
+			className={cn(
+				"rounded px-1.5 py-0.5 text-xs transition-colors",
+				active
+					? "bg-background shadow-sm"
+					: "text-muted-foreground hover:text-foreground",
+			)}
+		>
+			{children}
+		</button>
 	);
 }
 

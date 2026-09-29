@@ -7,7 +7,7 @@ import type { TurnScore } from "./scoring";
 import type { SessionView } from "./session";
 import type { RepoSkill, Skill, SkillSearchResult } from "./skill";
 import type { TrimReason } from "./toolOutputPolicy";
-import type { DiskUsage, UsageSummary } from "./usage";
+import type { DiskUsage, SessionBurnTurn, UsageSummary } from "./usage";
 
 /**
  * Response envelopes for dilna's HTTP API — the `{ repos: [...] }` wrapper
@@ -114,6 +114,19 @@ export type SessionCacheTurn = {
 	readTokens: number;
 	writeTokens: number;
 };
+
+/** `GET /api/sessions/:id/burn-timeline` — every `usage_events` row of the
+ * Session, oldest first (issue #293).
+ *
+ * Freshness policy, documented here because it spans both sides: the client
+ * fetches once when the context panel's burn tab mounts, then *refetches*
+ * (rather than assembling the arriving turn client-side, so compaction
+ * markers and context stamps come from the same single home as the seed) on
+ * each turn-end reconciling `usage_update` the Session's SSE stream already
+ * carries — the moment a new row has landed — and never polls. The
+ * implementation is the web's `useSessionBurnTimeline` hook; the server
+ * side is a stateless read in `sessions/burnTimeline.ts`. */
+export type BurnTimelineResponse = { turns: SessionBurnTurn[] };
 
 /** The trim metadata the web needs to render a truncation marker on a
  * persisted tool_call part (issue #273). Everything
