@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.0](https://github.com/MrMarble/dilna/compare/v0.39.0...v0.40.0) (2026-09-30)
+
+
+### Features
+
+* **web:** swipe/long-press delete on mobile sheet session rows, confirm stacked on the sheet ([#304](https://github.com/MrMarble/dilna/issues/304)) ([cb3c867](https://github.com/MrMarble/dilna/commit/cb3c867dcb74b5fa15bc83a720938f760a20ca34))
+
 ## [0.39.0](https://github.com/MrMarble/dilna/compare/v0.38.0...v0.39.0) (2026-09-29)
 
 
