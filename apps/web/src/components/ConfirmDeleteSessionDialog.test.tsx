@@ -39,4 +39,38 @@ describe("ConfirmDeleteSessionDialog", () => {
 		await userEvent.click(screen.getByRole("button", { name: "Delete" }));
 		expect(onConfirm).toHaveBeenCalledWith("s-1");
 	});
+
+	describe("sheet variant (mobile action sheet)", () => {
+		it("renders the same gate as a bottom sheet, with the same copy", async () => {
+			const onCancel = vi.fn();
+			const onConfirm = vi.fn();
+			render(
+				<ConfirmDeleteSessionDialog
+					session={makeSession({ id: "s-1", title: "Fix the flaky test" })}
+					variant="sheet"
+					onCancel={onCancel}
+					onConfirm={onConfirm}
+				/>,
+			);
+			expect(await screen.findByRole("dialog")).toBeTruthy();
+			expect(screen.getByText("Fix the flaky test")).toBeTruthy();
+			expect(
+				screen.getByText(
+					/will be deleted with its transcript, worktree and branch/,
+				),
+			).toBeTruthy();
+			// Cancel still holds focus, so a reflex Enter backs out instead of
+			// deleting.
+			expect(document.activeElement).toBe(
+				screen.getByRole("button", { name: "Cancel" }),
+			);
+
+			await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+			expect(onCancel).toHaveBeenCalled();
+			expect(onConfirm).not.toHaveBeenCalled();
+
+			await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+			expect(onConfirm).toHaveBeenCalledWith("s-1");
+		});
+	});
 });

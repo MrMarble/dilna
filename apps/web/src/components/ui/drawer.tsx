@@ -50,6 +50,35 @@ function DrawerViewport({
 	);
 }
 
+function DrawerTitle({ className, ...props }: DrawerPrimitive.Title.Props) {
+	return (
+		<DrawerPrimitive.Title
+			data-slot="drawer-title"
+			className={cn(
+				"font-heading text-base leading-none font-medium",
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+
+function DrawerDescription({
+	className,
+	...props
+}: DrawerPrimitive.Description.Props) {
+	return (
+		<DrawerPrimitive.Description
+			data-slot="drawer-description"
+			className={cn(
+				"text-sm text-muted-foreground *:[a]:underline *:[a]:underline-offset-3 *:[a]:hover:text-foreground",
+				className,
+			)}
+			{...props}
+		/>
+	);
+}
+
 function DrawerContent({
 	className,
 	children,
@@ -83,8 +112,10 @@ export {
 	Drawer,
 	DrawerClose,
 	DrawerContent,
+	DrawerDescription,
 	DrawerOverlay,
 	DrawerPortal,
+	DrawerTitle,
 	DrawerTrigger,
 	DrawerViewport,
 };

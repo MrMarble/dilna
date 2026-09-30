@@ -1,5 +1,12 @@
 import type { Message, QueuedMessage, SessionListEvent } from "@dilna/shared";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PartialApi } from "@/test/api-mock";
@@ -225,5 +232,61 @@ describe("mobile drawer: selecting a repo", () => {
 
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(window.location.pathname).toBe("/dilna/sess-older");
+	});
+
+	/**
+	 * The deletion regression: requesting a delete used to close the sheet
+	 * before showing the confirm, so deleting N sessions cost N reopens plus
+	 * the scroll position each time. The confirm now stacks on the open sheet
+	 * (ConfirmDeleteSessionDialog's "sheet" variant) and the sheet stays put
+	 * through the whole teardown.
+	 */
+	it("stacks the delete confirm on the open sheet instead of closing it", async () => {
+		const user = userEvent.setup();
+		render(<App />);
+		await openMenuSheet(user);
+		await user.click(within(sheet()).getByRole("button", { name: /dilna/ }));
+
+		// Long-press the older session's row to open its action menu.
+		const row = within(sheet()).getByText("Older session");
+		fireEvent.pointerDown(row, {
+			button: 0,
+			pointerId: 1,
+			clientX: 150,
+			clientY: 200,
+		});
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 400));
+		});
+
+		const menu = await screen.findByRole("menu", {
+			name: "Actions for Older session",
+		});
+		await user.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+
+		// The confirm renders as a second dialog — stacked on the sheet, not
+		// in place of it — so the list is still right there underneath. The
+		// sheet is inert under the modal confirm, hence `hidden: true` (same
+		// as mobileSheet.test).
+		expect(await screen.findByText("Delete session?")).toBeInTheDocument();
+		const dialogs = screen.getAllByRole("dialog", { hidden: true });
+		expect(dialogs).toHaveLength(2);
+		const sheetDialog = dialogs.find((d) =>
+			within(d).queryByText("Repositories"),
+		);
+		expect(sheetDialog).toBeTruthy();
+		expect(within(sheetDialog as HTMLElement).getByText("Older session"));
+
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+
+		// Confirming removes the row but keeps the sheet open for the next one.
+		await waitFor(() =>
+			expect(
+				within(sheetDialog as HTMLElement).queryByText("Older session"),
+			).toBeNull(),
+		);
+		await waitFor(() =>
+			expect(screen.getAllByRole("dialog", { hidden: true })).toHaveLength(1),
+		);
 	});
 });

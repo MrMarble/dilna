@@ -257,7 +257,8 @@ export function App() {
 
 	// Sessions with a DELETE in flight — see handleDeleteSession.
 	const [deletingSessionIds, setDeletingSessionIds] = useState<string[]>([]);
-	// The Session whose trash icon was clicked, awaiting confirmation. Every
+	// The Session whose delete was requested — swipe tile, row menu or the
+	// header trash — awaiting confirmation. Every delete affordance goes
 	// delete affordance goes through this rather than straight to
 	// handleDeleteSession — see ConfirmDeleteSessionDialog.
 	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -355,15 +356,14 @@ export function App() {
 		[upsertSession, reloadRepos, navigate, mobileSheet.close],
 	);
 
-	// Asks before deleting (see confirmDeleteId). The mobile sheet closes
-	// first so the dialog isn't stacked on top of it.
-	const handleRequestDeleteSession = useCallback(
-		(id: string) => {
-			mobileSheet.close();
-			setConfirmDeleteId(id);
-		},
-		[mobileSheet.close],
-	);
+	// Asks before deleting (see confirmDeleteId). Deliberately does NOT close
+	// the mobile sheet: the confirm renders as a bottom action sheet (variant
+	// "sheet") stacked on top of the open menu sheet, so its scroll position
+	// and expanded repo survive — a cleanup run is swipe → confirm → swipe →
+	// confirm without ever reopening the drawer.
+	const handleRequestDeleteSession = useCallback((id: string) => {
+		setConfirmDeleteId(id);
+	}, []);
 
 	// An arm opened as a plain Session (ADR-0047) links back to its
 	// comparison view from the chat header.
@@ -436,9 +436,9 @@ export function App() {
 		toggleNotifications,
 		pushSupported,
 		pushSubscribed,
-		// Only meaningful in the sheet variant — see Sidebar's own prop doc.
-		currentSession: selectedSession,
-		onDeleteCurrentSession: handleRequestDeleteSession,
+		// Per-row delete affordances in the sheet (swipe / long-press) plus the
+		// desktop ChatHeader trash all go through the same confirm.
+		onDeleteSession: handleRequestDeleteSession,
 		onOpenMetrics: handleOpenMetrics,
 		onOpenSettings: handleOpenSettings,
 		onOpenSkills: handleOpenSkills,
@@ -543,6 +543,10 @@ export function App() {
 				session={
 					confirmDeleteId ? (sessionsById[confirmDeleteId] ?? null) : null
 				}
+				// Centered modal on the desktop pointer UI; a bottom action sheet
+				// on mobile, where it stacks on the open menu sheet instead of
+				// evicting it.
+				variant={isDesktop ? "dialog" : "sheet"}
 				onCancel={() => setConfirmDeleteId(null)}
 				onConfirm={(id) => {
 					setConfirmDeleteId(null);
