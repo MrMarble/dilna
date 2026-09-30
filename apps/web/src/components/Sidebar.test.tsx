@@ -1,5 +1,5 @@
 import type { RateLimitWindow, SessionView } from "@dilna/shared";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "@/components/Sidebar";
@@ -350,17 +350,26 @@ describe("Sidebar", () => {
 			).toMatch(/bg-destructive/);
 		});
 
-		it("shows a spinner instead of the trash icon on the sheet's current-session row while deleting", () => {
-			const session = makeSession({ id: "s1", title: "current" });
+		it("renders a deleting sheet row with no delete affordance left to gesture on", () => {
+			const repo = makeRepo();
 			renderSidebar({
 				variant: "sheet",
-				currentSession: session,
-				onDeleteCurrentSession: noop,
+				onDeleteSession: noop,
+				repos: [repo],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: {
+					[repo.id]: [makeSession({ id: "s1", title: "doomed" })],
+				},
 				deletingSessionIds: ["s1"],
 			});
+			const doomed = screen.getByText("doomed").closest("button");
+			expect(doomed?.className).toMatch(/bg-destructive/);
+			expect(doomed).toBeDisabled();
+			// The gesture layer opts out for rows being deleted — no tile behind
+			// a row that's seconds from vanishing anyway.
 			expect(
-				screen.getByRole("button", { name: "Delete session" }),
-			).toBeDisabled();
+				screen.queryByRole("button", { name: "Delete session" }),
+			).toBeNull();
 		});
 	});
 
@@ -440,13 +449,252 @@ describe("Sidebar", () => {
 		});
 
 		it("names every button in the sheet variant", () => {
+			const repo = makeRepo({ id: "repo-1" });
 			const { container } = renderSidebar({
 				variant: "sheet",
-				currentSession: makeSession({ id: "s1", title: "current" }),
-				onDeleteCurrentSession: noop,
-				deletingSessionIds: ["s1"],
+				onDeleteSession: noop,
+				repos: [repo],
+				selectedRepoId: repo.id,
+				sessionsByRepoId: {
+					"repo-1": [makeSession({ id: "s1", title: "current" })],
+				},
+				selectedSessionId: "s1",
+				deletingSessionIds: [],
 			});
 			expectEveryButtonNamed(container);
+		});
+	});
+
+	/**
+	 * The sheet-only per-row delete affordances (see SessionRow in
+	 * Sidebar.tsx): swipe left reveals a Delete tile, long-press opens the
+	 * row menu — both feeding the same confirm the header trash uses.
+	 * Desktop panel rows keep their plain rendering.
+	 */
+	describe("sheet row actions (mobile delete)", () => {
+		const REPO = makeRepo();
+
+		function renderSheetSessions(
+			sessions: SessionView[],
+			overrides: Partial<Parameters<typeof Sidebar>[0]> = {},
+		) {
+			const onDeleteSession = vi.fn();
+			const onSelectSession = vi.fn();
+			const utils = renderSidebar({
+				variant: "sheet",
+				onDeleteSession,
+				repos: [REPO],
+				selectedRepoId: REPO.id,
+				sessionsByRepoId: { [REPO.id]: sessions },
+				onSelectSession,
+				...overrides,
+			});
+			return { onDeleteSession, onSelectSession, ...utils };
+		}
+
+		function swipeLeft(row: HTMLElement, fromX: number, toX: number) {
+			fireEvent.pointerDown(row, {
+				button: 0,
+				pointerId: 1,
+				clientX: fromX,
+				clientY: 100,
+			});
+			fireEvent.pointerMove(row, {
+				button: 0,
+				pointerId: 1,
+				clientX: toX,
+				clientY: 100,
+			});
+			fireEvent.pointerUp(row, {
+				button: 0,
+				pointerId: 1,
+				clientX: toX - 5,
+				clientY: 100,
+			});
+		}
+
+		it("gives the panel variant no per-row delete affordance", () => {
+			renderSidebar({
+				repos: [REPO],
+				selectedRepoId: REPO.id,
+				sessionsByRepoId: {
+					[REPO.id]: [makeSession({ id: "s1", title: "plain" })],
+				},
+			});
+			expect(
+				screen.queryByRole("button", { name: "Delete session" }),
+			).toBeNull();
+		});
+
+		it("keeps the delete tile hidden until a swipe reveals it", () => {
+			renderSheetSessions([makeSession({ id: "s1", title: "swipe target" })]);
+			const tile = screen.getByRole("button", { name: "Delete session" });
+			expect(tile.className).toMatch(/invisible/);
+		});
+
+		it("reveals the tile past the swipe threshold and deletes on tap", () => {
+			const { onDeleteSession } = renderSheetSessions([
+				makeSession({ id: "s1", title: "swipe target" }),
+			]);
+			swipeLeft(screen.getByText("swipe target"), 200, 120);
+			const tile = screen.getByRole("button", { name: "Delete session" });
+			expect(tile.className).not.toMatch(/invisible/);
+			fireEvent.click(tile);
+			expect(onDeleteSession).toHaveBeenCalledWith("s1");
+		});
+
+		it("snaps the tile shut when the swipe stays under the threshold", () => {
+			renderSheetSessions([makeSession({ id: "s1", title: "short swipe" })]);
+			swipeLeft(screen.getByText("short swipe"), 200, 180);
+			expect(
+				screen.getByRole("button", { name: "Delete session" }).className,
+			).toMatch(/invisible/);
+		});
+
+		it("does not select the session when the pointer swiped it", () => {
+			const { onSelectSession } = renderSheetSessions([
+				makeSession({ id: "s1", title: "swiped not tapped" }),
+			]);
+			const row = screen.getByText("swiped not tapped");
+			swipeLeft(row, 200, 120);
+			// The release would normally synthesize a click on the row button.
+			fireEvent.click(row);
+			expect(onSelectSession).not.toHaveBeenCalled();
+		});
+
+		it("still selects the session on a plain tap", () => {
+			const { onSelectSession } = renderSheetSessions([
+				makeSession({ id: "s1", title: "tap me" }),
+			]);
+			fireEvent.click(screen.getByText("tap me"));
+			expect(onSelectSession).toHaveBeenCalledTimes(1);
+		});
+
+		it("opens the row menu on long-press and deletes from it", () => {
+			vi.useFakeTimers();
+			try {
+				const { onDeleteSession } = renderSheetSessions([
+					makeSession({ id: "s1", title: "hold me" }),
+				]);
+				const row = screen.getByText("hold me");
+				fireEvent.pointerDown(row, {
+					button: 0,
+					pointerId: 1,
+					clientX: 150,
+					clientY: 60,
+				});
+				act(() => {
+					vi.advanceTimersByTime(350);
+				});
+				expect(
+					screen.getByRole("menu", { name: "Actions for hold me" }),
+				).toBeInTheDocument();
+				fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+				expect(onDeleteSession).toHaveBeenCalledWith("s1");
+				expect(screen.queryByRole("menu")).toBeNull();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("opens the session from the row menu without navigating away first", () => {
+			vi.useFakeTimers();
+			try {
+				const session = makeSession({ id: "s1", title: "hold me" });
+				const { onSelectSession, onDeleteSession } = renderSheetSessions([
+					session,
+				]);
+				const row = screen.getByText("hold me");
+				fireEvent.pointerDown(row, {
+					button: 0,
+					pointerId: 1,
+					clientX: 150,
+					clientY: 60,
+				});
+				act(() => {
+					vi.advanceTimersByTime(350);
+				});
+				fireEvent.click(screen.getByRole("menuitem", { name: "Open" }));
+				expect(onSelectSession).toHaveBeenCalledWith(session);
+				expect(onDeleteSession).not.toHaveBeenCalled();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("a quick tap never opens the row menu", () => {
+			vi.useFakeTimers();
+			try {
+				renderSheetSessions([makeSession({ id: "s1", title: "quick tap" })]);
+				const row = screen.getByText("quick tap");
+				fireEvent.pointerDown(row, {
+					button: 0,
+					pointerId: 1,
+					clientX: 150,
+					clientY: 60,
+				});
+				fireEvent.pointerUp(row, {
+					button: 0,
+					pointerId: 1,
+					clientX: 150,
+					clientY: 60,
+				});
+				act(() => {
+					vi.advanceTimersByTime(400);
+				});
+				expect(screen.queryByRole("menu")).toBeNull();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("a vertical move cancels the hold instead of opening the menu", () => {
+			vi.useFakeTimers();
+			try {
+				renderSheetSessions([
+					makeSession({ id: "s1", title: "scrolled past" }),
+				]);
+				const row = screen.getByText("scrolled past");
+				fireEvent.pointerDown(row, {
+					button: 0,
+					pointerId: 1,
+					clientX: 150,
+					clientY: 60,
+				});
+				fireEvent.pointerMove(row, {
+					button: 0,
+					pointerId: 1,
+					clientX: 150,
+					clientY: 120,
+				});
+				act(() => {
+					vi.advanceTimersByTime(400);
+				});
+				expect(screen.queryByRole("menu")).toBeNull();
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it("revealing one row closes another row's tile", () => {
+			renderSheetSessions([
+				makeSession({ id: "s1", title: "first" }),
+				makeSession({ id: "s2", title: "second" }),
+			]);
+			// Two rows → two hidden tiles behind them.
+			const tiles = screen.getAllByRole("button", { name: "Delete session" });
+			expect(tiles).toHaveLength(2);
+			const first = screen.getByText("first");
+			const second = screen.getByText("second");
+			swipeLeft(first, 200, 120);
+			swipeLeft(second, 200, 120);
+			const tilesAfter = screen.getAllByRole("button", {
+				name: "Delete session",
+			});
+			const visible = tilesAfter.filter(
+				(t) => !t.className.includes("invisible"),
+			);
+			expect(visible).toHaveLength(1);
 		});
 	});
 });

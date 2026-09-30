@@ -21,7 +21,17 @@ import {
 	Sparkles,
 	Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+	type ReactNode,
+	type PointerEvent as ReactPointerEvent,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { AppVersion } from "@/components/AppVersion";
 import { StatusDot } from "@/components/StatusDot";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -99,14 +109,14 @@ type Props = {
 	 * region instead of via the desktop flex-spacer trick, since the sheet's
 	 * height is bounded rather than always matching the full viewport. */
 	variant?: "panel" | "sheet";
-	/** The Session currently open in the chat, with its delete handler —
-	 * shown as a quick-action row in the sheet variant only, so mobile users
-	 * can delete the active Session without a "Delete session" button
-	 * crowding the header (issue #12 follow-up). Desktop keeps deletion in
-	 * ChatHeader instead; both are absent/no-op here when there's no
-	 * Session open yet. */
-	currentSession?: SessionView | null;
-	onDeleteCurrentSession?: (id: string) => void;
+	/** Requests confirmation to delete a Session (see
+	 * ConfirmDeleteSessionDialog). Wires the sheet's per-row delete
+	 * affordances — swipe left, long-press menu — so mobile users can delete
+	 * any Session without selecting it first (the dedicated current-Session
+	 * row this used to need is gone: every row now carries the actions).
+	 * Desktop keeps deletion in ChatHeader; omitted → sheet rows render
+	 * without any delete affordance. */
+	onDeleteSession?: (id: string) => void;
 	/** Desktop-only collapse button in the panel's top bar (issue: sidebar
 	 * can't be collapsed, squeezing the chat on non-mobile narrow viewports).
 	 * Absent in the sheet variant, which closes via the drawer instead. */
@@ -167,8 +177,7 @@ export function Sidebar({
 	syncStatusByRepoId,
 	onNewComparison,
 	variant = "panel",
-	currentSession,
-	onDeleteCurrentSession,
+	onDeleteSession,
 	onCollapse,
 	onOpenMetrics,
 	onOpenSettings,
@@ -186,6 +195,35 @@ export function Sidebar({
 }: Props) {
 	const isSheet = variant === "sheet";
 	const deletingIds = deletingSessionIds ?? EMPTY_IDS;
+
+	// Sheet-only per-row delete affordances (swipe left / long-press), built
+	// here and drilled to the three session sections. The refs let the sheet
+	// body's scroll handler tell an active gesture — or its just-finished
+	// momentum, whose own scroll events must not dismiss the reveal that
+	// gesture just opened — apart from a deliberate scroll that should.
+	const gesturingRef = useRef(false);
+	const lastGestureEndAtRef = useRef(0);
+	const [revealedId, setRevealedId] = useState<string | null>(null);
+	const closeRowActions = useCallback(() => {
+		if (gesturingRef.current) return;
+		if (Date.now() - lastGestureEndAtRef.current < 400) return;
+		setRevealedId(null);
+	}, []);
+	const rowActions = useMemo<SheetRowActions | null>(() => {
+		if (!isSheet || !onDeleteSession) return null;
+		return {
+			revealedId,
+			gesturingRef,
+			lastGestureEndAtRef,
+			reveal: (id) => setRevealedId(id),
+			unreveal: (id) =>
+				setRevealedId((current) => (current === id ? null : current)),
+			onDelete: (id) => {
+				setRevealedId(null);
+				onDeleteSession(id);
+			},
+		};
+	}, [isSheet, onDeleteSession, revealedId]);
 	const totalUnread = Object.values(unreadBySessionId).reduce(
 		(a, b) => a + b,
 		0,
@@ -232,6 +270,7 @@ export function Sidebar({
 					"flex flex-1 flex-col",
 					isSheet && "min-h-0 overflow-y-auto",
 				)}
+				onScroll={rowActions ? closeRowActions : undefined}
 			>
 				<div className="border-b border-sidebar-border p-2">
 					<button
@@ -286,14 +325,6 @@ export function Sidebar({
 					</button>
 				</div>
 
-				{isSheet && currentSession && onDeleteCurrentSession && (
-					<CurrentSessionRow
-						session={currentSession}
-						onDelete={onDeleteCurrentSession}
-						deleting={deletingIds.includes(currentSession.id)}
-					/>
-				)}
-
 				{isSheet && (
 					<div className="flex items-center justify-between border-b border-sidebar-border px-4 py-2">
 						<NotificationsToggle
@@ -319,6 +350,7 @@ export function Sidebar({
 					onSelect={onSelectOrchestratorSession}
 					unreadBySessionId={unreadBySessionId}
 					deletingIds={deletingIds}
+					rowActions={rowActions}
 				/>
 
 				<ReposSection
@@ -338,6 +370,7 @@ export function Sidebar({
 					unreadBySessionId={unreadBySessionId}
 					deletingIds={deletingIds}
 					isSheet={isSheet}
+					rowActions={rowActions}
 				/>
 
 				<BackgroundAgentsSection
@@ -346,6 +379,7 @@ export function Sidebar({
 					onSelect={onSelectSession}
 					unreadBySessionId={unreadBySessionId}
 					deletingIds={deletingIds}
+					rowActions={rowActions}
 				/>
 			</div>
 
@@ -354,45 +388,323 @@ export function Sidebar({
 	);
 }
 
-function CurrentSessionRow({
+/** Width of the Delete tile revealed behind a sheet session row, in px. */
+const DELETE_TILE_WIDTH = 78;
+/** Release past halfway and the row snaps open; before it, snaps shut. */
+const OPEN_THRESHOLD_PX = DELETE_TILE_WIDTH / 2;
+/** Hold duration that opens the row menu instead of the tap action. */
+const LONG_PRESS_MS = 350;
+/** Pointer travel before a press means drag/scroll rather than hold. */
+const GESTURE_SLOP_PX = 10;
+
+/**
+ * Per-row delete affordances for the sheet variant, built in Sidebar and
+ * drilled to the three session sections: swipe left reveals a Delete tile,
+ * long-press opens the row menu. `revealedId` keeps the reveal exclusive to
+ * one row; the refs let the sheet body's scroll handler tell an active
+ * gesture — or its just-finished momentum, whose own scroll events must not
+ * dismiss the reveal that gesture just opened — apart from a deliberate
+ * scroll that should.
+ */
+type SheetRowActions = {
+	revealedId: string | null;
+	gesturingRef: RefObject<boolean>;
+	lastGestureEndAtRef: RefObject<number>;
+	reveal: (id: string) => void;
+	unreveal: (id: string) => void;
+	onDelete: (id: string) => void;
+};
+
+/**
+ * One session row, in either variant. The button markup is provided by the
+ * caller, so panel and sheet render pixel-identical rows; in the sheet the
+ * same button is wrapped with the delete gestures. Rows being deleted opt
+ * out entirely: they're already destructive-tinted and non-interactive
+ * (DELETING_ROW_CLASS), and a teardown that's seconds from removing the row
+ * shouldn't start a new gesture.
+ */
+function SessionRow({
+	rowActions,
 	session,
-	onDelete,
 	deleting,
+	onSelect,
+	children,
+}: {
+	rowActions: SheetRowActions | null;
+	session: SessionView;
+	deleting: boolean;
+	onSelect: (session: SessionView) => void;
+	children: ReactNode;
+}) {
+	if (!rowActions || deleting) return <li>{children}</li>;
+	return (
+		<ActionableSessionRow
+			session={session}
+			actions={rowActions}
+			onSelect={onSelect}
+		>
+			{children}
+		</ActionableSessionRow>
+	);
+}
+
+function ActionableSessionRow({
+	session,
+	actions,
+	onSelect,
+	children,
 }: {
 	session: SessionView;
-	onDelete: (id: string) => void;
-	deleting: boolean;
+	actions: SheetRowActions;
+	onSelect: (session: SessionView) => void;
+	children: ReactNode;
 }) {
+	const [offset, setOffset] = useState(0);
+	const [dragging, setDragging] = useState(false);
+	const [menuOpen, setMenuOpen] = useState(false);
+	const revealed = actions.revealedId === session.id;
+	const pressRef = useRef<{
+		pointerId: number;
+		x: number;
+		y: number;
+		base: number;
+	} | null>(null);
+	const longPressTimer = useRef<number | null>(null);
+	const draggingRef = useRef(false);
+	// A gesture that opened the menu or moved the row must not also fire the
+	// row button's click on pointer-up.
+	const suppressClickRef = useRef(false);
+
+	// Another row revealed its tile, or the reveal was cleared (a delete
+	// landing): snap this row shut. Guarded on `dragging` so the reset can't
+	// fight an in-flight drag, where a non-zero offset is the point.
+	useEffect(() => {
+		if (!revealed && !dragging && offset !== 0) setOffset(0);
+	}, [revealed, dragging, offset]);
+
+	function clearLongPress() {
+		if (longPressTimer.current !== null) {
+			clearTimeout(longPressTimer.current);
+			longPressTimer.current = null;
+		}
+	}
+
+	function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+		if (e.button !== 0) return;
+		suppressClickRef.current = false;
+		pressRef.current = {
+			pointerId: e.pointerId,
+			x: e.clientX,
+			y: e.clientY,
+			base: offset,
+		};
+		actions.gesturingRef.current = true;
+		longPressTimer.current = window.setTimeout(() => {
+			longPressTimer.current = null;
+			suppressClickRef.current = true;
+			setMenuOpen(true);
+		}, LONG_PRESS_MS);
+	}
+
+	function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+		const press = pressRef.current;
+		if (!press || e.pointerId !== press.pointerId) return;
+		const dx = e.clientX - press.x;
+		const dy = e.clientY - press.y;
+		if (!draggingRef.current) {
+			if (Math.abs(dx) > GESTURE_SLOP_PX && Math.abs(dx) > Math.abs(dy)) {
+				// Horizontal intent: take over as a drag. `touch-action: pan-y`
+				// below is what keeps the browser from claiming the gesture.
+				draggingRef.current = true;
+				setDragging(true);
+				clearLongPress();
+			} else if (Math.abs(dy) > GESTURE_SLOP_PX) {
+				// Vertical intent: the browser is scrolling — not a hold.
+				clearLongPress();
+			}
+		}
+		if (draggingRef.current) {
+			setOffset(Math.max(-DELETE_TILE_WIDTH, Math.min(0, press.base + dx)));
+		}
+	}
+
+	function endGesture(e: ReactPointerEvent<HTMLDivElement>) {
+		const press = pressRef.current;
+		if (!press || e.pointerId !== press.pointerId) return;
+		clearLongPress();
+		pressRef.current = null;
+		actions.gesturingRef.current = false;
+		actions.lastGestureEndAtRef.current = Date.now();
+		if (!draggingRef.current) return;
+		draggingRef.current = false;
+		setDragging(false);
+		// Follow-through taps must not select the session mid-swipe.
+		suppressClickRef.current = true;
+		const dx = e.clientX - press.x;
+		const target = Math.max(-DELETE_TILE_WIDTH, Math.min(0, press.base + dx));
+		if (target < -OPEN_THRESHOLD_PX) {
+			setOffset(-DELETE_TILE_WIDTH);
+			actions.reveal(session.id);
+		} else {
+			setOffset(0);
+			actions.unreveal(session.id);
+		}
+	}
+
 	return (
-		<div
-			className={cn(
-				"flex items-center gap-2 border-b border-sidebar-border px-4 py-2",
-				deleting && "animate-pulse bg-destructive/15 text-destructive",
-			)}
-		>
-			<StatusDot status={session.status} />
-			<span className="min-w-0 flex-1 truncate text-sm font-medium">
-				{session.title}
-			</span>
+		<li className="relative">
 			<button
 				type="button"
-				onClick={() => onDelete(session.id)}
-				disabled={deleting}
-				aria-busy={deleting}
+				onClick={() => actions.onDelete(session.id)}
 				aria-label="Delete session"
-				title={deleting ? "Deleting session…" : "Delete session"}
+				title="Delete session"
 				className={cn(
-					"shrink-0 rounded-md p-2.5 transition-[background-color,color,scale]",
-					deleting
-						? "cursor-not-allowed text-destructive"
-						: "text-muted-foreground hover:bg-accent hover:text-destructive active:scale-90 active:bg-accent active:text-destructive",
+					"absolute inset-y-0 right-0 flex w-[78px] flex-col items-center justify-center gap-0.5 rounded-md bg-destructive text-[0.6875rem] font-semibold text-white",
+					// Hidden rather than unmounted so the row can slide off it
+					// without a remount flash; visibility:hidden also keeps it out
+					// of the tab order and the a11y tree while closed.
+					revealed || dragging ? "visible" : "invisible",
 				)}
 			>
-				{deleting ? (
-					<LoaderCircle className="size-3.5 animate-spin" />
-				) : (
-					<Trash2 className="size-3.5" />
+				<Trash2 className="size-4" />
+				Delete
+			</button>
+			{/* biome-ignore lint/a11y/noStaticElementInteractions: gesture layer,
+			    not a control — the interactive element is the row button it
+			    wraps; these handlers only implement the swipe/long-press
+			    gestures around it and suppress the click they replace. */}
+			<div
+				className={cn(
+					// pan-y: vertical drags stay native scrolling; horizontal ones
+					// come to the pointer handlers above. select-none plus the
+					// callout rule keep long-press from raising the browser's text
+					// selection instead of the row menu.
+					"relative touch-pan-y select-none [-webkit-touch-callout:none]",
+					!dragging && "transition-transform duration-150 ease-out",
 				)}
+				style={{ transform: `translateX(${offset}px)` }}
+				onPointerDown={onPointerDown}
+				onPointerMove={onPointerMove}
+				onPointerUp={endGesture}
+				onPointerCancel={endGesture}
+				onClickCapture={(e) => {
+					if (suppressClickRef.current) {
+						e.preventDefault();
+						e.stopPropagation();
+						suppressClickRef.current = false;
+					}
+				}}
+				// Long-press must not stack the browser's own context menu (or
+				// iOS's preview callout) on top of the row menu.
+				onContextMenu={(e) => e.preventDefault()}
+			>
+				{children}
+			</div>
+			{menuOpen && (
+				<SessionRowMenu
+					session={session}
+					onSelect={() => {
+						setMenuOpen(false);
+						onSelect(session);
+					}}
+					onDelete={() => {
+						setMenuOpen(false);
+						actions.onDelete(session.id);
+					}}
+					onClose={() => setMenuOpen(false)}
+				/>
+			)}
+		</li>
+	);
+}
+
+/**
+ * The long-press row menu — the discoverable path to the same delete the
+ * swipe reveals, plus an escape hatch to the tap action the hold replaced.
+ * Anchored inside the row's <li> rather than portaled: the sheet drawer is
+ * modal and marks everything outside its own popup inert, which would strand
+ * a body-portaled menu. Flips above the row when there's no room below.
+ * Any scroll, outside tap, resize or Escape dismisses it (Escape's capture
+ * listener stops propagation so the sheet itself doesn't close with it).
+ */
+function SessionRowMenu({
+	session,
+	onSelect,
+	onDelete,
+	onClose,
+}: {
+	session: SessionView;
+	onSelect: () => void;
+	onDelete: () => void;
+	onClose: () => void;
+}) {
+	const ref = useRef<HTMLDivElement>(null);
+	const [above, setAbove] = useState(false);
+
+	useLayoutEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+		el.focus();
+		if (el.getBoundingClientRect().bottom > window.innerHeight - 8) {
+			setAbove(true);
+		}
+	}, []);
+
+	useEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+		const onPointerDown = (e: PointerEvent) => {
+			if (e.target instanceof Node && el.contains(e.target)) return;
+			onClose();
+		};
+		const onKeyDown = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			e.stopPropagation();
+			onClose();
+		};
+		// Capture, because the sheet body (and the Background Agents card)
+		// scroll in containers whose scroll events don't bubble.
+		const onScroll = () => onClose();
+		document.addEventListener("pointerdown", onPointerDown, true);
+		document.addEventListener("keydown", onKeyDown, true);
+		document.addEventListener("scroll", onScroll, true);
+		window.addEventListener("resize", onScroll);
+		return () => {
+			document.removeEventListener("pointerdown", onPointerDown, true);
+			document.removeEventListener("keydown", onKeyDown, true);
+			document.removeEventListener("scroll", onScroll, true);
+			window.removeEventListener("resize", onScroll);
+		};
+	}, [onClose]);
+
+	return (
+		<div
+			ref={ref}
+			tabIndex={-1}
+			role="menu"
+			aria-label={`Actions for ${session.title}`}
+			className={cn(
+				"absolute left-3 z-20 w-44 overflow-hidden rounded-xl border border-sidebar-border bg-popover shadow-lg outline-none",
+				above ? "bottom-full mb-1.5" : "top-full mt-1.5",
+			)}
+		>
+			<button
+				type="button"
+				role="menuitem"
+				onClick={onSelect}
+				className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm hover:bg-accent"
+			>
+				<ChevronRight className="size-3.5 text-muted-foreground" />
+				Open
+			</button>
+			<button
+				type="button"
+				role="menuitem"
+				onClick={onDelete}
+				className="flex w-full items-center gap-2 border-t border-sidebar-border px-3 py-2.5 text-left text-sm text-destructive hover:bg-destructive/10"
+			>
+				<Trash2 className="size-3.5" />
+				Delete
 			</button>
 		</div>
 	);
@@ -412,6 +724,7 @@ function OrchestratorSection({
 	onSelect,
 	unreadBySessionId,
 	deletingIds,
+	rowActions,
 }: {
 	sessions: SessionView[];
 	selectedSessionId: string | null;
@@ -420,6 +733,7 @@ function OrchestratorSection({
 	onSelect: (session: SessionView) => void;
 	unreadBySessionId: Record<string, number>;
 	deletingIds: string[];
+	rowActions: SheetRowActions | null;
 }) {
 	return (
 		<div className="border-b border-sidebar-border">
@@ -434,7 +748,13 @@ function OrchestratorSection({
 					{sessions.map((session) => {
 						const deleting = deletingIds.includes(session.id);
 						return (
-							<li key={session.id}>
+							<SessionRow
+								key={session.id}
+								rowActions={rowActions}
+								session={session}
+								deleting={deleting}
+								onSelect={onSelect}
+							>
 								<button
 									type="button"
 									onClick={() => onSelect(session)}
@@ -457,7 +777,7 @@ function OrchestratorSection({
 										<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
 									)}
 								</button>
-							</li>
+							</SessionRow>
 						);
 					})}
 				</ul>
@@ -493,6 +813,7 @@ function ReposSection({
 	unreadBySessionId,
 	deletingIds,
 	isSheet,
+	rowActions,
 }: {
 	repos: Repo[];
 	loading: boolean;
@@ -510,6 +831,7 @@ function ReposSection({
 	unreadBySessionId: Record<string, number>;
 	deletingIds: string[];
 	isSheet: boolean;
+	rowActions: SheetRowActions | null;
 }) {
 	return (
 		<div className={cn("flex flex-col", !isSheet && "min-h-0 flex-1")}>
@@ -573,6 +895,7 @@ function ReposSection({
 											onSelect={onSelectSession}
 											unreadBySessionId={unreadBySessionId}
 											deletingIds={deletingIds}
+											rowActions={rowActions}
 										/>
 									)}
 								</li>
@@ -591,12 +914,14 @@ function RepoSessionsSubmenu({
 	onSelect,
 	unreadBySessionId,
 	deletingIds,
+	rowActions,
 }: {
 	sessions: SessionView[];
 	selectedSessionId: string | null;
 	onSelect: (session: SessionView) => void;
 	unreadBySessionId: Record<string, number>;
 	deletingIds: string[];
+	rowActions: SheetRowActions | null;
 }) {
 	if (sessions.length === 0) {
 		return (
@@ -610,7 +935,13 @@ function RepoSessionsSubmenu({
 			{sessions.map((session) => {
 				const deleting = deletingIds.includes(session.id);
 				return (
-					<li key={session.id}>
+					<SessionRow
+						key={session.id}
+						rowActions={rowActions}
+						session={session}
+						deleting={deleting}
+						onSelect={onSelect}
+					>
 						<button
 							type="button"
 							onClick={() => onSelect(session)}
@@ -627,7 +958,7 @@ function RepoSessionsSubmenu({
 							<StatusDot status={session.status} />
 							<span className="truncate">{session.title}</span>
 							{/* Marks a Comparison arm (ADR-0047) — opened here it's a
-							    plain Session; ChatHeader links back to the view. */}
+						    plain Session; ChatHeader links back to the view. */}
 							{session.comparisonGroupId && (
 								<Columns2
 									aria-label="Comparison arm"
@@ -640,7 +971,7 @@ function RepoSessionsSubmenu({
 								<UnreadBadge count={unreadBySessionId[session.id] ?? 0} />
 							)}
 						</button>
-					</li>
+					</SessionRow>
 				);
 			})}
 		</ul>
@@ -787,12 +1118,14 @@ function BackgroundAgentsSection({
 	onSelect,
 	unreadBySessionId,
 	deletingIds,
+	rowActions,
 }: {
 	sessions: SessionView[];
 	repoSlugById: Record<string, string>;
 	onSelect: (session: SessionView) => void;
 	unreadBySessionId: Record<string, number>;
 	deletingIds: string[];
+	rowActions: SheetRowActions | null;
 }) {
 	if (sessions.length === 0) return null;
 
@@ -811,7 +1144,13 @@ function BackgroundAgentsSection({
 					{sessions.map((session) => {
 						const deleting = deletingIds.includes(session.id);
 						return (
-							<li key={session.id}>
+							<SessionRow
+								key={session.id}
+								rowActions={rowActions}
+								session={session}
+								deleting={deleting}
+								onSelect={onSelect}
+							>
 								<button
 									type="button"
 									onClick={() => onSelect(session)}
@@ -835,7 +1174,7 @@ function BackgroundAgentsSection({
 										{repoSlugById[session.repoId] ?? session.repoId}
 									</span>
 								</button>
-							</li>
+							</SessionRow>
 						);
 					})}
 				</ul>
