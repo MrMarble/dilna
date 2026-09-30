@@ -2177,12 +2177,22 @@ export class SessionManager {
 				.run();
 		}
 
+		// The ledger is seeded from the Agent's OWN transcript, not from
+		// `initialMessages`: pi-agent-core's constructor unshifts a synthetic
+		// system entry (the system prompt + tool declarations) in front of the
+		// seed whenever the seed doesn't already begin with one — dilna's never
+		// does — so the live transcript is one entry longer than the array we
+		// passed in. Seeding from the shorter array left `turnStart` one short
+		// of the real transcript, and the next turn's safety net then re-offered
+		// the seed's final entry — the previous turn's closing assistant message
+		// — persisting it again as a fresh-id row stamped with the new turn's
+		// `turnId`, which regrouped it into (and reordered) the wrong turn.
 		const active: ActiveAgent = {
 			handle,
 			idleTimer: null,
 			liveTurn: null,
 			sentImages,
-			ledger: new TurnLedger(initialMessages.length),
+			ledger: new TurnLedger(handle.agent.state.messages.length),
 		};
 		this.active.set(id, active);
 		// Deliberately no status transition here: per ADR-0016 §1 a cold send's
