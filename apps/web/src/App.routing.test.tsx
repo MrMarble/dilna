@@ -134,6 +134,7 @@ vi.mock("@/api/client", () => ({
 					byModel: [],
 					topSessions: [],
 					byPurpose: [],
+					byPurposeModel: [],
 					toolUsage: [],
 					contextDrift: [],
 					burnFindings: [],

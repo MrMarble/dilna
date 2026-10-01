@@ -22,6 +22,7 @@ import type {
 import { isTurnCompletion } from "@dilna/shared";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { resolveUtilityModel } from "../agents/modelRoles";
 import {
 	type AgentEvent,
 	chatPi,
@@ -95,7 +96,11 @@ import {
 import { storeTruncatedOutput } from "./truncated";
 import { TurnLedger } from "./turnLedger";
 import { type Turn, TurnRegistry } from "./turnRegistry";
-import { accumulateSessionUsage, recordSubagentUsage } from "./usageAccounting";
+import {
+	accumulateSessionUsage,
+	recordSubagentUsage,
+	recordUtilityUsage,
+} from "./usageAccounting";
 import {
 	createWorktree,
 	initCodegraph,
@@ -882,6 +887,7 @@ export class SessionManager {
 	 * Two tiers, so the title never depends on the provider behaving:
 	 *
 	 * 1. `generateSessionTitle` — a small, isolated model round-trip on the
+	 *    `cheap` model role when one is configured (issue #311), else the
 	 *    Session's own provider/model.
 	 * 2. `fallbackSessionTitle` — when that yields nothing (a provider that
 	 *    rejects the tiny no-tools request, errors out, or replies empty —
@@ -899,12 +905,19 @@ export class SessionManager {
 	): Promise<void> {
 		if (session.kind !== "session") return;
 		if (session.title !== defaultSessionTitle(session.id)) return;
+		// The `cheap` role when configured (issue #311), else the Session's own
+		// model; a cheap model that fails lands on tier 2 like any other.
+		const target = (await resolveUtilityModel()) ?? {
+			provider: session.provider,
+			model: session.model,
+		};
 		const title =
 			(await generateSessionTitle(
 				session.id,
 				firstPrompt,
-				session.provider,
-				session.model,
+				target.provider,
+				target.model,
+				(usage) => recordUtilityUsage(session, "title", usage),
 			)) ?? fallbackSessionTitle(firstPrompt);
 		if (!title) return;
 		await this.setTitle(session.id, title);
@@ -1758,6 +1771,12 @@ export class SessionManager {
 				active.handle.model,
 				await this.getMessages(id),
 				sessionCompactionOf(session),
+				{
+					// Issue #311: summaries run on the `cheap` role when it's
+					// configured and fits; their spend is ledgered either way.
+					utilityModel: await resolveUtilityModel(),
+					onUsage: (usage) => recordUtilityUsage(session, "compaction", usage),
+				},
 			);
 			if (compaction && newContext) {
 				// Swap the live `Agent` over to the compacted context so *this*

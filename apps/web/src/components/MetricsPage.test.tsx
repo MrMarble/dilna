@@ -29,6 +29,7 @@ let nextSummary: UsageSummary = {
 	byModel: [],
 	topSessions: [],
 	byPurpose: [],
+	byPurposeModel: [],
 	contextDrift: [],
 	burnFindings: [],
 	toolUsage: [],
@@ -56,6 +57,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			burnFindings: [],
 			toolUsage: [],
 			contextDrift: [],
@@ -141,6 +143,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			byPurpose: [],
+			byPurposeModel: [],
 			burnFindings: [],
 			toolUsage: [],
 			contextDrift: [],
@@ -249,6 +252,7 @@ describe("MetricsPage", () => {
 				},
 			],
 			byPurpose: [],
+			byPurposeModel: [],
 			burnFindings: [],
 			toolUsage: [],
 			contextDrift: [],
@@ -310,6 +314,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [
 				{
 					sessionId: "s-over",
@@ -373,6 +378,7 @@ describe("MetricsPage", () => {
 				{ purpose: "judge", ...ZERO_TOTALS, costUsd: 0.05 },
 				{ purpose: "subagent", ...ZERO_TOTALS, costUsd: 0.25 },
 			],
+			byPurposeModel: [],
 			burnFindings: [],
 			toolUsage: [],
 			contextDrift: [],
@@ -381,6 +387,42 @@ describe("MetricsPage", () => {
 		expect(
 			await screen.findByText("incl. $0.25 on subagents · $0.05 on scoring"),
 		).toBeInTheDocument();
+	});
+
+	it("tables side spend by purpose and model (issue #311)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS, inputTokens: 100, costUsd: 1 },
+			daily: [
+				{ date: "2026-08-27", ...ZERO_TOTALS, inputTokens: 100, costUsd: 1 },
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [],
+			byPurposeModel: [
+				{
+					purpose: "compaction",
+					provider: "deepseek",
+					model: "deepseek-flash",
+					calls: 3,
+					...ZERO_TOTALS,
+					inputTokens: 9_000,
+					costUsd: 0.02,
+				},
+			],
+			burnFindings: [],
+			toolUsage: [],
+			contextDrift: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		expect(
+			await screen.findByText("Side spend by purpose"),
+		).toBeInTheDocument();
+		const row = screen.getByText("deepseek-flash").closest("tr");
+		expect(row).toHaveTextContent("compaction");
+		expect(row).toHaveTextContent("3");
+		expect(row).toHaveTextContent("$0.02");
 	});
 
 	it("hides the drift section while every estimator is honest (issue #270)", async () => {
@@ -403,6 +445,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			burnFindings: [],
 			toolUsage: [],
 			contextDrift: [],
@@ -432,6 +475,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			// Server order is worst first; the card renders it verbatim.
 			burnFindings: [
@@ -521,6 +565,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			burnFindings: [
 				{
@@ -604,6 +649,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			burnFindings: [
 				// Instance-scoped: no session, no repo — the title IS the wire
@@ -682,6 +728,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			burnFindings: [],
 			toolUsage: [],
@@ -709,6 +756,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			burnFindings: [
 				{
@@ -789,6 +837,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			burnFindings: [],
 			toolUsage: [
@@ -825,6 +874,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			contextDrift: [],
 			burnFindings: [],
 			toolUsage: [],
@@ -845,6 +895,7 @@ describe("MetricsPage", () => {
 			byModel: [],
 			topSessions: [],
 			byPurpose: [],
+			byPurposeModel: [],
 			burnFindings: [],
 			toolUsage: [],
 			contextDrift: [],

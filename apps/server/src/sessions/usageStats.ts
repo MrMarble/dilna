@@ -4,13 +4,14 @@ import type {
 	UsageDailyPoint,
 	UsageModelBreakdown,
 	UsagePurposeBreakdown,
+	UsagePurposeModelBreakdown,
 	UsageRepoBreakdown,
 	UsageSessionBreakdown,
 	UsageSummary,
 	UsageToolBreakdown,
 	UsageTotalsDetailed,
 } from "@dilna/shared";
-import { and, eq, gt, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, ne, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
 	sessionArchive as sessionArchiveTable,
@@ -174,6 +175,27 @@ export function getUsageSummary(since: number): UsageSummary {
 		.all()
 		.map(withCacheHitRate) as UsagePurposeBreakdown[];
 
+	// Where the side spend went, model by model (issue #311): the evidence
+	// that routing it to the `cheap` role actually moved it.
+	const byPurposeModel = db
+		.select({
+			purpose: usageEventsTable.purpose,
+			provider: usageEventsTable.provider,
+			model: usageEventsTable.model,
+			calls: sql<number>`count(*)`,
+			...SUM_COLUMNS,
+		})
+		.from(usageEventsTable)
+		.where(and(where, ne(usageEventsTable.purpose, "turn")))
+		.groupBy(
+			usageEventsTable.purpose,
+			usageEventsTable.provider,
+			usageEventsTable.model,
+		)
+		.all()
+		.map(withCacheHitRate) as UsagePurposeModelBreakdown[];
+	byPurposeModel.sort((a, b) => b.costUsd - a.costUsd);
+
 	// The judgment layer (issue #291): same range, same `usage_events`, one
 	// home for the verdicts (`sessions/burnFindings.ts`) — the web renders
 	// the shared shape and computes nothing.
@@ -187,6 +209,7 @@ export function getUsageSummary(since: number): UsageSummary {
 		byModel,
 		topSessions,
 		byPurpose,
+		byPurposeModel,
 		contextDrift,
 		burnFindings,
 		toolUsage,

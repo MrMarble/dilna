@@ -1,6 +1,12 @@
-import type { AgentStreamEvent, TurnToolFacts } from "@dilna/shared";
+import type {
+	AgentStreamEvent,
+	TurnToolFacts,
+	UsagePurpose,
+	UsageTotals,
+} from "@dilna/shared";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import type { UtilityUsage } from "../agents/pi";
 import type { SubagentUsage } from "../agents/taskTool";
 import { getDb } from "../db";
 import {
@@ -170,6 +176,37 @@ export function recordSubagentUsage(
 	session: { id: string; repoId: string },
 	record: SubagentUsage,
 ): void {
+	insertSideUsage(session, "subagent", record, record.toolCallId);
+}
+
+/**
+ * Ledger one utility call's spend (issue #311) — a title derivation or a
+ * compaction summary — on the model it actually ran on, so routing it to
+ * the `cheap` role is measurable rather than assumed. Same side-spend rules
+ * as {@link recordSubagentUsage}. Best-effort: a failed write is logged,
+ * never allowed to fail the title or compaction it describes.
+ */
+export function recordUtilityUsage(
+	session: { id: string; repoId: string },
+	purpose: "title" | "compaction",
+	record: UtilityUsage,
+): void {
+	try {
+		insertSideUsage(session, purpose, record, null);
+	} catch (err) {
+		log.warn(
+			{ err, sessionId: session.id, purpose },
+			"failed to record utility usage",
+		);
+	}
+}
+
+function insertSideUsage(
+	session: { id: string; repoId: string },
+	purpose: Exclude<UsagePurpose, "turn" | "judge">,
+	record: { provider: string; model: string; usage: UsageTotals },
+	toolCallId: string | null,
+): void {
 	const { usage } = record;
 	getDb()
 		.insert(usageEventsTable)
@@ -185,8 +222,8 @@ export function recordSubagentUsage(
 			cacheWriteTokens: usage.cacheWriteTokens ?? 0,
 			reasoningTokens: usage.reasoningTokens ?? 0,
 			costUsd: usage.costUsd ?? 0,
-			purpose: "subagent",
-			toolCallId: record.toolCallId,
+			purpose,
+			toolCallId,
 		})
 		.run();
 }

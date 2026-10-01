@@ -9,6 +9,7 @@ import type {
 	UsageDailyPoint,
 	UsageModelBreakdown,
 	UsagePurpose,
+	UsagePurposeModelBreakdown,
 	UsageSessionBreakdown,
 	UsageSummary,
 	UsageToolBreakdown,
@@ -165,6 +166,7 @@ export function MetricsPage({ repos, onBack }: Props) {
 						/>
 						<ToolUsageTable tools={summary.toolUsage} />
 						<ModelBreakdownTable models={summary.byModel} />
+						<SideSpendTable rows={summary.byPurposeModel} />
 						<RepoBreakdownTable summary={summary} repoNameById={repoNameById} />
 						<TopSessionsTable
 							sessions={summary.topSessions}
@@ -204,13 +206,16 @@ function StatCard({
 const PURPOSE_LABELS: Record<Exclude<UsagePurpose, "turn">, string> = {
 	judge: "scoring",
 	subagent: "subagents",
+	title: "titles",
+	compaction: "compaction",
 };
 
 function SummaryCards({ summary }: { summary: UsageSummary }) {
 	const { totals } = summary;
 	const totalTokens = totals.inputTokens + totals.outputTokens;
 	const cacheTokens = totals.cacheReadTokens + totals.cacheWriteTokens;
-	// Side spend — judge calls (ADR-0046), subagent runs (ADR-0053) — is real
+	// Side spend — judge calls (ADR-0046), subagent runs (ADR-0053), utility
+	// calls (issue #311) — is real
 	// spend and already in the totals; the card just says how much of it went
 	// somewhere other than the Sessions' own turns.
 	const side = summary.byPurpose
@@ -1104,6 +1109,56 @@ function ModelBreakdownTable({ models }: { models: UsageModelBreakdown[] }) {
 							</tr>
 						);
 					})}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
+/**
+ * Side spend by purpose × model (issue #311): what scoring, subagents, titles
+ * and compaction cost, and on which model — the table that shows whether
+ * routing them to the `cheap` role paid off. Hidden when there's none.
+ */
+function SideSpendTable({ rows }: { rows: UsagePurposeModelBreakdown[] }) {
+	if (rows.length === 0) return null;
+	return (
+		<div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+			<div className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+				Side spend by purpose
+			</div>
+			<table className="w-full text-sm">
+				<thead>
+					<tr className="border-b border-border text-left text-xs text-muted-foreground">
+						<th className="px-4 py-2 font-medium">Purpose</th>
+						<th className="px-4 py-2 font-medium">Model</th>
+						<th className="px-4 py-2 text-right font-medium">Calls</th>
+						<th className="px-4 py-2 text-right font-medium">Tokens</th>
+						<th className="px-4 py-2 text-right font-medium">Cost</th>
+					</tr>
+				</thead>
+				<tbody>
+					{rows.map((r, i) => (
+						<tr
+							key={`${r.purpose}/${r.provider}/${r.model}`}
+							className={cn("tabular-nums", i > 0 && "border-t border-border")}
+						>
+							<td className="px-4 py-2 capitalize">
+								{PURPOSE_LABELS[r.purpose]}
+							</td>
+							<td className="px-4 py-2">
+								<span className="font-mono text-xs">{r.model}</span>
+								<span className="ml-1 text-xs text-muted-foreground">
+									· {r.provider}
+								</span>
+							</td>
+							<td className="px-4 py-2 text-right">{r.calls}</td>
+							<td className="px-4 py-2 text-right">
+								{formatTokenCount(r.inputTokens + r.outputTokens)}
+							</td>
+							<td className="px-4 py-2 text-right">{formatUsd(r.costUsd)}</td>
+						</tr>
+					))}
 				</tbody>
 			</table>
 		</div>

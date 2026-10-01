@@ -7,6 +7,7 @@ import type {
 import { DEFAULT_SCORE_THRESHOLD } from "@dilna/shared";
 import { asc, eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { resolveUtilityModel } from "../agents/modelRoles";
 import { judgeComplete, resolveSummarizationModel } from "../agents/pi";
 import {
 	effectiveModel,
@@ -296,9 +297,10 @@ function addUsage(total: UsageTotals, u: UsageTotals): void {
 }
 
 /**
- * Score one turn and persist the result. The judge defaults to the Session's
- * own provider/model (falling back to the effective config for a Session
- * that never pinned one); `judgeOverride` picks any other keyed model.
+ * Score one turn and persist the result. The judge defaults to the `cheap`
+ * model role when one is configured (issue #311), else the Session's own
+ * provider/model (falling back to the effective config for a Session that
+ * never pinned one); `judgeOverride` picks any other keyed model.
  *
  * The judge calls' spend is written as one `usage_events` row with purpose
  * `"judge"` — even when the metric then fails, since the tokens were spent —
@@ -321,12 +323,20 @@ export async function scoreTurn(args: {
 	const subject = buildSubject(args.history, args.turnId);
 	if (!subject) throw new TurnNotFoundError(`turn ${args.turnId} not found`);
 
+	// An explicit judge wins; otherwise the `cheap` role when configured
+	// (issue #311) — judging is a small, well-prompted call — and only then
+	// the Session's own model, exactly as before roles existed.
+	const utility = args.judgeOverride ? null : await resolveUtilityModel();
 	const provider =
 		args.judgeOverride?.provider ??
+		utility?.provider ??
 		args.session.provider ??
 		effectiveProvider();
 	const modelId =
-		args.judgeOverride?.model ?? args.session.model ?? effectiveModel();
+		args.judgeOverride?.model ??
+		utility?.model ??
+		args.session.model ??
+		effectiveModel();
 	const model =
 		provider && modelId
 			? resolveSummarizationModel(provider, modelId)
