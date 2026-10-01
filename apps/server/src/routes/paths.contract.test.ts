@@ -108,6 +108,8 @@ describe("server route addresses", () => {
 		expectDeclared("GET", paths.config.get());
 		expectDeclared("PUT", paths.config.get());
 		expectDeclared("DELETE", paths.config.get());
+		expectDeclared("PUT", paths.config.modelRole("__p__"));
+		expectDeclared("DELETE", paths.config.modelRole("__p__"));
 		expectDeclared("PUT", paths.config.credentials());
 		expectDeclared("DELETE", paths.config.credential("__p__"));
 		expectDeclared("POST", paths.config.anthropicOauthStart());

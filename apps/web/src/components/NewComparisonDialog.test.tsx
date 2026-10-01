@@ -55,6 +55,7 @@ state.config = {
 	},
 	oauthConnected: { anthropic: false },
 	customProviders: [],
+	roles: { cheap: null },
 };
 
 async function renderDialog(onCreated: (c: ComparisonView) => void) {

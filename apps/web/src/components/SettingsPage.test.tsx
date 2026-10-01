@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CustomProviderView, LlmConfig } from "@/api/client";
@@ -31,6 +31,7 @@ const state = vi.hoisted(() => {
 			modelsByProvider: { ...models },
 			oauthConnected: { anthropic: false },
 			customProviders: [],
+			roles: { cheap: null },
 		};
 	}
 
@@ -185,7 +186,9 @@ describe("SettingsPage", () => {
 
 		expect(screen.queryByLabelText("Provider")).not.toBeInTheDocument();
 		expect(
-			screen.getAllByRole("option").map((o) => o.getAttribute("value")),
+			within(screen.getByLabelText("Model"))
+				.getAllByRole("option")
+				.map((o) => o.getAttribute("value")),
 		).toEqual([
 			"anthropic/claude-opus-4-5",
 			"anthropic/claude-haiku-4-5",
@@ -248,7 +251,9 @@ describe("SettingsPage", () => {
 			// Appears both as a management-list row and a model dropdown option.
 			expect(screen.getByText("ollama")).toBeInTheDocument();
 			expect(
-				screen.getByRole("option", { name: "ollama/llama3.1:8b" }),
+				within(screen.getByLabelText("Model")).getByRole("option", {
+					name: "ollama/llama3.1:8b",
+				}),
 			).toBeInTheDocument();
 		});
 

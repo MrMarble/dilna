@@ -1,3 +1,4 @@
+import type { ModelRole, ModelRoleAssignment } from "./apiSchemas";
 import type { Artefact } from "./artefact";
 import type { ChangedFile } from "./diff";
 import type { ContextUsageEstimate } from "./events";
@@ -236,6 +237,14 @@ export type SetOverrideResponse = {
 
 /** `DELETE /api/config` — the override is always cleared, hence `null`. */
 export type ClearOverrideResponse = { ok: boolean; override: null };
+
+/** `PUT`/`DELETE /api/config/roles/:role` (issue #308) — echoes the role's
+ * assignment now in effect (`null` after a clear). */
+export type SetModelRoleResponse = {
+	ok: boolean;
+	role: ModelRole;
+	assignment: ModelRoleAssignment | null;
+};
 
 /** `POST /api/config/providers/anthropic/oauth/start` */
 export type OauthStartResponse = { loginId: string; authUrl: string };

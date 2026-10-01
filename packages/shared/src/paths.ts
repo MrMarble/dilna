@@ -98,6 +98,8 @@ export const paths = {
 			"/api/config/providers/anthropic/oauth/complete",
 		anthropicOauthCancel: () => "/api/config/providers/anthropic/oauth/cancel",
 		anthropicOauth: () => "/api/config/providers/anthropic/oauth",
+		/** `PUT` (assign) / `DELETE` (clear) one model role (issue #308). */
+		modelRole: (role: string) => `/api/config/roles/${enc(role)}`,
 	},
 	skills: {
 		/** `GET` the list, `POST` to install. */

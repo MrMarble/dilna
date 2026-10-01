@@ -133,3 +133,18 @@ makes it visible, not a reason to raise the cap.
 - Later phases of #287 (roles in Settings, the two delegation seams, utility
   routing) implement §1, §2 and §4 against this record; none of them need
   to revisit it unless the usage data argues for profiles.
+
+## Addendum: where roles live (issue #308)
+
+Roles are stored as extra rows of the existing `llm_config` table
+(`id = "role:<name>"`), beside the instance override's `"instance"` row —
+the same columns, the same persist-across-restarts and boot-primed cache,
+and no migration. `agents/modelRoles.ts` owns them; its `resolveModelRole`
+is the single resolver §1 calls for, and it re-runs
+`validateModelChoice` on every call, because a role valid when set can stop
+resolving later (custom provider deleted, key cleared). It answers
+`resolved`, `unset` (caller falls back) or `invalid` (an actionable message
+the caller surfaces or degrades on). Settings writes go through
+`PUT`/`DELETE /api/config/roles/:role`; `GET /api/config` reports every
+role's assignment. The Settings section is the only surface that shows the
+concrete model behind a role.

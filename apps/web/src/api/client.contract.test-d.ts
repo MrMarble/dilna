@@ -3,6 +3,7 @@ import type {
 	ListReposResponse,
 	PushKeyResponse,
 	SessionResponse,
+	SetModelRoleResponse,
 	TurnScoreResponse,
 	TurnScoresResponse,
 } from "@dilna/shared";
@@ -78,5 +79,14 @@ describe("api client response envelopes", () => {
 		expectTypeOf(
 			api.sessions.scoreTurn,
 		).returns.resolves.toEqualTypeOf<TurnScoreResponse>();
+	});
+
+	it("types the model-role writes as their shared envelope (issue #308)", () => {
+		expectTypeOf(
+			api.config.setModelRole,
+		).returns.resolves.toEqualTypeOf<SetModelRoleResponse>();
+		expectTypeOf(
+			api.config.clearModelRole,
+		).returns.resolves.toEqualTypeOf<SetModelRoleResponse>();
 	});
 });

@@ -34,6 +34,7 @@ import type {
 	ListSkillsResponse,
 	LlmConfig,
 	Message,
+	ModelRole,
 	OauthStartResponse,
 	OkIdResponse,
 	OkResponse,
@@ -61,6 +62,8 @@ import type {
 	SessionResponse,
 	SessionView,
 	SetCredentialBody,
+	SetModelRoleBody,
+	SetModelRoleResponse,
 	SetOverrideResponse,
 	SetProviderOverrideBody,
 	SetSkillEnabledBody,
@@ -506,6 +509,21 @@ export const api = {
 		/** Drop the override so provider/model fall back to the env vars. */
 		clearOverride: () =>
 			request<ClearOverrideResponse>(paths.config.get(), {
+				method: "DELETE",
+			}),
+		/** Point a model role (issue #308, ADR-0053) at a provider/model pair —
+		 * validated server-side exactly like the override. */
+		setModelRole: (role: ModelRole, provider: string, model: string) => {
+			const body: SetModelRoleBody = { provider, model };
+			return request<SetModelRoleResponse>(paths.config.modelRole(role), {
+				method: "PUT",
+				body: JSON.stringify(body),
+			});
+		},
+		/** Unset a model role so its consumers fall back to the Session's own
+		 * model. */
+		clearModelRole: (role: ModelRole) =>
+			request<SetModelRoleResponse>(paths.config.modelRole(role), {
 				method: "DELETE",
 			}),
 		/** Save (replace) a provider's API key — multi-provider support (see
