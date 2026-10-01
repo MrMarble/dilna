@@ -67,6 +67,12 @@ vi.mock("./webFetchTool", () => ({
 	createWebFetchTool: () => ({ name: "web_fetch" }),
 }));
 
+/** The execution-time resolver (issue #310) — stubbed so each test decides
+ * what a `model` argument resolves to; its own logic is covered in
+ * modelRoles.test.ts. */
+const resolveModelChoice = vi.hoisted(() => vi.fn());
+vi.mock("./modelRoles", () => ({ resolveModelChoice }));
+
 vi.mock("./confinement", () => ({
 	createConfinementHook: vi.fn(() => async () => undefined),
 }));
@@ -93,6 +99,8 @@ function makeTool(onTasksChanged: (tasks: RunningTask[]) => void = () => {}) {
 		sessionId: "sess-1",
 		extraReadablePaths: ["/attachments/sess-1"],
 		model,
+		lookupModel: (provider, id) =>
+			({ id, provider, api: "openai-completions" }) as unknown as Model<Api>,
 		getApiKey: async () => "key",
 		onTasksChanged,
 		onUsage: (record) => usageRecords.push(record),
@@ -124,6 +132,7 @@ function textOf(result: any): string {
 beforeEach(() => {
 	constructed.length = 0;
 	usageRecords = [];
+	resolveModelChoice.mockReset();
 	promptImpl = (agent) => {
 		agent.state.messages.push({
 			role: "assistant",
@@ -373,6 +382,7 @@ describe("createTaskTool", () => {
 				sessionId: "sess-1",
 				extraReadablePaths: [],
 				model,
+				lookupModel: () => undefined,
 				getApiKey: async () => "key",
 				onTasksChanged: () => {},
 				onUsage: () => {
@@ -396,6 +406,119 @@ describe("createTaskTool", () => {
 				prompt: "p",
 			});
 			expect(textOf(result)).toMatch(/^ok\n\n\[subagent usage:/);
+		});
+	});
+
+	describe("per-call model choice (issue #310)", () => {
+		it("de-escalates to the cheap role and ledgers spend under the model actually used", async () => {
+			resolveModelChoice.mockResolvedValue({
+				status: "resolved",
+				provider: "deepseek",
+				model: "deepseek-flash",
+				role: "cheap",
+			});
+			promptImpl = (agent) => {
+				agent.emit(roundEnd(100, 10, 0.0001));
+				agent.state.messages.push({
+					role: "assistant",
+					content: [{ type: "text", text: "mapped" }],
+				});
+			};
+			const { tool } = makeTool();
+			await tool.execute("call-1", {
+				description: "d",
+				prompt: "p",
+				model: "cheap",
+			});
+
+			expect(resolveModelChoice).toHaveBeenCalledWith("cheap");
+			expect(constructed[0]?.options.initialState.model).toMatchObject({
+				provider: "deepseek",
+				id: "deepseek-flash",
+			});
+			expect(usageRecords[0]).toMatchObject({
+				provider: "deepseek",
+				model: "deepseek-flash",
+			});
+		});
+
+		it("escalates to a concrete stronger pair", async () => {
+			resolveModelChoice.mockResolvedValue({
+				status: "resolved",
+				provider: "anthropic",
+				model: "claude-opus-5",
+				role: null,
+			});
+			const { tool } = makeTool();
+			await tool.execute("call-1", {
+				description: "d",
+				prompt: "p",
+				model: "anthropic/claude-opus-5",
+			});
+			expect(constructed[0]?.options.initialState.model).toMatchObject({
+				provider: "anthropic",
+				id: "claude-opus-5",
+			});
+		});
+
+		it("omitting the choice keeps the parent's model and never consults the resolver", async () => {
+			const { tool } = makeTool();
+			await tool.execute("call-1", { description: "d", prompt: "p" });
+			expect(resolveModelChoice).not.toHaveBeenCalled();
+			expect(constructed[0]?.options.initialState.model).toBe(model);
+		});
+
+		it("an unset role runs on the parent's model and says so", async () => {
+			resolveModelChoice.mockResolvedValue({
+				status: "unset-role",
+				role: "cheap",
+			});
+			const { tool } = makeTool();
+			const result = await tool.execute("call-1", {
+				description: "d",
+				prompt: "p",
+				model: "cheap",
+			});
+			expect(constructed[0]?.options.initialState.model).toBe(model);
+			expect(textOf(result)).toContain(
+				'The "cheap" model role isn\'t configured',
+			);
+		});
+
+		it("an invalid choice spawns no child, returns an actionable result, and spends no cap", async () => {
+			resolveModelChoice.mockResolvedValue({
+				status: "invalid",
+				error: '"expensive" is not a model role. Known roles: cheap.',
+			});
+			const { tool } = makeTool();
+			const result = await tool.execute("call-1", {
+				description: "d",
+				prompt: "p",
+				model: "expensive",
+			});
+			expect(constructed).toHaveLength(0);
+			expect(textOf(result)).toMatch(
+				/^No subagent was started: "expensive" is not a model role/,
+			);
+
+			// The full cap is still available afterwards.
+			for (let i = 0; i < MAX_TASKS_PER_TURN; i++) {
+				expect(
+					textOf(
+						await tool.execute(`ok-${i}`, { description: "d", prompt: "p" }),
+					),
+				).toBe("the answer");
+			}
+			expect(
+				textOf(await tool.execute("over", { description: "d", prompt: "p" })),
+			).toContain("Task limit reached");
+		});
+
+		it("describes the choice with role names only, never model ids", () => {
+			const { tool } = makeTool();
+			const text = `${tool.description}\n${JSON.stringify(tool.parameters)}`;
+			expect(text).toContain('"cheap"');
+			expect(text).not.toMatch(/claude-|deepseek|gpt-|glm-|kimi/i);
 		});
 	});
 });

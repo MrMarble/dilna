@@ -102,6 +102,7 @@ function buildBuiltInTools(): Record<
 		sessionId: "dilna-schema-weight",
 		extraReadablePaths: [],
 		model: {} as unknown as Model<Api>,
+		lookupModel: () => undefined,
 		getApiKey: async () => undefined,
 		onTasksChanged: () => {},
 		onUsage: () => {},

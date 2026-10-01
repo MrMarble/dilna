@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { UsageTotals } from "@dilna/shared";
+import { MODEL_ROLES, type UsageTotals } from "@dilna/shared";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { streamSimple, Type } from "@earendil-works/pi-ai/compat";
@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { logger } from "../logger";
 import { createConfinementHook } from "./confinement";
+import { resolveModelChoice } from "./modelRoles";
 import { createWebFetchTool } from "./webFetchTool";
 
 const log = logger.child({ component: "agents/taskTool" });
@@ -48,6 +49,13 @@ const taskSchema = Type.Object({
 		description:
 			"The full instruction for the subagent. It starts with NO conversation history and cannot see anything you have read or discussed, so this must be entirely self-contained: state the question, any paths or symbols it should start from, and exactly what to report back.",
 	}),
+	// Role names only, never concrete model ids (ADR-0053 §2): resolved when
+	// the call executes, so an old call's argument can't pin a stale model.
+	model: Type.Optional(
+		Type.String({
+			description: `Optional: which model the subagent runs on. Omit to use your own model. Pass a model role — ${MODEL_ROLES.map((r) => `"${r}"`).join(", ")} — to de-escalate: "cheap" suits bulk, mechanical exploration (mapping a codebase, collecting call sites) where good-enough beats perfect.`,
+		}),
+	),
 });
 
 /**
@@ -110,9 +118,15 @@ export type TaskToolDeps = {
 	/** Read-only paths the parent also grants (the Session's attachment dir) —
 	 * kept identical so a subagent can read an upload the parent mentions. */
 	extraReadablePaths: string[];
-	/** The parent's resolved model, inherited so a Session that configured a
-	 * specific model doesn't silently fan out onto a different one. */
+	/** The parent's resolved model — the child's model unless the call
+	 * explicitly asks for another (ADR-0053 §4), so a Session that configured
+	 * a specific model never *silently* fans out onto a different one. */
 	model: Model<Api>;
+	/** Turn a validated provider/model pair into pi's `Model` (pi.ts's
+	 * catalog lookup, injected to keep this module free of a pi.ts import).
+	 * Undefined only if the pair left the catalog between validation and
+	 * lookup. */
+	lookupModel: (provider: string, modelId: string) => Model<Api> | undefined;
 	getApiKey: (provider: string) => Promise<string | undefined>;
 	/** Called whenever the running-task set changes, so `SessionManager` can
 	 * broadcast a fresh `turn_activity`. Level-based: receives the whole
@@ -150,7 +164,9 @@ The subagent can read, grep, find, ls and fetch URLs. It CANNOT write, edit, or 
 
 It starts with a completely empty context: it cannot see this conversation, the user's request, or anything you have already read. Write \`prompt\` so it stands alone.
 
-Best for: locating where something lives in an unfamiliar area, tracing how a pattern is used across many files, or answering several independent questions at once. Not worth it for reading one known file — just read it yourself. Limit: ${MAX_TASKS_PER_TURN} per turn.`,
+Best for: locating where something lives in an unfamiliar area, tracing how a pattern is used across many files, or answering several independent questions at once. Not worth it for reading one known file — just read it yourself.
+
+By default the subagent runs on your own model. Pass \`model: "cheap"\` to put bulk, mechanical exploration on the instance's cheap model instead. Each result ends with what the subagent cost, so you can tell whether delegating paid off. Limit: ${MAX_TASKS_PER_TURN} per turn.`,
 		parameters: taskSchema,
 		execute: async (toolCallId, params, signal) => {
 			if (callsThisTurn >= MAX_TASKS_PER_TURN) {
@@ -160,6 +176,28 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 				return textResult(
 					`Task limit reached: at most ${MAX_TASKS_PER_TURN} \`task\` calls per turn. Do this investigation directly with your own read/grep/find tools, or wait for the next turn.`,
 				);
+			}
+			// Resolved at execution time (ADR-0053 §2), before the cap is
+			// spent and before any child exists: a rejected choice spawns
+			// nothing, and the parent can retry or drop `model` this turn.
+			let childModel = deps.model;
+			let note = "";
+			if (params.model?.trim()) {
+				const choice = await resolveModelChoice(params.model);
+				if (choice.status === "invalid") {
+					return textResult(`No subagent was started: ${choice.error}`);
+				}
+				if (choice.status === "unset-role") {
+					note = `\n\n(The "${choice.role}" model role isn't configured, so the subagent ran on your own model.)`;
+				} else {
+					const resolved = deps.lookupModel(choice.provider, choice.model);
+					if (!resolved) {
+						return textResult(
+							`No subagent was started: ${choice.provider}/${choice.model} is no longer in the model catalog. Omit \`model\` to use your own model.`,
+						);
+					}
+					childModel = resolved;
+				}
 			}
 			callsThisTurn++;
 
@@ -187,8 +225,6 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 				reasoningTokens: 0,
 				costUsd: 0,
 			};
-			const childModel = deps.model;
-
 			try {
 				// Read-only by *omission*: the child's array simply has no
 				// write/edit/bash/publish/memory tool, and no `task` of its own
@@ -262,10 +298,10 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 				const text = finalAssistantText(child);
 				if (!text) {
 					return textResult(
-						`The subagent returned no output. Investigate directly instead.${usageFooter(childModel, spent)}`,
+						`The subagent returned no output. Investigate directly instead.${usageFooter(childModel, spent)}${note}`,
 					);
 				}
-				return textResult(`${text}${usageFooter(childModel, spent)}`);
+				return textResult(`${text}${usageFooter(childModel, spent)}${note}`);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				log.warn({ err, taskId }, "subagent task failed");
