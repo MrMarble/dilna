@@ -154,6 +154,7 @@ vi.mock("@/api/client", () => ({
 				},
 				oauthConnected: { anthropic: false },
 				customProviders: [],
+				roles: { cheap: null },
 			}),
 		},
 	} satisfies PartialApi,

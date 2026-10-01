@@ -5,21 +5,31 @@ import {
 	createCustomProviderBodySchema,
 	customProviderFieldsSchema,
 	type LlmConfig,
+	modelRoleSchema,
 	type OauthStartResponse,
 	type OkResponse,
 	type ProviderModelOption,
+	type SetModelRoleResponse,
 	type SetOverrideResponse,
 	setCredentialBodySchema,
+	setModelRoleBodySchema,
 	setProviderOverrideBodySchema,
 } from "@dilna/shared";
 import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
 import {
 	deleteCustomProvider,
 	listCustomProviders,
 	setCustomProvider,
 } from "../agents/customProviders";
+import {
+	clearModelRole,
+	getModelRole,
+	listModelRoles,
+	setModelRole,
+} from "../agents/modelRoles";
 import {
 	type DilnaProvider,
 	PROVIDER_ALLOWLIST,
@@ -94,6 +104,7 @@ configRoute.get("/", async (c) => {
 		keyedStoredProviders: listStoredProviderKeys(),
 		oauthConnected: { anthropic: hasOAuthCredential("anthropic") },
 		customProviders,
+		roles: listModelRoles(),
 	};
 	return c.json(body);
 });
@@ -115,6 +126,40 @@ configRoute.put(
 configRoute.delete("/", (c) => {
 	clearOverride();
 	const res: ClearOverrideResponse = { ok: true, override: null };
+	return c.json(res);
+});
+
+// ---- Model roles (issue #308, ADR-0053) ------------------------------------
+
+const roleParamSchema = z.object({ role: modelRoleSchema });
+
+/** Point a role at a provider/model pair, validated exactly like the
+ * override — an invalid combination is a 400 with an actionable message. */
+configRoute.put(
+	"/roles/:role",
+	validate("param", roleParamSchema),
+	validate("json", setModelRoleBodySchema),
+	async (c) => {
+		const { role } = c.req.valid("param");
+		const body = c.req.valid("json");
+		const result = await setModelRole(role, body.provider, body.model);
+		if (!result.ok) {
+			throw new HTTPException(400, { message: result.error });
+		}
+		const res: SetModelRoleResponse = {
+			ok: true,
+			role,
+			assignment: getModelRole(role),
+		};
+		return c.json(res);
+	},
+);
+
+/** Unset a role; its consumers fall back to the Session's own model. */
+configRoute.delete("/roles/:role", validate("param", roleParamSchema), (c) => {
+	const { role } = c.req.valid("param");
+	clearModelRole(role);
+	const res: SetModelRoleResponse = { ok: true, role, assignment: null };
 	return c.json(res);
 });
 

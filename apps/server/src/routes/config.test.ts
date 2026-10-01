@@ -4,6 +4,7 @@ import path from "node:path";
 import { Hono } from "hono";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { primeCustomProviders } from "../agents/customProviders";
+import { primeModelRolesFromDb } from "../agents/modelRoles";
 import { primeOverrideFromDb } from "../agents/providerConfigStore";
 import { primeProviderCredentials } from "../agents/providerCredentials";
 import { closeDb } from "../db";
@@ -37,6 +38,7 @@ beforeEach(() => {
 	primeCustomProviders();
 	primeProviderCredentials();
 	primeOverrideFromDb();
+	primeModelRolesFromDb();
 });
 
 afterEach(() => {
@@ -245,5 +247,69 @@ describe("custom providers", () => {
 		};
 		expect(body.customProviders).toEqual([]);
 		expect(body.modelsByProvider.ollama).toBeUndefined();
+	});
+});
+
+describe("model roles (issue #308)", () => {
+	const put = (role: string, body: unknown) =>
+		app.request(`/api/config/roles/${role}`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+
+	it("reports every role unset by default", async () => {
+		const body = (await (await app.request("/api/config")).json()) as {
+			roles: Record<string, unknown>;
+		};
+		expect(body.roles).toEqual({ cheap: null });
+	});
+
+	it("assigns the cheap role, reports it in GET, and clears it", async () => {
+		const res = await put("cheap", {
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+		expect(res.status).toBe(200);
+		expect(await res.json()).toEqual({
+			ok: true,
+			role: "cheap",
+			assignment: { provider: "deepseek", model: "deepseek-flash" },
+		});
+
+		const cfg = (await (await app.request("/api/config")).json()) as {
+			roles: Record<string, unknown>;
+			override: unknown;
+		};
+		expect(cfg.roles.cheap).toEqual({
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+		// A role is not the instance override.
+		expect(cfg.override).toBeNull();
+
+		const del = await app.request("/api/config/roles/cheap", {
+			method: "DELETE",
+		});
+		expect(await del.json()).toEqual({
+			ok: true,
+			role: "cheap",
+			assignment: null,
+		});
+	});
+
+	it("rejects an invalid pair with an actionable 400", async () => {
+		const res = await put("cheap", { provider: "deepseek", model: "gpt-9" });
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: { message: string } };
+		expect(body.error.message).toContain("not a known model");
+	});
+
+	it("rejects an unknown role name", async () => {
+		const res = await put("expensive", {
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+		expect(res.status).toBe(422);
 	});
 });

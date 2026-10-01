@@ -16,6 +16,7 @@ import {
 	type CustomProviderView,
 	type LlmConfig,
 } from "@/api/client";
+import { ModelRolesSection } from "@/components/ModelRolesSection";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -631,6 +632,8 @@ export function SettingsPage({ onBack }: Props) {
 								</Button>
 							</div>
 						</form>
+
+						<ModelRolesSection config={config} onConfigChange={setConfig} />
 
 						{/* Multi-provider: providers whose key dilna stores itself (see
 							providerCredentials.ts) rather than reads from an env var only. */}

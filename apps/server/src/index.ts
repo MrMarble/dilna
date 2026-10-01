@@ -6,6 +6,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { primeCustomProviders } from "./agents/customProviders";
+import { primeModelRolesFromDb } from "./agents/modelRoles";
 import { validateProviderConfig } from "./agents/providerConfig";
 import { getOverride, primeOverrideFromDb } from "./agents/providerConfigStore";
 import { primeProviderCredentials } from "./agents/providerCredentials";
@@ -46,6 +47,7 @@ import { maybePruneTruncatedOutputs } from "./sessions/truncated";
 // that cache has to exist before primeOverrideFromDb runs.
 primeCustomProviders();
 primeOverrideFromDb();
+primeModelRolesFromDb();
 primeProviderCredentials();
 // Web push (ADR-0029): load or generate the instance VAPID keypair before any
 // turn can complete, so /api/push/key can serve it immediately.

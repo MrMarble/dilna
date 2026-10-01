@@ -224,6 +224,25 @@ export type SetProviderOverrideBody = z.infer<
 	typeof setProviderOverrideBodySchema
 >;
 
+/**
+ * Model roles (issue #308, ADR-0053 §1): named Settings slots that each point
+ * at one validated provider/model pair, so the rest of the system can say
+ * "use the cheap model for this" without knowing what cheap is. v1 ships
+ * exactly one role.
+ */
+export const modelRoleSchema = z.enum(["cheap"]);
+export type ModelRole = z.infer<typeof modelRoleSchema>;
+export const MODEL_ROLES: readonly ModelRole[] = modelRoleSchema.options;
+
+/** `PUT /api/config/roles/:role` — same shape as the override write. */
+export const setModelRoleBodySchema = setProviderOverrideBodySchema;
+export type SetModelRoleBody = z.infer<typeof setModelRoleBodySchema>;
+
+/** The concrete pair a role points at. Shown in Settings only — never in
+ * any prompt, tool description or transcript a parent model reads
+ * (ADR-0053 §2). */
+export type ModelRoleAssignment = { provider: string; model: string };
+
 export const setCredentialBodySchema = z.object({
 	provider: z.string().min(1),
 	apiKey: z.string().min(1),
@@ -324,4 +343,7 @@ export type LlmConfig = {
 	/** User-defined providers, already folded into `modelsByProvider`/
 	 * `apiKeysConfigured`; this is for the management section only. */
 	customProviders: CustomProviderView[];
+	/** Each model role's assignment (issue #308), null when unset — an unset
+	 * role means every consumer falls back to the Session's own model. */
+	roles: Record<ModelRole, ModelRoleAssignment | null>;
 };
