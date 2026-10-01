@@ -8,6 +8,7 @@ import {
 	gte,
 	inArray,
 	isNotNull,
+	notInArray,
 	or,
 	sql,
 } from "drizzle-orm";
@@ -439,6 +440,30 @@ export function getBurnFindings(since: number): BurnFinding[] {
 		spendBySession.set(
 			row.sessionId,
 			(spendBySession.get(row.sessionId) ?? 0) + row.costUsd,
+		);
+	}
+
+	// Every other purpose (subagent runs, ADR-0053) is real spend of the
+	// Session that triggered it, so it counts toward "all purposes" above —
+	// only the total is needed, no per-row checks read these.
+	const otherSpend = db
+		.select({
+			sessionId: usageEventsTable.sessionId,
+			costUsd: sql<number>`sum(${usageEventsTable.costUsd})`,
+		})
+		.from(usageEventsTable)
+		.where(
+			and(
+				gte(usageEventsTable.createdAt, since),
+				notInArray(usageEventsTable.purpose, ["turn", "judge"]),
+			),
+		)
+		.groupBy(usageEventsTable.sessionId)
+		.all();
+	for (const row of otherSpend) {
+		spendBySession.set(
+			row.sessionId,
+			(spendBySession.get(row.sessionId) ?? 0) + (row.costUsd ?? 0),
 		);
 	}
 

@@ -115,17 +115,26 @@ describe("BurnTimeline", () => {
 				inputTokens: 500,
 				costUsd: 0.004,
 			}),
+			// Issue #307: a subagent run is a side call like a judge call — a
+			// marker, not a numbered turn.
+			makeTurn({
+				turn: null,
+				purpose: "subagent",
+				inputTokens: 300,
+				costUsd: 0.0004,
+			}),
 		];
 		await renderTimeline();
 
 		expect(await screen.findByText("2 turns")).toBeInTheDocument();
-		// Total cost sums judge spend too (0.02 + 0.01 + 0.004).
+		// Total cost sums side spend too (0.02 + 0.01 + 0.004 + 0.0004).
 		expect(screen.getByText("$0.03")).toBeInTheDocument();
 
 		expect(screen.getByText("#1")).toBeInTheDocument();
 		expect(screen.getByText("#2")).toBeInTheDocument();
 		expect(screen.getByText("compacted")).toBeInTheDocument();
 		expect(screen.getByText("Judge call")).toBeInTheDocument();
+		expect(screen.getByText("Subagent")).toBeInTheDocument();
 
 		// Provider-reported occupancy renders solid with its exact figure; the
 		// estimate-only fallback is labelled as such. When a turn carries both

@@ -37,9 +37,9 @@ export type TurnToolFacts = {
 	 * spent a round trip. Subagent (read-only `task` delegation, ADR-0034)
 	 * tool calls are deliberately NOT folded in here: the subagent runs on
 	 * its own throwaway `Agent` whose events never enter the parent turn's
-	 * normalizer, and its spend isn't in the parent's usage row either — the
-	 * parent's facts describe the parent turn, where the `task` call itself
-	 * counts like any other tool. */
+	 * normalizer, and its spend lands on its own `"subagent"` row (ADR-0053),
+	 * not the parent's — the parent's facts describe the parent turn, where
+	 * the `task` call itself counts like any other tool. */
 	tools: Record<string, number>;
 	/** Skill name (the `read_skill` argument) → count of successful loads
 	 * over the turn. A failed lookup (unknown name) is not a load — the
@@ -78,12 +78,14 @@ export type UsageSessionBreakdown = {
 
 /**
  * What a `usage_events` row paid for. `"turn"` is an ordinary Agent turn;
- * `"judge"` is an output-scoring call (ADR-0046) — real spend, so it counts
- * toward the totals, but kept apart here and out of the Session's own
- * `input_tokens`/`output_tokens` so a scored Session's numbers still
- * describe the work it did.
+ * `"judge"` is an output-scoring call (ADR-0046); `"subagent"` is one
+ * read-only `task` delegation (ADR-0034), on whatever model the child ran on
+ * (ADR-0053). Every non-turn purpose is real spend, so it counts toward the
+ * totals, but is kept apart here and out of the Session's own
+ * `input_tokens`/`output_tokens` so a Session's numbers still describe the
+ * work its own Agent did.
  */
-export type UsagePurpose = "turn" | "judge";
+export type UsagePurpose = "turn" | "judge" | "subagent";
 
 export type UsagePurposeBreakdown = {
 	purpose: UsagePurpose;
@@ -201,9 +203,9 @@ export type BurnFinding = {
  */
 export type SessionBurnTurn = {
 	/** 1-based ordinal among the Session's completed Agent turns, oldest
-	 * first. `null` for judge-call rows (`purpose: "judge"`), which aren't
-	 * turns — they render as markers in the timeline and don't consume a turn
-	 * number. */
+	 * first. `null` for every non-turn row (judge calls, subagent runs),
+	 * which aren't turns — they render as markers in the timeline and don't
+	 * consume a turn number. */
 	turn: number | null;
 	/** Epoch seconds the row was written — the turn's (or judge call's) end. */
 	at: number;

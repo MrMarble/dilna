@@ -10,7 +10,7 @@ import {
 	usageEvents as usageEventsTable,
 } from "../db/schema";
 import { logger } from "../logger";
-import { accumulateSessionUsage } from "./usageAccounting";
+import { accumulateSessionUsage, recordSubagentUsage } from "./usageAccounting";
 
 /**
  * The drift log's tripwire is asserted through the module-level `log` the
@@ -227,5 +227,62 @@ describe("accumulateSessionUsage", () => {
 			9000,
 		);
 		expect(warn).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("recordSubagentUsage (issue #307)", () => {
+	it("ledgers a subagent row keyed to the task call, outside the Session's own totals", () => {
+		seedSession("sess-sub");
+		recordSubagentUsage(
+			{ id: "sess-sub", repoId: "repo-1" },
+			{
+				toolCallId: "call-task-1",
+				provider: "cheap-provider",
+				model: "cheap-model",
+				usage: {
+					inputTokens: 1200,
+					outputTokens: 80,
+					cacheReadTokens: 400,
+					cacheWriteTokens: 0,
+					reasoningTokens: 5,
+					costUsd: 0.002,
+				},
+			},
+		);
+
+		const rows = getDb()
+			.select()
+			.from(usageEventsTable)
+			.where(eq(usageEventsTable.sessionId, "sess-sub"))
+			.all();
+		expect(rows).toEqual([
+			expect.objectContaining({
+				purpose: "subagent",
+				toolCallId: "call-task-1",
+				repoId: "repo-1",
+				provider: "cheap-provider",
+				model: "cheap-model",
+				inputTokens: 1200,
+				outputTokens: 80,
+				cacheReadTokens: 400,
+				reasoningTokens: 5,
+				costUsd: 0.002,
+				// Never a turn: no context stamps, no tool facts.
+				providerContextTokens: null,
+				toolFactsJson: null,
+			}),
+		]);
+
+		// Same treatment as judge spend: the Session's own counters describe
+		// its own Agent's work only.
+		const session = getDb()
+			.select({
+				inputTokens: sessionsTable.inputTokens,
+				outputTokens: sessionsTable.outputTokens,
+			})
+			.from(sessionsTable)
+			.where(eq(sessionsTable.id, "sess-sub"))
+			.get();
+		expect(session).toEqual({ inputTokens: 0, outputTokens: 0 });
 	});
 });

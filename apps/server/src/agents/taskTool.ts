@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { UsageTotals } from "@dilna/shared";
 import { Agent, type AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { streamSimple, Type } from "@earendil-works/pi-ai/compat";
@@ -88,6 +89,21 @@ export type RunningTask = {
 	toolUseId?: string;
 };
 
+/**
+ * What one subagent spent (issue #307, ADR-0053): the child's own
+ * provider/model and its usage summed over every assistant round it ran,
+ * keyed by the parent's `task` tool call. Handed to
+ * {@link TaskToolDeps.onUsage} so `SessionManager` can ledger it as a
+ * `"subagent"` `usage_events` row — the child's events never enter the
+ * parent turn's normalizer, so without this its spend is invisible.
+ */
+export type SubagentUsage = {
+	toolCallId: string;
+	provider: string;
+	model: string;
+	usage: UsageTotals;
+};
+
 export type TaskToolDeps = {
 	worktreePath: string;
 	sessionId: string;
@@ -102,6 +118,9 @@ export type TaskToolDeps = {
 	 * broadcast a fresh `turn_activity`. Level-based: receives the whole
 	 * current list, never a delta. */
 	onTasksChanged: (tasks: RunningTask[]) => void;
+	/** Called once per subagent run that spent anything — success, failure
+	 * and Stop alike, since a dying child's tokens were still billed. */
+	onUsage: (record: SubagentUsage) => void;
 };
 
 /**
@@ -156,6 +175,20 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 			running.set(taskId, entry);
 			publish();
 
+			// Summed from `message_end` rather than read off the final state, so
+			// a run that throws mid-way still reports the rounds it completed;
+			// pi's own failure path emits a zero-usage `message_end`, which adds
+			// nothing.
+			const spent: UsageTotals = {
+				inputTokens: 0,
+				outputTokens: 0,
+				cacheReadTokens: 0,
+				cacheWriteTokens: 0,
+				reasoningTokens: 0,
+				costUsd: 0,
+			};
+			const childModel = deps.model;
+
 			try {
 				// Read-only by *omission*: the child's array simply has no
 				// write/edit/bash/publish/memory tool, and no `task` of its own
@@ -165,7 +198,7 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 				const child = new Agent({
 					initialState: {
 						systemPrompt: SUBAGENT_SYSTEM_PROMPT,
-						model: deps.model,
+						model: childModel,
 						tools: [
 							createReadTool(deps.worktreePath),
 							createGrepTool(deps.worktreePath),
@@ -190,6 +223,13 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 				});
 
 				const unsubscribe = child.subscribe((event) => {
+					if (
+						event.type === "message_end" &&
+						event.message.role === "assistant"
+					) {
+						addUsage(spent, event.message.usage);
+						return;
+					}
 					if (event.type === "tool_execution_start") {
 						const current = running.get(taskId);
 						if (!current) return;
@@ -214,27 +254,45 @@ Best for: locating where something lives in an unfamiliar area, tracing how a pa
 				}
 
 				if (signal?.aborted) {
-					return textResult("The subagent was stopped before it finished.");
+					return textResult(
+						`The subagent was stopped before it finished.${usageFooter(childModel, spent)}`,
+					);
 				}
 
 				const text = finalAssistantText(child);
 				if (!text) {
 					return textResult(
-						"The subagent returned no output. Investigate directly instead.",
+						`The subagent returned no output. Investigate directly instead.${usageFooter(childModel, spent)}`,
 					);
 				}
-				return textResult(text);
+				return textResult(`${text}${usageFooter(childModel, spent)}`);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
 				log.warn({ err, taskId }, "subagent task failed");
 				// Not rethrown: a failed investigation is something the parent can
 				// route around (do it itself), not a reason to fail the whole turn.
 				return textResult(
-					`The subagent failed: ${message}. Investigate directly instead.`,
+					`The subagent failed: ${message}. Investigate directly instead.${usageFooter(childModel, spent)}`,
 				);
 			} finally {
 				running.delete(taskId);
 				publish();
+				// In `finally` so an error or a Stop still ledgers what the child
+				// spent before dying (ADR-0053: subagent spend is real spend).
+				if (hasSpend(spent)) {
+					try {
+						deps.onUsage({
+							toolCallId,
+							provider: childModel.provider,
+							model: childModel.id,
+							usage: spent,
+						});
+					} catch (err) {
+						// Accounting is best-effort: a ledger write failing must not
+						// turn a finished investigation into a failed tool call.
+						log.warn({ err, taskId }, "failed to record subagent usage");
+					}
+				}
 			}
 		},
 	};
@@ -265,6 +323,56 @@ function textResult(text: string) {
 		content: [{ type: "text" as const, text }],
 		details: {},
 	};
+}
+
+/** Fold one assistant round's pi `Usage` into the running total. */
+function addUsage(
+	total: UsageTotals,
+	usage:
+		| {
+				input: number;
+				output: number;
+				cacheRead: number;
+				cacheWrite: number;
+				reasoning?: number;
+				cost: { total: number };
+		  }
+		| undefined,
+): void {
+	if (!usage) return;
+	total.inputTokens += usage.input;
+	total.outputTokens += usage.output;
+	total.cacheReadTokens = (total.cacheReadTokens ?? 0) + usage.cacheRead;
+	total.cacheWriteTokens = (total.cacheWriteTokens ?? 0) + usage.cacheWrite;
+	total.reasoningTokens = (total.reasoningTokens ?? 0) + (usage.reasoning ?? 0);
+	total.costUsd = (total.costUsd ?? 0) + usage.cost.total;
+}
+
+function hasSpend(spent: UsageTotals): boolean {
+	return (
+		spent.inputTokens +
+			spent.outputTokens +
+			(spent.cacheReadTokens ?? 0) +
+			(spent.cacheWriteTokens ?? 0) >
+		0
+	);
+}
+
+/**
+ * The cost line appended to every result the parent reads (issue #307):
+ * cost visibility at the delegation decision point, not only in Metrics.
+ * Names the model the child actually ran on — a *result*, not a tool
+ * description, so it reports what happened rather than advertising a
+ * choice (ADR-0053). Empty when nothing was spent.
+ */
+function usageFooter(model: Model<Api>, spent: UsageTotals): string {
+	if (!hasSpend(spent)) return "";
+	const prompt =
+		spent.inputTokens +
+		(spent.cacheReadTokens ?? 0) +
+		(spent.cacheWriteTokens ?? 0);
+	const cost = spent.costUsd ?? 0;
+	return `\n\n[subagent usage: ${model.provider}/${model.id} · ${prompt.toLocaleString("en-US")} input + ${spent.outputTokens.toLocaleString("en-US")} output tokens · $${cost.toFixed(4)}]`;
 }
 
 /**

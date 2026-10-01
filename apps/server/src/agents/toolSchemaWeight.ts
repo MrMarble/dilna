@@ -104,6 +104,7 @@ function buildBuiltInTools(): Record<
 		model: {} as unknown as Model<Api>,
 		getApiKey: async () => undefined,
 		onTasksChanged: () => {},
+		onUsage: () => {},
 	});
 
 	const tools = [

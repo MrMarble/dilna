@@ -428,9 +428,16 @@ export const usageEvents = sqliteTable("usage_events", {
 	reasoningTokens: integer("reasoning_tokens").notNull().default(0),
 	costUsd: real("cost_usd").notNull().default(0),
 	/** `packages/shared`'s `UsagePurpose`: `"turn"` for an Agent turn,
-	 * `"judge"` for an output-scoring call (ADR-0046). Existing rows are all
-	 * turns, hence the default. */
+	 * `"judge"` for an output-scoring call (ADR-0046), `"subagent"` for one
+	 * `task` delegation (ADR-0053). Existing rows are all turns, hence the
+	 * default. */
 	purpose: text("purpose").notNull().default("turn"),
+	/** The parent's tool call that spent this row's tokens — for a
+	 * `"subagent"` row, the `task` call's id (issue #307), so a delegation's
+	 * cost is attributable to the exact call in the transcript, not merely
+	 * to the Session. Null for turn and judge rows, which no tool call
+	 * spawned. */
+	toolCallId: text("tool_call_id"),
 	/** Context occupancy the provider itself reported for this turn —
 	 * `input + output + cacheRead + cacheWrite` of the turn's final assistant
 	 * round (pi-agent-core's `calculateContextTokens`), stamped by the pi

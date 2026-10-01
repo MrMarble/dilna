@@ -8,6 +8,7 @@ import type {
 	UsageDailyModelBreakdown,
 	UsageDailyPoint,
 	UsageModelBreakdown,
+	UsagePurpose,
 	UsageSessionBreakdown,
 	UsageSummary,
 	UsageToolBreakdown,
@@ -198,23 +199,33 @@ function StatCard({
 	);
 }
 
+/** What the Total cost card calls each non-turn purpose. Exhaustive so a new
+ * `UsagePurpose` has to be named here before it type-checks. */
+const PURPOSE_LABELS: Record<Exclude<UsagePurpose, "turn">, string> = {
+	judge: "scoring",
+	subagent: "subagents",
+};
+
 function SummaryCards({ summary }: { summary: UsageSummary }) {
 	const { totals } = summary;
 	const totalTokens = totals.inputTokens + totals.outputTokens;
 	const cacheTokens = totals.cacheReadTokens + totals.cacheWriteTokens;
-	// Judge calls (ADR-0046) are real spend and already in the totals; the
-	// card just says how much of it went on scoring rather than on turns.
-	const judge = summary.byPurpose.find((p) => p.purpose === "judge");
+	// Side spend — judge calls (ADR-0046), subagent runs (ADR-0053) — is real
+	// spend and already in the totals; the card just says how much of it went
+	// somewhere other than the Sessions' own turns.
+	const side = summary.byPurpose
+		.filter((p) => p.purpose !== "turn" && p.costUsd > 0)
+		.sort((a, b) => b.costUsd - a.costUsd)
+		.map(
+			(p) =>
+				`${formatUsd(p.costUsd)} on ${PURPOSE_LABELS[p.purpose as Exclude<UsagePurpose, "turn">]}`,
+		);
 	return (
 		<div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
 			<StatCard
 				label="Total cost"
 				value={formatUsd(totals.costUsd)}
-				sub={
-					judge && judge.costUsd > 0
-						? `incl. ${formatUsd(judge.costUsd)} on scoring`
-						: undefined
-				}
+				sub={side.length > 0 ? `incl. ${side.join(" · ")}` : undefined}
 			/>
 			<StatCard
 				label="Tokens"

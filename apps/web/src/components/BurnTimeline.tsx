@@ -1,6 +1,6 @@
-import type { SessionBurnTurn } from "@dilna/shared";
+import type { SessionBurnTurn, UsagePurpose } from "@dilna/shared";
 import { formatUsd } from "@dilna/shared";
-import { ChevronsDownUp, Gavel } from "lucide-react";
+import { ChevronsDownUp, Gavel, type LucideIcon, Split } from "lucide-react";
 import { useSessionBurnTimeline } from "@/hooks/useSessionBurnTimeline";
 import { contextUsageBarColor } from "@/lib/context-usage";
 import { formatTokenCount } from "@/lib/tokens";
@@ -62,9 +62,9 @@ export function BurnTimeline({ sessionId }: { sessionId: string }) {
 			</ul>
 			<ul className="flex flex-col">
 				{turns.map((t, i) =>
-					t.purpose === "judge" ? (
-						// biome-ignore lint/suspicious/noArrayIndexKey: rows carry no ids and the list is rebuilt wholesale per fetch (never reordered in place), so the position suffix is stable where the timestamp alone could collide (two judge calls in one second).
-						<JudgeRow key={`judge-${t.at}-${i}`} turn={t} />
+					t.purpose !== "turn" ? (
+						// biome-ignore lint/suspicious/noArrayIndexKey: rows carry no ids and the list is rebuilt wholesale per fetch (never reordered in place), so the position suffix is stable where the timestamp alone could collide (two side calls in one second).
+						<SideCallRow key={`${t.purpose}-${t.at}-${i}`} turn={t} />
 					) : (
 						<TurnRow
 							key={t.turn ?? `unnumbered-${t.at}`}
@@ -240,18 +240,39 @@ function OccupancyStrip({ turn }: { turn: SessionBurnTurn }) {
 	);
 }
 
+/** How each non-turn row reads in the timeline. Exhaustive over
+ * `UsagePurpose` so a new purpose can't silently render as a turn. */
+const SIDE_CALLS: Record<
+	Exclude<UsagePurpose, "turn">,
+	{ label: string; title: string; icon: LucideIcon }
+> = {
+	judge: {
+		label: "Judge call",
+		title: "Judge call (output scoring, ADR-0046)",
+		icon: Gavel,
+	},
+	subagent: {
+		label: "Subagent",
+		title: "Subagent run (read-only `task` delegation, ADR-0053)",
+		icon: Split,
+	},
+};
+
 /**
- * A judge call (ADR-0046) between the turns it belongs between — real spend,
- * so it's in the timeline, but not a turn: no bar, no ordinal.
+ * A side call — a judge call (ADR-0046) or a subagent run (ADR-0053) —
+ * between the turns it belongs between: real spend, so it's in the timeline,
+ * but not a turn: no bar, no ordinal.
  */
-function JudgeRow({ turn }: { turn: SessionBurnTurn }) {
+function SideCallRow({ turn }: { turn: SessionBurnTurn }) {
+	if (turn.purpose === "turn") return null;
+	const { label, title, icon: Icon } = SIDE_CALLS[turn.purpose];
 	return (
 		<li
 			className="flex items-center gap-1.5 py-0.5 pl-1 text-xs text-muted-foreground"
-			title={`Judge call (output scoring, ADR-0046) — ${formatRowDate(turn.at)}`}
+			title={`${title} — ${formatRowDate(turn.at)}`}
 		>
-			<Gavel className="size-3 shrink-0" aria-hidden />
-			<span>Judge call</span>
+			<Icon className="size-3 shrink-0" aria-hidden />
+			<span>{label}</span>
 			<span className="ml-auto shrink-0 font-mono tabular-nums">
 				{formatUsd(turn.costUsd)}
 			</span>

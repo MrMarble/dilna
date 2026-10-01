@@ -74,7 +74,11 @@ import {
 	ORCHESTRATOR_SYSTEM_PROMPT,
 	type OrchestratorDeps,
 } from "./orchestratorTools";
-import { createTaskTool, type RunningTask } from "./taskTool";
+import {
+	createTaskTool,
+	type RunningTask,
+	type SubagentUsage,
+} from "./taskTool";
 import {
 	ensureWritablePathsExist,
 	resolveSandboxGrant,
@@ -151,6 +155,12 @@ export type PiStartOptions = {
 	 * a Session started without it still gets the `task` tool, just with no
 	 * live activity surfaced. */
 	onTasksChanged?: (tasks: RunningTask[]) => void;
+	/** Called with each `task` subagent's spend once it finishes, fails or is
+	 * stopped (issue #307, ADR-0053), so `SessionManager` can ledger it as
+	 * its own `"subagent"` usage row. Optional: without it the spend is
+	 * still reported to the parent model in the tool result, just never
+	 * persisted. */
+	onSubagentUsage?: (record: SubagentUsage) => void;
 };
 
 /**
@@ -594,6 +604,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		model,
 		getApiKey: (p) => resolveApiKey(p),
 		onTasksChanged: opts.onTasksChanged ?? (() => {}),
+		onUsage: opts.onSubagentUsage ?? (() => {}),
 	});
 	tools.push(task.tool);
 
@@ -894,7 +905,8 @@ export type NormalizeState = {
 	 * the skill's body into context. Subagent tool calls are deliberately
 	 * absent: the read-only `task` delegation (ADR-0034) runs on its own
 	 * throwaway `Agent` whose events never reach this normalizer, and the
-	 * subagent's spend isn't in the parent turn's usage row either — the
+	 * subagent's spend lands on its own `"subagent"` usage row (ADR-0053),
+	 * not the parent turn's — the
 	 * parent's facts describe the parent turn, where the `task` call itself
 	 * counts like any other tool. Reset on `agent_end`.
 	 */

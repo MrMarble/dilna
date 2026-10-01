@@ -1,6 +1,7 @@
 import type { AgentStreamEvent, TurnToolFacts } from "@dilna/shared";
 import { eq, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import type { SubagentUsage } from "../agents/taskTool";
 import { getDb } from "../db";
 import {
 	sessions as sessionsTable,
@@ -155,4 +156,37 @@ export function accumulateSessionUsage(
 			outputTokens: row.outputTokens,
 		},
 	};
+}
+
+/**
+ * Ledger one `task` subagent's spend (issue #307, ADR-0053) as its own
+ * `"subagent"` `usage_events` row: the child's actual provider/model, keyed
+ * to the spawning Session and `task` call. Deliberately *not* folded into
+ * the `sessions` row's input/output totals — same treatment as judge spend
+ * (ADR-0046), so the Session's numbers still describe its own Agent's work —
+ * while every Metrics aggregate counts it, because it was billed.
+ */
+export function recordSubagentUsage(
+	session: { id: string; repoId: string },
+	record: SubagentUsage,
+): void {
+	const { usage } = record;
+	getDb()
+		.insert(usageEventsTable)
+		.values({
+			id: nanoid(),
+			sessionId: session.id,
+			repoId: session.repoId,
+			provider: record.provider || "unknown",
+			model: record.model || "unknown",
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens ?? 0,
+			cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+			reasoningTokens: usage.reasoningTokens ?? 0,
+			costUsd: usage.costUsd ?? 0,
+			purpose: "subagent",
+			toolCallId: record.toolCallId,
+		})
+		.run();
 }
