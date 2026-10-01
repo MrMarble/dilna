@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.41.0](https://github.com/MrMarble/dilna/compare/v0.40.0...v0.41.0) (2026-10-01)
+
+
+### Features
+
+* **config:** model roles in Settings — the `cheap` role ([#313](https://github.com/MrMarble/dilna/issues/313)) ([7715b3a](https://github.com/MrMarble/dilna/commit/7715b3a074220a5c37786c19eb1b5d8313088359)), closes [#308](https://github.com/MrMarble/dilna/issues/308)
+* **orchestrator:** pin a spawned Session's model by role or pair ([#314](https://github.com/MrMarble/dilna/issues/314)) ([cc662d3](https://github.com/MrMarble/dilna/commit/cc662d3b5520604e41e32865dee621d4e7eb4667)), closes [#309](https://github.com/MrMarble/dilna/issues/309)
+* **task:** let the parent de-escalate/escalate a subagent's model per call ([#315](https://github.com/MrMarble/dilna/issues/315)) ([b5185c2](https://github.com/MrMarble/dilna/commit/b5185c2cac66ce754f07f84455f0f24c3de3c741)), closes [#310](https://github.com/MrMarble/dilna/issues/310)
+* **usage:** ledger task subagent spend as its own purpose (+ ADR-0053) ([#312](https://github.com/MrMarble/dilna/issues/312)) ([cbf6711](https://github.com/MrMarble/dilna/commit/cbf6711a63eb93b78e5649774fa90f59403b5a46)), closes [#307](https://github.com/MrMarble/dilna/issues/307)
+* **usage:** route title, compaction and the judge to the `cheap` role ([#317](https://github.com/MrMarble/dilna/issues/317)) ([5830c3c](https://github.com/MrMarble/dilna/commit/5830c3ce3e0b9928de93e3570ee69743bda62f23)), closes [#311](https://github.com/MrMarble/dilna/issues/311)
+
+
+### Bug Fixes
+
+* **sessions:** seed the turn ledger from the live transcript, not the pre-spawn array ([#306](https://github.com/MrMarble/dilna/issues/306)) ([dcd8aef](https://github.com/MrMarble/dilna/commit/dcd8aef42d8e018e7115b388414273008a31cd18))
+
 ## [0.40.0](https://github.com/MrMarble/dilna/compare/v0.39.0...v0.40.0) (2026-09-30)
 
 
