@@ -602,6 +602,7 @@ export async function startPi(opts: PiStartOptions): Promise<PiHandle> {
 		sessionId: opts.sessionId,
 		extraReadablePaths: [attachmentDir(opts.sessionId)],
 		model,
+		lookupModel,
 		getApiKey: (p) => resolveApiKey(p),
 		onTasksChanged: opts.onTasksChanged ?? (() => {}),
 		onUsage: opts.onSubagentUsage ?? (() => {}),
