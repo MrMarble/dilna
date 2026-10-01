@@ -95,7 +95,7 @@ import {
 import { storeTruncatedOutput } from "./truncated";
 import { TurnLedger } from "./turnLedger";
 import { type Turn, TurnRegistry } from "./turnRegistry";
-import { accumulateSessionUsage } from "./usageAccounting";
+import { accumulateSessionUsage, recordSubagentUsage } from "./usageAccounting";
 import {
 	createWorktree,
 	initCodegraph,
@@ -2151,6 +2151,11 @@ export class SessionManager {
 								tasks,
 								serverTime: Date.now(),
 							});
+						},
+						// Issue #307/ADR-0053: each subagent's spend is its own
+						// `"subagent"` ledger row, outside the Session's own totals.
+						onSubagentUsage: (record) => {
+							recordSubagentUsage({ id, repoId: session.repoId }, record);
 						},
 						// Issue #222/ADR-0038: an image reaches the user two ways, and
 						// needs both. The broadcast folds it into the in-flight

@@ -377,6 +377,42 @@ describe("getUsageSummary", () => {
 		);
 	});
 
+	it("counts subagent spend in totals, by-model and daily, and splits it out by purpose (issue #307)", () => {
+		const now = Math.floor(Date.now() / 1000);
+		const before = getUsageSummary(0);
+		seedRow({
+			id: "subagent-1",
+			repoId: "repo-a",
+			createdAt: now,
+			costUsd: 0.25,
+			purpose: "subagent",
+			provider: "deepseek",
+			model: "deepseek-chat",
+		});
+		const summary = getUsageSummary(0);
+		expect(summary.totals.costUsd).toBeCloseTo(before.totals.costUsd + 0.25, 6);
+		expect(summary.byPurpose).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ purpose: "subagent", costUsd: 0.25 }),
+			]),
+		);
+		// Attributed to the model the child actually ran on.
+		expect(summary.byModel).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					provider: "deepseek",
+					model: "deepseek-chat",
+					costUsd: 0.25,
+				}),
+			]),
+		);
+		expect(summary.dailyByModel).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ model: "deepseek-chat", costUsd: 0.25 }),
+			]),
+		);
+	});
+
 	it("excludes judge rows from tool usage — scoring never counts as the Session's own tool work (issue #292)", () => {
 		// Kept after the purpose-split test above: the db is file-cumulative,
 		// and this file's other tests already own the cost arithmetic. Seeding

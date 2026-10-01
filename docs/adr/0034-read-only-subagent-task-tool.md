@@ -184,3 +184,12 @@ prevents a recurrence.
   and its result — by design, and the #78 regression guard.
 - A subagent cannot report partial progress: it returns once, at completion.
   The activity line shows that it is running; the answer arrives whole.
+
+## Addendum: explicit per-call model choice and cost attribution (ADR-0053)
+
+The "inherited model" rule above is amended by ADR-0053 §4: the child may
+run on another model when — and only when — the parent explicitly asks for
+one on that `task` call (a configured role or a validated pair). Omitting
+the choice keeps today's behavior. Each child's spend is also ledgered as
+its own `"subagent"` usage row on the model it actually ran on, and the tool
+result reports what it cost (ADR-0053 §3).

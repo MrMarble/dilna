@@ -358,6 +358,31 @@ describe("MetricsPage", () => {
 		expect(under.className).toContain("text-danger");
 	});
 
+	it("names side spend — subagents and scoring — on the Total cost card, biggest first (issue #307)", async () => {
+		nextSummary = {
+			totals: { ...ZERO_TOTALS, inputTokens: 100, costUsd: 1 },
+			daily: [
+				{ date: "2026-08-27", ...ZERO_TOTALS, inputTokens: 100, costUsd: 1 },
+			],
+			dailyByModel: [],
+			byRepo: [],
+			byModel: [],
+			topSessions: [],
+			byPurpose: [
+				{ purpose: "turn", ...ZERO_TOTALS, costUsd: 0.7 },
+				{ purpose: "judge", ...ZERO_TOTALS, costUsd: 0.05 },
+				{ purpose: "subagent", ...ZERO_TOTALS, costUsd: 0.25 },
+			],
+			burnFindings: [],
+			toolUsage: [],
+			contextDrift: [],
+		};
+		render(<MetricsPage repos={[]} onBack={() => {}} />);
+		expect(
+			await screen.findByText("incl. $0.25 on subagents · $0.05 on scoring"),
+		).toBeInTheDocument();
+	});
+
 	it("hides the drift section while every estimator is honest (issue #270)", async () => {
 		nextSummary = {
 			totals: {
