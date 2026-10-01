@@ -154,11 +154,25 @@ describe("createOrchestratorTools", () => {
 			"call-1",
 			{ repoId: "repo-1", prompt: "implement issue #79" },
 		);
+		// No `model` → no pin: the instance default, exactly as before #309.
 		expect(deps.createChildSession).toHaveBeenCalledWith(
 			"repo-1",
 			"implement issue #79",
+			undefined,
 		);
 		expect(JSON.parse(textOf(result))).toMatchObject({ id: "sess-new" });
+	});
+
+	// Issue #309 / ADR-0053 §2: the parent model picks by intent, so the
+	// description offers role names and never a concrete model id.
+	it("dilna_create_session's guidance names roles, not model ids", () => {
+		const tool = toolByName(
+			createOrchestratorTools(makeDeps()),
+			"dilna_create_session",
+		);
+		const text = `${tool.description}\n${JSON.stringify(tool.parameters)}`;
+		expect(text).toContain('"cheap"');
+		expect(text).not.toMatch(/claude-|deepseek|gpt-|glm-|kimi/i);
 	});
 
 	it("caps dilna_create_session at ORCHESTRATOR_MAX_SESSIONS_PER_TURN calls", async () => {

@@ -400,12 +400,16 @@ export class SessionManager {
 					: null;
 				return { ...view, lastMessagePreview };
 			},
-			createChildSession: async (repoId, prompt) => {
+			createChildSession: async (repoId, prompt, pin) => {
+				// A pin is validated by `create` exactly like a user-pinned
+				// Session (issue #250), before any worktree exists — an invalid
+				// one throws `InvalidModelError` and leaves nothing behind.
 				const view = await this.create(
 					repoId,
 					"pi",
 					"session",
 					orchestratorSessionId,
+					pin ?? {},
 				);
 				this.beginTurn(view.id, prompt);
 				const turnPromise = this.runTurn(view.id, prompt);
