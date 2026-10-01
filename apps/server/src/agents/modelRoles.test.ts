@@ -9,6 +9,7 @@ import {
 	getModelRole,
 	listModelRoles,
 	primeModelRolesFromDb,
+	resolveModelChoice,
 	resolveModelRole,
 	setModelRole,
 } from "./modelRoles";
@@ -142,5 +143,44 @@ describe("model roles (issue #308)", () => {
 		expect(effectiveModel()).toBe("claude-opus-4-5");
 		primeOverrideFromDb();
 		expect(getOverride()).toBeNull();
+	});
+});
+
+describe("resolveModelChoice (issues #309/#310)", () => {
+	it("resolves a configured role name to its current pair", async () => {
+		await setModelRole("cheap", "deepseek", "deepseek-flash");
+		expect(await resolveModelChoice(" cheap ")).toEqual({
+			status: "resolved",
+			provider: "deepseek",
+			model: "deepseek-flash",
+			role: "cheap",
+		});
+	});
+
+	it("reports an unset role so the caller can fall back", async () => {
+		expect(await resolveModelChoice("cheap")).toEqual({
+			status: "unset-role",
+			role: "cheap",
+		});
+	});
+
+	it("accepts a concrete pair, splitting on the first slash", async () => {
+		expect(await resolveModelChoice("anthropic/claude-opus-4-5")).toEqual({
+			status: "resolved",
+			provider: "anthropic",
+			model: "claude-opus-4-5",
+			role: null,
+		});
+	});
+
+	it("rejects unknown roles and invalid pairs with actionable messages", async () => {
+		expect(await resolveModelChoice("expensive")).toEqual({
+			status: "invalid",
+			error: expect.stringMatching(/not a model role.*Known roles: cheap/),
+		});
+		expect(await resolveModelChoice("deepseek/gpt-9")).toEqual({
+			status: "invalid",
+			error: expect.stringMatching(/not a known model.*model role/),
+		});
 	});
 });

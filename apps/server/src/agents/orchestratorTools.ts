@@ -1,10 +1,11 @@
-import type { Repo, SessionView } from "@dilna/shared";
+import { MODEL_ROLES, type Repo, type SessionView } from "@dilna/shared";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@earendil-works/pi-ai/compat";
 import type {
 	ArchivedSession,
 	ArchivedSessionSummary,
 } from "../sessions/archive";
+import { resolveModelChoice } from "./modelRoles";
 
 /**
  * The narrow dependency surface an orchestrator Session's tools call back
@@ -30,8 +31,15 @@ export type OrchestratorDeps = {
 	) => Promise<(SessionView & { lastMessagePreview: string | null }) | null>;
 	/** Creates an ordinary Session on `repoId` and fires `prompt` as its first
 	 * turn, fire-and-forget (mirrors `POST /:id/messages`'s 202 shape) —
-	 * resolves once the Session row exists, not once the turn completes. */
-	createChildSession: (repoId: string, prompt: string) => Promise<SessionView>;
+	 * resolves once the Session row exists, not once the turn completes.
+	 * `pin`, when given, is the concrete provider/model the tool already
+	 * resolved from its `model` argument (issue #309); it goes through the
+	 * same validation as a user-pinned Session, before any worktree exists. */
+	createChildSession: (
+		repoId: string,
+		prompt: string,
+		pin?: { provider: string; model: string },
+	) => Promise<SessionView>;
 	usageTotalsByRepo: () => Promise<
 		{ repoId: string; inputTokens: number; outputTokens: number }[]
 	>;
@@ -56,7 +64,7 @@ export const ORCHESTRATOR_SYSTEM_PROMPT = `You are dilna's orchestrator: a globa
 Your job is to fan work out into ordinary dilna Sessions — each Session is an independent AI coding agent working against its own git worktree/branch on one repo. Typical requests look like "work on issues 79, 80, 81 in repo dilna, one session each" or "how much have we spent on repo X this week".
 
 - Use \`dilna_list_repos\` to see what repos exist and resolve a repo name/slug the user mentioned to its id.
-- Use \`dilna_create_session\` to spawn one Session per unit of work, each with a purpose-built prompt (e.g. "Read and implement GitHub issue #79 in this repo, then open a PR" — a spawned Session has its own bash/gh access to fetch the issue itself, you don't need to fetch it for it). Spawn immediately once you've decided what to create — do not ask for confirmation first, matching how every other tool call in dilna already runs autonomously. You are capped at ${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} \`dilna_create_session\` calls per turn.
+- Use \`dilna_create_session\` to spawn one Session per unit of work, each with a purpose-built prompt (e.g. "Read and implement GitHub issue #79 in this repo, then open a PR" — a spawned Session has its own bash/gh access to fetch the issue itself, you don't need to fetch it for it). Spawn immediately once you've decided what to create — do not ask for confirmation first, matching how every other tool call in dilna already runs autonomously. You are capped at ${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} \`dilna_create_session\` calls per turn. When a unit of work is mechanical and fully specified, pass \`model: "cheap"\` so it runs on the instance's cheap model; leave \`model\` out for work that needs judgment.
 - Use \`dilna_list_sessions\`/\`dilna_get_session\`/\`dilna_usage_totals\` to answer questions about existing Sessions' status, activity, or token usage. You are not notified when a spawned Session finishes — check back with these tools if asked to follow up. \`dilna_list_sessions\`'s \`spawnedByMe: true\` filter scopes to only Sessions you yourself created — use it for "what did you create"/"how did those turn out" questions, including in a fresh conversation with no memory of the ids.
 - A Session that no longer shows up in \`dilna_list_sessions\` may have been deleted — deleted Sessions are archived with a summary, not erased. Use \`dilna_list_archived_sessions\`/\`dilna_get_archived_session\` to answer questions about past work that's no longer a live Session (e.g. "what did we do about the auth bug a few weeks ago").
 - Sessions you create show up in the normal UI like any other Session; nothing about them is hidden from the user.`;
@@ -83,6 +91,14 @@ const getArchivedSessionSchema = Type.Object({
 const createSessionSchema = Type.Object({
 	repoId: Type.String(),
 	prompt: Type.String(),
+	// Role names only, never concrete model ids (ADR-0053 §2): the role
+	// resolves when the call executes, so a stale argument in the transcript
+	// can't pin a model the user has since re-pointed the role away from.
+	model: Type.Optional(
+		Type.String({
+			description: `Optional: which model the new Session runs on. Pass a model role — ${MODEL_ROLES.map((r) => `"${r}"`).join(", ")} — to pin it; omit to use the instance default. "cheap" is for mechanical, well-scoped work where good-enough beats perfect (a mechanical refactor, a dependency bump, applying a known fix across files). Omit it for work that needs judgment.`,
+		}),
+	),
 });
 
 function reposToToolPayload(repos: Repo[]) {
@@ -167,7 +183,7 @@ export function createOrchestratorTools(
 	const createSession: AgentTool<typeof createSessionSchema> = {
 		name: "dilna_create_session",
 		label: "Create session",
-		description: `Create a new Session on \`repoId\` and send \`prompt\` as its first message — the same as a user clicking "New session" and typing a message. Fires immediately, no confirmation needed. Returns the new Session's id/title right away; the Session keeps working in the background. Capped at ${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} calls per turn.`,
+		description: `Create a new Session on \`repoId\` and send \`prompt\` as its first message — the same as a user clicking "New session" and typing a message. Fires immediately, no confirmation needed. Returns the new Session's id/title right away; the Session keeps working in the background. Optionally pin the Session's model with \`model\` (a model role) — delegate mechanical, well-scoped work to "cheap" so the expensive model is spent only where it matters. Capped at ${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} calls per turn.`,
 		parameters: createSessionSchema,
 		execute: async (_toolCallId, params) => {
 			if (sessionsCreatedThisTurn >= ORCHESTRATOR_MAX_SESSIONS_PER_TURN) {
@@ -175,16 +191,39 @@ export function createOrchestratorTools(
 					`dilna_create_session cap reached (${ORCHESTRATOR_MAX_SESSIONS_PER_TURN} per turn) — report back to the user instead of creating more.`,
 				);
 			}
+			// Resolved here, at execution time (ADR-0053 §2), and before the
+			// cap is spent: a rejected choice creates nothing, so it shouldn't
+			// cost one of the turn's spawns either.
+			let pin: { provider: string; model: string } | undefined;
+			let note: string | undefined;
+			if (params.model?.trim()) {
+				const choice = await resolveModelChoice(params.model);
+				if (choice.status === "invalid") {
+					// Thrown, like the cap: pi turns it into an error tool result
+					// and the turn carries on.
+					throw new Error(`No Session created: ${choice.error}`);
+				}
+				if (choice.status === "resolved") {
+					pin = { provider: choice.provider, model: choice.model };
+				} else {
+					note = `The "${choice.role}" model role isn't configured, so this Session runs on the instance default model.`;
+				}
+			}
 			sessionsCreatedThisTurn++;
 			const session = await deps.createChildSession(
 				params.repoId,
 				params.prompt,
+				pin,
 			);
+			// Echoes the *argument*, never the concrete model behind a role —
+			// the Session's own UI label shows that to the user.
 			return jsonResult({
 				id: session.id,
 				title: session.title,
 				repoId: session.repoId,
 				status: session.status,
+				...(pin ? { model: params.model?.trim() } : {}),
+				...(note ? { note } : {}),
 			});
 		},
 	};

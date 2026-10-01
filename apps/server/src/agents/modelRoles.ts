@@ -150,3 +150,65 @@ export async function resolveModelRole(
 	}
 	return { status: "resolved", provider, model };
 }
+
+export type ModelChoiceResolution =
+	| {
+			status: "resolved";
+			provider: string;
+			model: string;
+			/** The role the choice named, or null for a concrete pair. */
+			role: ModelRole | null;
+	  }
+	/** A known role that isn't configured: the caller runs on its own
+	 * default, exactly as if no choice had been made (ADR-0053 §1). */
+	| { status: "unset-role"; role: ModelRole }
+	| { status: "invalid"; error: string };
+
+/**
+ * Resolve a model choice a *parent model* wrote into a tool call
+ * (`dilna_create_session`'s and `task`'s `model` argument, issues
+ * #309/#310): either a role name (`"cheap"`, preferred) or a concrete
+ * `"provider/model"` pair. Split on the first `/` — role names never contain
+ * one, provider ids never contain one, model ids may.
+ *
+ * Execution-time by construction (ADR-0053 §2): a role name in an old call
+ * still means whatever the role points at *now*, so a stale argument in the
+ * transcript can never pin an outdated model. A concrete pair is validated
+ * exactly like a user-pinned Session. Every rejection carries a message the
+ * parent model can act on in the same turn.
+ */
+export async function resolveModelChoice(
+	raw: string,
+): Promise<ModelChoiceResolution> {
+	const choice = raw.trim();
+	const slash = choice.indexOf("/");
+	if (slash === -1) {
+		if (!isModelRole(choice)) {
+			return {
+				status: "invalid",
+				error: `"${choice}" is not a model role. Known roles: ${MODEL_ROLES.join(", ")}. Omit the model to use the default.`,
+			};
+		}
+		const resolution = await resolveModelRole(choice);
+		if (resolution.status === "unset") {
+			return { status: "unset-role", role: choice };
+		}
+		if (resolution.status === "invalid") return resolution;
+		return {
+			status: "resolved",
+			provider: resolution.provider,
+			model: resolution.model,
+			role: choice,
+		};
+	}
+	const provider = choice.slice(0, slash).trim();
+	const model = choice.slice(slash + 1).trim();
+	const valid = await validateModelChoice(provider, model);
+	if (!valid.ok) {
+		return {
+			status: "invalid",
+			error: `${valid.error} Prefer a model role (${MODEL_ROLES.join(", ")}), or omit the model to use the default.`,
+		};
+	}
+	return { status: "resolved", provider, model, role: null };
+}
