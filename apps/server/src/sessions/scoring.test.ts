@@ -18,6 +18,14 @@ vi.mock("../agents/pi", () => ({
 	resolveSummarizationModel: (provider: string, id: string) =>
 		provider === "gone" ? undefined : { provider, id },
 }));
+/** Issue #311: the `cheap` role the judge defaults to — unset unless a
+ * test says otherwise. */
+const resolveUtilityModel = vi.fn(
+	async (): Promise<{ provider: string; model: string } | null> => null,
+);
+vi.mock("../agents/modelRoles", () => ({
+	resolveUtilityModel: () => resolveUtilityModel(),
+}));
 vi.mock("../agents/providerConfigStore", () => ({
 	effectiveProvider: () => "anthropic",
 	effectiveModel: () => "claude-default",
@@ -296,6 +304,51 @@ describe("scoreTurn", () => {
 		const rows = judgeUsageRows();
 		expect(rows).toHaveLength(before + 1);
 		expect(rows.at(-1)).toMatchObject({ provider: "openai", model: "gpt-x" });
+	});
+
+	it("judges on the cheap role when configured, and an explicit judge still wins (issue #311)", async () => {
+		resolveUtilityModel.mockResolvedValue({
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+		try {
+			const criteriaReplies = () =>
+				judgeComplete
+					.mockResolvedValueOnce({ text: '{"steps": ["s"]}', usage })
+					.mockResolvedValueOnce({
+						text: '{"scores": [9], "reason": "ok"}',
+						usage,
+					});
+			criteriaReplies();
+			const cheap = await scoreTurn({
+				session,
+				history,
+				turnId: "t1",
+				metric: "criteria",
+				criteria: "be thorough",
+			});
+			expect(cheap).toMatchObject({
+				provider: "deepseek",
+				model: "deepseek-flash",
+			});
+			expect(judgeUsageRows().at(-1)).toMatchObject({
+				provider: "deepseek",
+				model: "deepseek-flash",
+			});
+
+			criteriaReplies();
+			const explicit = await scoreTurn({
+				session,
+				history,
+				turnId: "t1",
+				metric: "criteria",
+				criteria: "be thorough",
+				judgeOverride: { provider: "openai", model: "gpt-x" },
+			});
+			expect(explicit).toMatchObject({ provider: "openai", model: "gpt-x" });
+		} finally {
+			resolveUtilityModel.mockResolvedValue(null);
+		}
 	});
 
 	it("rejects an unknown turn, an uncatalogued judge and a keyless provider", async () => {

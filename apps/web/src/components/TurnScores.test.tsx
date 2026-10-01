@@ -58,7 +58,7 @@ async function openDialog() {
 	await userEvent.click(
 		screen.getByRole("button", { name: "Score this turn" }),
 	);
-	await screen.findByRole("option", { name: "openai / GPT X" });
+	await screen.findByRole("option", { name: /^openai \/ GPT X/ });
 	return onScored;
 }
 
@@ -108,6 +108,67 @@ describe("ScoreTurnButton", () => {
 				provider: "openai",
 				model: "gpt-x",
 			}),
+		);
+	});
+
+	// Issue #311: with the cheap role configured the server judges on it
+	// when no override is sent, so the select shows it as the default and
+	// picking the Session's own model becomes an explicit override.
+	it("defaults to the cheap model role when one is configured", async () => {
+		vi.spyOn(api.config, "get").mockResolvedValue({
+			...config,
+			roles: { cheap: { provider: "openai", model: "gpt-x" } },
+		} as LlmConfig);
+		const scoreTurn = vi
+			.spyOn(api.sessions, "scoreTurn")
+			.mockResolvedValue({ score: makeScore() });
+		await openDialog();
+
+		const select = screen.getByLabelText("Judge model");
+		await waitFor(() => expect(select).toHaveValue("openai/gpt-x"));
+		expect(
+			screen.getByRole("option", { name: "openai / GPT X (cheap model)" }),
+		).toBeInTheDocument();
+
+		await userEvent.type(screen.getByLabelText("Criteria"), "x");
+		await userEvent.click(screen.getByRole("button", { name: "Score" }));
+		// The default needs no override — the server resolves the role itself.
+		await waitFor(() =>
+			expect(scoreTurn).toHaveBeenLastCalledWith(
+				"sess-1",
+				"turn-1",
+				expect.objectContaining({ provider: undefined, model: undefined }),
+			),
+		);
+	});
+
+	it("sends the Session's model as an explicit override when cheap is the default", async () => {
+		vi.spyOn(api.config, "get").mockResolvedValue({
+			...config,
+			roles: { cheap: { provider: "openai", model: "gpt-x" } },
+		} as LlmConfig);
+		const scoreTurn = vi
+			.spyOn(api.sessions, "scoreTurn")
+			.mockResolvedValue({ score: makeScore() });
+		await openDialog();
+		await waitFor(() =>
+			expect(screen.getByLabelText("Judge model")).toHaveValue("openai/gpt-x"),
+		);
+		await userEvent.selectOptions(
+			screen.getByLabelText("Judge model"),
+			"anthropic/claude-a",
+		);
+		await userEvent.type(screen.getByLabelText("Criteria"), "x");
+		await userEvent.click(screen.getByRole("button", { name: "Score" }));
+		await waitFor(() =>
+			expect(scoreTurn).toHaveBeenLastCalledWith(
+				"sess-1",
+				"turn-1",
+				expect.objectContaining({
+					provider: "anthropic",
+					model: "claude-a",
+				}),
+			),
 		);
 	});
 

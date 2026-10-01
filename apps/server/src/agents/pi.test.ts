@@ -1090,6 +1090,31 @@ describe("generateSessionTitle", () => {
 		expect(bodies[0]?.tool_stream).toBeUndefined();
 	});
 
+	it("reports the call's spend on the model it ran on (issue #311)", async () => {
+		process.env.ZAI_API_KEY = "test-key";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => sseResponse("Fix the login redirect bug")),
+		);
+		const onUsage = vi.fn();
+
+		await generateSessionTitle(
+			"sess-1",
+			"please fix the login redirect bug",
+			"zai",
+			"glm-4.7",
+			onUsage,
+		);
+
+		// The fixture stream reports 10 prompt + 5 completion tokens.
+		expect(onUsage).toHaveBeenCalledTimes(1);
+		expect(onUsage).toHaveBeenCalledWith({
+			provider: "zai",
+			model: "glm-4.7",
+			usage: expect.objectContaining({ inputTokens: 10, outputTokens: 5 }),
+		});
+	});
+
 	it("resolves null — never rejects — when the provider rejects the call", async () => {
 		process.env.ZAI_API_KEY = "test-key";
 		// A provider 4xx (zai's coding endpoint answers like this for requests

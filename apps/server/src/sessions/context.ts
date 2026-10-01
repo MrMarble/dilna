@@ -8,15 +8,20 @@ import {
 	estimateTokens,
 	shouldCompact,
 } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import {
 	dilnaMessagesToInitialState,
 	resolveSummarizationModel,
 	summarizeMessages,
+	type UtilityUsage,
 } from "../agents/pi";
 import {
 	charsPerTokenFor,
 	LIBRARY_CHARS_PER_TOKEN,
 } from "../agents/providerConfig";
+import { logger } from "../logger";
+
+const log = logger.child({ component: "sessions/context" });
 
 /**
  * Session context/compaction policy (ADR-0023) and the deleted-Session
@@ -452,6 +457,15 @@ export async function checkSessionContext(
 	modelId: string,
 	history: Message[],
 	priorCompaction: SessionCompaction,
+	opts: {
+		/** The `cheap` model role, when configured (issue #311): the summary
+		 * runs on it instead of the Session's own model — see
+		 * {@link pickSummarizer} for when it is (and isn't) used. Null/absent
+		 * means the Session's model, exactly as before. */
+		utilityModel?: { provider: string; model: string } | null;
+		/** Every summarization call's spend, on the model it ran on. */
+		onUsage?: (usage: UtilityUsage) => void;
+	} = {},
 ): Promise<SessionContextCheck> {
 	const model = resolveSummarizationModel(provider, modelId);
 	if (!model) return { estimate: null, compaction: null, newContext: null };
@@ -487,12 +501,34 @@ export async function checkSessionContext(
 	if (cutIndexInTail <= 0) return notDue;
 
 	const newlySummarized = tailHistory.slice(0, cutIndexInTail);
-	const summary = await summarizeMessages({
+	const toSummarize = dilnaMessagesToInitialState(newlySummarized);
+	const summarize = (summarizer: Model<Api>) =>
+		summarizeMessages({
+			model: summarizer,
+			messages: toSummarize,
+			reserveTokens: estimate.reserveTokens,
+			previousSummary: priorCompaction?.summary,
+			onUsage: opts.onUsage,
+		});
+	const summarizer = pickSummarizer(
 		model,
-		messages: dilnaMessagesToInitialState(newlySummarized),
-		reserveTokens: estimate.reserveTokens,
-		previousSummary: priorCompaction?.summary,
-	});
+		opts.utilityModel,
+		toSummarize,
+		estimate.reserveTokens,
+	);
+	let summary = await summarize(summarizer);
+	// A cheap model that fails here falls back to the Session's own model in
+	// the same check, rather than skipping: a persistently broken cheap
+	// provider would otherwise block compaction on every turn until the
+	// context overflowed. Only when the Session's model fails too is this
+	// boundary skipped, exactly as before #311.
+	if (!summary && summarizer !== model) {
+		log.warn(
+			{ provider: summarizer.provider, model: summarizer.id },
+			"compaction summary on the cheap model failed — retrying on the Session's model",
+		);
+		summary = await summarize(model);
+	}
 	// `summarizeMessages` already logged the concrete provider error; there's
 	// nothing to add here beyond "so no compaction happened this turn", which
 	// the next turn's check retries anyway.
@@ -518,6 +554,33 @@ export async function checkSessionContext(
 		compaction,
 		newContext,
 	};
+}
+
+/**
+ * Which model writes a compaction summary (issue #311): the `cheap` role's
+ * when one is configured *and* its context window can hold what's being
+ * summarized plus the summary's own reserve — else the Session's model.
+ *
+ * The size check matters because the slice handed to the summarizer is
+ * sized against the *Session's* window: a Session on a 1M-token model can
+ * fold several hundred thousand tokens in one go, which a 128k cheap model
+ * would reject outright. Falling back there is not a failure, just the one
+ * case where good-enough isn't available.
+ */
+export function pickSummarizer(
+	sessionModel: Model<Api>,
+	utilityModel: { provider: string; model: string } | null | undefined,
+	toSummarize: AgentMessage[],
+	reserveTokens: number,
+): Model<Api> {
+	if (!utilityModel) return sessionModel;
+	const cheap = resolveSummarizationModel(
+		utilityModel.provider,
+		utilityModel.model,
+	);
+	if (!cheap) return sessionModel;
+	const needed = estimateContextTokens(toSummarize).tokens + reserveTokens;
+	return cheap.contextWindow >= needed ? cheap : sessionModel;
 }
 
 /**

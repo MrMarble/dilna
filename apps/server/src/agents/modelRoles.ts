@@ -6,6 +6,7 @@ import {
 import { eq, like } from "drizzle-orm";
 import { getDb } from "../db";
 import { llmConfig as llmConfigTable } from "../db/schema";
+import { logger } from "../logger";
 import { validateModelChoice } from "./providerConfigStore";
 
 /**
@@ -24,6 +25,8 @@ import { validateModelChoice } from "./providerConfigStore";
  * answers "not configured" and every consumer falls back to what it did
  * before roles existed.
  */
+
+const log = logger.child({ component: "agents/modelRoles" });
 
 const ROLE_ROW_PREFIX = "role:";
 
@@ -211,4 +214,34 @@ export async function resolveModelChoice(
 		};
 	}
 	return { status: "resolved", provider, model, role: null };
+}
+
+/**
+ * The model the built-in utility calls — title derivation, compaction
+ * summaries, the scoring judge — should run on (issue #311): the `cheap`
+ * role when it resolves, else `null`, meaning "use the Session's own model,
+ * exactly as before roles existed".
+ *
+ * A *misconfigured* role (provider gone, key cleared) also yields `null`,
+ * logged: a utility call is never the place to surface a Settings error, and
+ * falling back keeps compaction in particular from being blocked until
+ * someone notices. A role that resolves but whose provider then fails at
+ * call time is the consumer's to degrade on, the same way it degrades when
+ * the Session's own model fails.
+ */
+export async function resolveUtilityModel(): Promise<{
+	provider: string;
+	model: string;
+} | null> {
+	const resolution = await resolveModelRole("cheap");
+	if (resolution.status === "resolved") {
+		return { provider: resolution.provider, model: resolution.model };
+	}
+	if (resolution.status === "invalid") {
+		log.warn(
+			{ error: resolution.error },
+			"cheap model role is misconfigured — utility call falls back to the Session's model",
+		);
+	}
+	return null;
 }

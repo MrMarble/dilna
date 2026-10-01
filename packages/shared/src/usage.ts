@@ -80,15 +80,38 @@ export type UsageSessionBreakdown = {
  * What a `usage_events` row paid for. `"turn"` is an ordinary Agent turn;
  * `"judge"` is an output-scoring call (ADR-0046); `"subagent"` is one
  * read-only `task` delegation (ADR-0034), on whatever model the child ran on
- * (ADR-0053). Every non-turn purpose is real spend, so it counts toward the
- * totals, but is kept apart here and out of the Session's own
- * `input_tokens`/`output_tokens` so a Session's numbers still describe the
- * work its own Agent did.
+ * (ADR-0053); `"title"` and `"compaction"` are the built-in utility calls —
+ * Session title derivation and compaction summaries (ADR-0023) — which run
+ * on the `cheap` model role when one is configured (issue #311). Every
+ * non-turn purpose is real spend, so it counts toward the totals, but is
+ * kept apart here and out of the Session's own `input_tokens`/
+ * `output_tokens` so a Session's numbers still describe the work its own
+ * Agent did.
  */
-export type UsagePurpose = "turn" | "judge" | "subagent";
+export type UsagePurpose =
+	| "turn"
+	| "judge"
+	| "subagent"
+	| "title"
+	| "compaction";
 
 export type UsagePurposeBreakdown = {
 	purpose: UsagePurpose;
+} & UsageTotalsDetailed;
+
+/**
+ * Side spend — every non-turn purpose — split by the model it actually ran
+ * on (issue #311), so routing utility calls and subagents to the `cheap`
+ * role is demonstrable: "compaction cost $0.02 on the cheap model" next to
+ * whatever it cost on the Session's model before. Turn rows are left out;
+ * they're already the by-model breakdown.
+ */
+export type UsagePurposeModelBreakdown = {
+	purpose: Exclude<UsagePurpose, "turn">;
+	provider: string;
+	model: string;
+	/** How many `usage_events` rows — calls — the slice covers. */
+	calls: number;
 } & UsageTotalsDetailed;
 
 /**
@@ -203,7 +226,8 @@ export type BurnFinding = {
  */
 export type SessionBurnTurn = {
 	/** 1-based ordinal among the Session's completed Agent turns, oldest
-	 * first. `null` for every non-turn row (judge calls, subagent runs),
+	 * first. `null` for every non-turn row (judge calls, subagent runs,
+	 * title/compaction utility calls),
 	 * which aren't turns — they render as markers in the timeline and don't
 	 * consume a turn number. */
 	turn: number | null;
@@ -246,6 +270,8 @@ export type UsageSummary = {
 	byModel: UsageModelBreakdown[];
 	topSessions: UsageSessionBreakdown[];
 	byPurpose: UsagePurposeBreakdown[];
+	/** Non-turn spend by purpose × model, costliest first (issue #311). */
+	byPurposeModel: UsagePurposeModelBreakdown[];
 	/** Sessions whose estimate vs provider-report drift is past the warn
 	 * threshold, worst first; empty when every estimator is honest (or no
 	 * turn carries both numbers yet). */

@@ -147,8 +147,9 @@ function judgeKey(provider: string, model: string): string {
 
 /**
  * Icon button that opens the score dialog for one turn. The judge defaults to
- * the Session's own model; any model of a provider with a configured key can
- * be picked instead (cross-provider judging).
+ * the `cheap` model role when one is configured (issue #311), else the
+ * Session's own model; any model of a provider with a configured key can be
+ * picked instead (cross-provider judging).
  */
 export function ScoreTurnButton({
 	sessionId,
@@ -221,6 +222,10 @@ function ScoreTurnDialog({
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
+	// Whether the user picked a judge themselves — until then the select
+	// follows whatever the server would use with no override.
+	const [judgeTouched, setJudgeTouched] = useState(false);
+
 	useEffect(() => {
 		api.config
 			.get()
@@ -229,6 +234,16 @@ function ScoreTurnDialog({
 				// The Session's own model stays selectable without the catalog.
 			});
 	}, []);
+
+	// With the `cheap` model role configured, the server judges on it when no
+	// override is sent (issue #311) — so that, not the Session's model, is
+	// what "default" means here.
+	const cheap = config?.roles?.cheap ?? null;
+	const cheapKey = cheap ? judgeKey(cheap.provider, cheap.model) : "";
+	const serverDefault = cheapKey || defaultJudge;
+	useEffect(() => {
+		if (!judgeTouched && cheapKey) setJudge(cheapKey);
+	}, [cheapKey, judgeTouched]);
 
 	const judgeOptions: { provider: string; model: string; label: string }[] = [];
 	if (config) {
@@ -242,6 +257,10 @@ function ScoreTurnDialog({
 	const hasDefaultOption =
 		defaultJudge !== "" &&
 		!judgeOptions.some((o) => judgeKey(o.provider, o.model) === defaultJudge);
+	const hasCheapOption =
+		cheapKey !== "" &&
+		cheapKey !== defaultJudge &&
+		!judgeOptions.some((o) => judgeKey(o.provider, o.model) === cheapKey);
 
 	const thresholdValue = Number(threshold);
 	const thresholdValid =
@@ -259,12 +278,13 @@ function ScoreTurnDialog({
 		if (!canSubmit) return;
 		setSubmitting(true);
 		setError(null);
-		// Only name a judge when it differs from the Session's own model, so the
-		// server's default resolution stays the one source for "the Session's
-		// model".
+		// Only name a judge when it differs from what the server would pick on
+		// its own (the cheap role, else the Session's model), so the server's
+		// default resolution stays the one source for "the default judge".
+		const slash = judge.indexOf("/");
 		const override =
-			judge && judge !== defaultJudge
-				? judgeOptions.find((o) => judgeKey(o.provider, o.model) === judge)
+			judge && judge !== serverDefault && slash > 0
+				? { provider: judge.slice(0, slash), model: judge.slice(slash + 1) }
 				: undefined;
 		try {
 			const { score } = await api.sessions.scoreTurn(sessionId, turnId, {
@@ -338,12 +358,18 @@ function ScoreTurnDialog({
 						<select
 							id="score-judge"
 							value={judge}
-							onChange={(e) => setJudge(e.target.value)}
+							onChange={(e) => {
+								setJudgeTouched(true);
+								setJudge(e.target.value);
+							}}
 							disabled={submitting}
 							className={selectClass}
 						>
 							{defaultJudge === "" && (
 								<option value="">Session's model (current default)</option>
+							)}
+							{hasCheapOption && (
+								<option value={cheapKey}>{cheapKey} (cheap model)</option>
 							)}
 							{hasDefaultOption && (
 								<option value={defaultJudge}>
@@ -355,6 +381,7 @@ function ScoreTurnDialog({
 								return (
 									<option key={key} value={key}>
 										{o.provider} / {o.label}
+										{key === cheapKey ? " (cheap model)" : ""}
 										{key === defaultJudge ? " (this Session)" : ""}
 									</option>
 								);

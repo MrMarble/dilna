@@ -1505,17 +1505,65 @@ export function dilnaMessagesToInitialState(
  * interface (provider registry, auth, streaming) is intentionally unused,
  * hence the cast below.
  */
-const summarizationModels = {
-	completeSimple: async (
-		model: Model<Api>,
-		context: Context,
-		options?: SimpleStreamOptions,
-	) => {
-		const apiKey = await providerApiKey(model.provider);
-		return completeSimple(model, context, { ...options, apiKey });
-	},
-	// biome-ignore lint/suspicious/noExplicitAny: partial `Models` shim, see doc comment above
-} as any as Models;
+function summarizationModels(spent: UsageTotals): Models {
+	return {
+		completeSimple: async (
+			model: Model<Api>,
+			context: Context,
+			options?: SimpleStreamOptions,
+		) => {
+			const apiKey = await providerApiKey(model.provider);
+			const reply = await completeSimple(model, context, {
+				...options,
+				apiKey,
+			});
+			// Every round-trip `generateSummary` makes (retries included) was
+			// billed, so each one is folded into the caller's total (issue #311).
+			addUsageTotals(spent, extractUsageTotals(reply.usage));
+			return reply;
+		},
+		// biome-ignore lint/suspicious/noExplicitAny: partial `Models` shim, see doc comment above
+	} as any as Models;
+}
+
+function addUsageTotals(total: UsageTotals, u: UsageTotals | null): void {
+	if (!u) return;
+	total.inputTokens += u.inputTokens;
+	total.outputTokens += u.outputTokens;
+	total.cacheReadTokens =
+		(total.cacheReadTokens ?? 0) + (u.cacheReadTokens ?? 0);
+	total.cacheWriteTokens =
+		(total.cacheWriteTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+	total.reasoningTokens =
+		(total.reasoningTokens ?? 0) + (u.reasoningTokens ?? 0);
+	total.costUsd = (total.costUsd ?? 0) + (u.costUsd ?? 0);
+}
+
+/** What one utility model call (a summary, a title) spent, on the model it
+ * actually ran on — handed to the caller's `onUsage` so `sessions/` can
+ * ledger it (issue #311, ADR-0053 §3). */
+export type UtilityUsage = {
+	provider: string;
+	model: string;
+	usage: UsageTotals;
+};
+
+function reportUtilityUsage(
+	onUsage: ((u: UtilityUsage) => void) | undefined,
+	model: Model<Api>,
+	spent: UsageTotals,
+): void {
+	if (!onUsage || (spent.inputTokens === 0 && spent.outputTokens === 0)) {
+		return;
+	}
+	try {
+		onUsage({ provider: model.provider, model: model.id, usage: spent });
+	} catch (err) {
+		// Accounting is best-effort: it must never turn a usable summary or
+		// title into a failure.
+		log.warn({ err }, "failed to record utility usage");
+	}
+}
 
 /**
  * Resolve a `Model` by the exact provider/model a Session's `Agent` was
@@ -1551,19 +1599,28 @@ export async function summarizeMessages(opts: {
 	messages: AgentMessage[];
 	reserveTokens: number;
 	previousSummary?: string;
+	/** Called once with everything the call spent — failed calls included,
+	 * since a rejected round-trip may still have been billed. */
+	onUsage?: (usage: UtilityUsage) => void;
 }): Promise<string | null> {
-	const result = await generateSummary(
-		opts.messages,
-		summarizationModels,
-		opts.model,
-		opts.reserveTokens,
-		undefined,
-		opts.previousSummary,
-		undefined,
-		undefined,
-		undefined,
-		BACKGROUND_CONTEXT,
-	);
+	const spent: UsageTotals = { ...ZERO_TURN_USAGE };
+	let result: Awaited<ReturnType<typeof generateSummary>>;
+	try {
+		result = await generateSummary(
+			opts.messages,
+			summarizationModels(spent),
+			opts.model,
+			opts.reserveTokens,
+			undefined,
+			opts.previousSummary,
+			undefined,
+			undefined,
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+	} finally {
+		reportUtilityUsage(opts.onUsage, opts.model, spent);
+	}
 	if (!result.ok) {
 		// Logged here, where the error is still in pi's native shape; both
 		// callers in `sessions/context.ts` treat `null` as non-fatal and don't
@@ -1686,6 +1743,9 @@ export async function generateSessionTitle(
 	userPrompt: string,
 	provider?: string | null,
 	modelId?: string | null,
+	/** Called with the call's spend on the model it ran on (issue #311) —
+	 * also when the reply is unusable, since the tokens were still billed. */
+	onUsage?: (usage: UtilityUsage) => void,
 ): Promise<string | null> {
 	let resolved: ReturnType<typeof resolveConfiguredModel>;
 	try {
@@ -1737,6 +1797,14 @@ export async function generateSessionTitle(
 			"session title derivation call failed",
 		);
 		return null;
+	} finally {
+		const spent: UsageTotals = { ...ZERO_TURN_USAGE };
+		for (const m of titleAgent.state.messages) {
+			if (m.role === "assistant") {
+				addUsageTotals(spent, extractUsageTotals(m.usage));
+			}
+		}
+		reportUtilityUsage(onUsage, model, spent);
 	}
 
 	const last = titleAgent.state.messages.at(-1);

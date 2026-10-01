@@ -413,6 +413,58 @@ describe("getUsageSummary", () => {
 		);
 	});
 
+	it("splits side spend by purpose and model, leaving turn rows out (issue #311)", () => {
+		const now = Math.floor(Date.now() / 1000);
+		for (const [id, model, cost] of [
+			["compaction-cheap-1", "deepseek-flash", 0.01],
+			["compaction-cheap-2", "deepseek-flash", 0.02],
+			["compaction-own", "claude-opus-5", 0.4],
+		] as const) {
+			seedRow({
+				id,
+				repoId: "repo-a",
+				createdAt: now,
+				costUsd: cost,
+				purpose: "compaction",
+				provider: model === "deepseek-flash" ? "deepseek" : "anthropic",
+				model,
+			});
+		}
+		seedRow({
+			id: "title-cheap",
+			repoId: "repo-a",
+			createdAt: now,
+			costUsd: 0.001,
+			purpose: "title",
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+
+		const { byPurposeModel } = getUsageSummary(0);
+		expect(byPurposeModel.some((r) => (r.purpose as string) === "turn")).toBe(
+			false,
+		);
+		expect(byPurposeModel).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					purpose: "compaction",
+					model: "deepseek-flash",
+					calls: 2,
+					costUsd: expect.closeTo(0.03, 6),
+				}),
+				expect.objectContaining({
+					purpose: "compaction",
+					model: "claude-opus-5",
+					calls: 1,
+				}),
+				expect.objectContaining({ purpose: "title", calls: 1 }),
+			]),
+		);
+		// Costliest first.
+		const costs = byPurposeModel.map((r) => r.costUsd);
+		expect(costs).toEqual([...costs].sort((a, b) => b - a));
+	});
+
 	it("excludes judge rows from tool usage — scoring never counts as the Session's own tool work (issue #292)", () => {
 		// Kept after the purpose-split test above: the db is file-cumulative,
 		// and this file's other tests already own the cost arithmetic. Seeding

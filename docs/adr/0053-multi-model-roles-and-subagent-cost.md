@@ -148,3 +148,32 @@ the caller surfaces or degrades on). Settings writes go through
 `PUT`/`DELETE /api/config/roles/:role`; `GET /api/config` reports every
 role's assignment. The Settings section is the only surface that shows the
 concrete model behind a role.
+
+## Addendum: utility calls on the `cheap` role (issue #311)
+
+Title derivation, compaction summaries and the scoring judge default to the
+`cheap` role when it resolves (`resolveUtilityModel`), else the Session's
+model as before. A misconfigured role falls back to the Session's model
+(logged) rather than surfacing a Settings error from inside a utility call.
+An explicit judge picked in the score dialog still wins.
+
+Title and compaction spend is now ledgered: purposes `"title"` and
+`"compaction"`, on the model actually used, outside the Session's counters
+(§3). Judge spend already was. Metrics gains a purpose × model side-spend
+table (`UsageSummary.byPurposeModel`), so the savings show up as data.
+
+Two compaction-specific rules, both because a stalled compaction eventually
+overflows the context and fails turns:
+
+- **Window fit.** The slice to summarize is sized against the *Session's*
+  window. The cheap model is used only when its own window holds that slice
+  plus the summary reserve; otherwise the Session's model writes it.
+- **Retry on the Session's model.** If the cheap summary call fails, the
+  same check retries once on the Session's model instead of skipping the
+  boundary. A broken cheap provider costs one extra attempt, not compaction.
+  Only when both fail is the boundary skipped, as before.
+
+Title failure still lands on the deterministic fallback title, and judge
+failure still means no score. The deleted-Session archive summary
+(ADR-0024) stays on the Session's model and unledgered. It is a one-off at
+delete time and outside #311's scope.

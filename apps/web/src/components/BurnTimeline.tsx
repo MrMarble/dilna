@@ -1,6 +1,12 @@
 import type { SessionBurnTurn, UsagePurpose } from "@dilna/shared";
 import { formatUsd } from "@dilna/shared";
-import { ChevronsDownUp, Gavel, type LucideIcon, Split } from "lucide-react";
+import {
+	ChevronsDownUp,
+	Gavel,
+	type LucideIcon,
+	Split,
+	Tag,
+} from "lucide-react";
 import { useSessionBurnTimeline } from "@/hooks/useSessionBurnTimeline";
 import { contextUsageBarColor } from "@/lib/context-usage";
 import { formatTokenCount } from "@/lib/tokens";
@@ -256,10 +262,21 @@ const SIDE_CALLS: Record<
 		title: "Subagent run (read-only `task` delegation, ADR-0053)",
 		icon: Split,
 	},
+	title: {
+		label: "Title",
+		title: "Session title derivation (utility call)",
+		icon: Tag,
+	},
+	compaction: {
+		label: "Compaction summary",
+		title: "Compaction summary (utility call, ADR-0023)",
+		icon: ChevronsDownUp,
+	},
 };
 
 /**
- * A side call — a judge call (ADR-0046) or a subagent run (ADR-0053) —
+ * A side call — a judge call (ADR-0046), a subagent run (ADR-0053) or a
+ * title/compaction utility call (issue #311) —
  * between the turns it belongs between: real spend, so it's in the timeline,
  * but not a turn: no bar, no ordinal.
  */

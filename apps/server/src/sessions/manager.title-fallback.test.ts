@@ -6,6 +6,8 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateSessionTitle } from "../agents/pi";
 import { createServerContext } from "../container";
+import { getDb } from "../db";
+import { usageEvents } from "../db/schema";
 import { fallbackSessionTitle } from "./sessionStore";
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +49,15 @@ vi.mock("../agents/pi", () => {
 		judgeComplete: vi.fn().mockResolvedValue(null),
 	};
 });
+
+/** Issue #311: what the `cheap` role resolves to for the title call —
+ * `null` (unset) unless a test says otherwise. */
+const resolveUtilityModel = vi.hoisted(() =>
+	vi.fn<() => Promise<{ provider: string; model: string } | null>>(
+		async () => null,
+	),
+);
+vi.mock("../agents/modelRoles", () => ({ resolveUtilityModel }));
 
 let dataDir: string;
 let fixtureRepo: string;
@@ -122,5 +133,54 @@ describe("first-turn title derivation", () => {
 			"please fix the login redirect bug",
 		);
 		expect(title).toBe("Auth Redirect Fix");
+	});
+
+	it("runs on the cheap role when configured, and ledgers the call's spend as a title row", async () => {
+		resolveUtilityModel.mockResolvedValueOnce({
+			provider: "deepseek",
+			model: "deepseek-flash",
+		});
+		vi.mocked(generateSessionTitle).mockImplementationOnce(
+			async (_id, _prompt, _provider, _model, onUsage) => {
+				onUsage?.({
+					provider: "deepseek",
+					model: "deepseek-flash",
+					usage: { inputTokens: 120, outputTokens: 6, costUsd: 0.00002 },
+				});
+				return "Cheap Title";
+			},
+		);
+		const { id, title } = await runFirstTurnAndWaitForTitle("fix the thing");
+		expect(title).toBe("Cheap Title");
+		expect(vi.mocked(generateSessionTitle)).toHaveBeenLastCalledWith(
+			id,
+			"fix the thing",
+			"deepseek",
+			"deepseek-flash",
+			expect.any(Function),
+		);
+		const rows = getDb()
+			.select()
+			.from(usageEvents)
+			.all()
+			.filter((r) => r.sessionId === id);
+		expect(rows).toEqual([
+			expect.objectContaining({
+				purpose: "title",
+				provider: "deepseek",
+				model: "deepseek-flash",
+				inputTokens: 120,
+			}),
+		]);
+	});
+
+	it("uses the Session's own model when no cheap role resolves", async () => {
+		vi.mocked(generateSessionTitle).mockResolvedValueOnce("Own Title");
+		const { id } = await runFirstTurnAndWaitForTitle("fix the other thing");
+		const call = vi.mocked(generateSessionTitle).mock.lastCall;
+		expect(call?.[0]).toBe(id);
+		// Not the cheap pair: the Session's own snapshot passes straight
+		// through, as before #311.
+		expect(call?.[3]).not.toBe("deepseek-flash");
 	});
 });
