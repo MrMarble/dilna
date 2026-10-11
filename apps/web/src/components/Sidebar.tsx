@@ -77,6 +77,10 @@ type Props = {
 	onNewRepo: () => void;
 	onNewSession: () => void;
 	creatingSession: boolean;
+	/** Why the last "New session" attempt failed, shown under the button —
+	 * the server's message (e.g. the git failure that created no Worktree),
+	 * not just a console.error the user can't see. */
+	createSessionError: string | null;
 	/** The Session open in the chat, if any — highlighted in the selected
 	 * repo's session submenu. */
 	selectedSessionId: string | null;
@@ -167,6 +171,7 @@ export function Sidebar({
 	onNewRepo,
 	onNewSession,
 	creatingSession,
+	createSessionError,
 	selectedSessionId,
 	sessionsByRepoId,
 	backgroundSessions,
@@ -290,6 +295,14 @@ export function Sidebar({
 							{NEW_SESSION_SHORTCUT}
 						</span>
 					</button>
+					{createSessionError && (
+						<p
+							role="alert"
+							className="mt-1 px-1 text-sm leading-snug text-destructive"
+						>
+							{createSessionError}
+						</p>
+					)}
 					<button
 						type="button"
 						onClick={onNewComparison}

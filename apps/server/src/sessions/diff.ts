@@ -4,10 +4,26 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { ChangedFile, ChangedFileStatus } from "@dilna/shared";
 import { logger } from "../logger";
+import { isUnbornBranch } from "./worktree";
 
 const log = logger.child({ component: "sessions/diff" });
 
 const execFileAsync = promisify(execFile);
+
+/** The all-zero tree every git repo can diff against without the object
+ * existing in its store — git special-cases it, so an orphan Worktree's
+ * first commits read as pure additions. */
+const EMPTY_TREE_SHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/** False while HEAD is unborn (no commit anywhere in the Worktree yet). */
+async function hasCommits(cwd: string): Promise<boolean> {
+	try {
+		await git(["rev-parse", "--verify", "--quiet", "HEAD"], cwd);
+		return true;
+	} catch {
+		return false;
+	}
+}
 
 async function git(args: string[], cwd: string): Promise<string> {
 	const { stdout } = await execFileAsync("git", args, {
@@ -153,11 +169,23 @@ export async function computeChangedFiles(
 			await git(["merge-base", defaultBranch, "HEAD"], worktreePath)
 		).trim();
 	} catch (err) {
-		log.error(
-			{ defaultBranch, worktreePath, err },
-			"failed to find merge-base",
-		);
-		return [];
+		// An orphan Worktree on an empty Repo has no merge-base: its default
+		// branch is unborn, so no common ancestor can exist. That's an expected
+		// state, not an error — and it has two shapes. No commit anywhere yet:
+		// an empty report is correct. The Session branch carries commits while
+		// the default branch still doesn't exist: everything the Agent wrote is
+		// an addition against the empty tree. Anything else is a real failure
+		// and keeps the old soft-fail-to-empty behaviour.
+		if (await isUnbornBranch(worktreePath, defaultBranch)) {
+			if (!(await hasCommits(worktreePath))) return [];
+			mergeBase = EMPTY_TREE_SHA;
+		} else {
+			log.error(
+				{ defaultBranch, worktreePath, err },
+				"failed to find merge-base",
+			);
+			return [];
+		}
 	}
 
 	const [nameStatusOut, numstatOut, untrackedOut] = await Promise.all([

@@ -102,8 +102,17 @@ describe("computeChangedFiles", () => {
 		expect(byPath["untracked.txt"]?.status).toBe("added");
 	});
 
-	it("returns no files for a nonexistent default branch instead of throwing", async () => {
+	it("diffs a nonexistent default branch against the empty tree instead of throwing", async () => {
+		// An unborn default branch is the empty-Repo orphan-Worktree state (see
+		// create-on-empty-repo.test.ts): the Session branched from nothing, so
+		// everything in the tree reads as an addition. The contract is only
+		// that a junk branch name doesn't throw.
 		const files = await computeChangedFiles(repoDir, "does-not-exist");
-		expect(files).toEqual([]);
+		expect(files.map((f) => f.path).sort()).toEqual([
+			"keep.txt",
+			"todelete.txt",
+			"tomove.txt",
+		]);
+		expect(files.every((f) => f.status === "added")).toBe(true);
 	});
 });

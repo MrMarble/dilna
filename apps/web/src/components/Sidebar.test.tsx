@@ -37,6 +37,7 @@ function renderSidebar(overrides: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 			onNewRepo={noop}
 			onNewSession={noop}
 			creatingSession={false}
+			createSessionError={null}
 			selectedSessionId={null}
 			sessionsByRepoId={{}}
 			backgroundSessions={[]}
@@ -70,6 +71,21 @@ describe("Sidebar", () => {
 	it("renders the dilna brand header", () => {
 		renderSidebar();
 		expect(screen.getByText("dilna")).toBeInTheDocument();
+	});
+
+	it("shows why the last New session attempt failed, under the button", () => {
+		renderSidebar({
+			createSessionError:
+				"git worktree add failed: fatal: invalid reference: main",
+		});
+		expect(screen.getByRole("alert", { hidden: true })).toHaveTextContent(
+			"fatal: invalid reference: main",
+		);
+	});
+
+	it("renders no create-session error while attempts are succeeding", () => {
+		renderSidebar();
+		expect(screen.queryByRole("alert", { hidden: true })).toBeNull();
 	});
 
 	it("shows the Repositories section header", () => {
