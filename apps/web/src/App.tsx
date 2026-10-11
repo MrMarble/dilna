@@ -76,6 +76,12 @@ export function App() {
 	const [newRepoOpen, setNewRepoOpen] = useState(false);
 	const [newComparisonOpen, setNewComparisonOpen] = useState(false);
 	const [creatingSession, setCreatingSession] = useState(false);
+	// Why the last "New session" attempt failed (e.g. a git failure creating
+	// the Worktree) — rendered under the button, because a bare console.error
+	// left the button merely flickering back with no explanation on screen.
+	const [createSessionError, setCreateSessionError] = useState<string | null>(
+		null,
+	);
 	// Below 768px the desktop Sidebar/ContextPanel aren't rendered at all
 	// (rather than just hidden via CSS) so their SSE subscriptions don't run
 	// twice alongside the mobile sheet's own instances — see issue #12.
@@ -207,6 +213,7 @@ export function App() {
 	// one, and it's the only thing that dismisses the drawer.
 	const handleSelectRepo = useCallback(
 		(id: string) => {
+			setCreateSessionError(null);
 			navigate(repoRoute(id, null));
 		},
 		[repoRoute, navigate],
@@ -245,11 +252,17 @@ export function App() {
 	const handleNewSession = useCallback(async () => {
 		if (!selectedRepoId || creatingSession) return;
 		setCreatingSession(true);
+		setCreateSessionError(null);
 		try {
 			const { session } = await api.sessions.create(selectedRepoId);
 			handleSessionCreated(session);
 		} catch (e) {
 			console.error(e);
+			setCreateSessionError(
+				e instanceof Error && e.message
+					? e.message
+					: "Creating the session failed",
+			);
 		} finally {
 			setCreatingSession(false);
 		}
@@ -414,6 +427,7 @@ export function App() {
 		refreshingRepos: pullingRepos,
 		onNewSession: handleNewSession,
 		creatingSession,
+		createSessionError,
 		selectedSessionId,
 		sessionsByRepoId,
 		backgroundSessions,
