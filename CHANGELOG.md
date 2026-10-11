@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.41.1](https://github.com/MrMarble/dilna/compare/v0.41.0...v0.41.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **sessions:** create Sessions on empty Repos (orphan Worktree for an unborn default branch) ([#320](https://github.com/MrMarble/dilna/issues/320)) ([5323ef8](https://github.com/MrMarble/dilna/commit/5323ef8241a5b4be29b6c22ebb45024d92fd142d))
+
+
+### Dependencies
+
+* **deps:** bump hono from 4.13.5 to 4.13.7 ([#319](https://github.com/MrMarble/dilna/issues/319)) ([ded6abd](https://github.com/MrMarble/dilna/commit/ded6abddc3151d6bfac3b23d5deeb6fc78122a85))
+
 ## [0.41.0](https://github.com/MrMarble/dilna/compare/v0.40.0...v0.41.0) (2026-10-01)
 
 
